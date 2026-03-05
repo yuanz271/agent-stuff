@@ -4,10 +4,15 @@ These rules express my default preferences across projects. If a repo has its ow
 
 ## Git (Local + Remote)
 
-- Do not create commits without explicit permission.
-- Do not run any remote/upstream-affecting git operations without explicit permission.
+- Do not run any remote/upstream-affecting or history-rewriting git operations without explicit permission.
   - Examples: `git push`, `git pull`, `git merge`, `git rebase`, `git tag`, deleting remote branches, any force operation.
-- Before asking permission to commit, always run `git status` and `git diff` to confirm scope and show what would be committed.
+- Commits: local commits are pre-approved by default for the active task unless the user says otherwise.
+  - If the user says "no commits" (or similar), do not commit without explicit permission.
+  - If pre-approved, commit at logical milestones without interrupting active implementation.
+  - Do not auto-commit purely exploratory or debug-only changes unless explicitly requested.
+  - Before committing, provide a brief scope summary (`git status` + diff summary) so the user can correct scope if needed.
+- Before each commit, run `git status` and `git diff` (or `git diff --stat` + focused diffs) to confirm scope and show what will be committed.
+- If staged/changed files include unrelated work, ask for confirmation before committing.
 - Run sensitive git operations in isolation (no chained commands). In particular, never combine `commit`/`push` with other commands in a single shell invocation.
 
 ## File/Folder Deletion
