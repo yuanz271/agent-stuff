@@ -2,16 +2,25 @@
 
 These rules express my default preferences across projects. If a repo has its own rules, follow the repo rules where they are stricter or more specific.
 
+Treat permission and side-effect rules as hard constraints. Treat bookkeeping, traceability, and workflow guidance as default practices to apply when useful, without adding unnecessary friction for trivial tasks.
+
+## Permission Model
+
+- A direct user instruction to perform a specific operation counts as explicit permission for that operation.
+- If an instruction is ambiguous, conflicts with another rule, or may have broader side effects than the user likely intends, ask for confirmation before acting.
+
 ## Git (Local + Remote)
 
-- Do not run any remote/upstream-affecting or history-rewriting git operations without explicit permission.
-  - Examples: `git push`, `git pull`, `git merge`, `git rebase`, `git tag`, deleting remote branches, any force operation.
+- Routine local git commands are allowed by default when they do not rewrite history, discard changes, or affect remotes.
+  - Examples: `git status`, `git diff`, `git log`, `git show`, `git blame`, `git add`, `git branch`, `git switch`, `git checkout` (non-destructive), and `git commit`.
+- Do not run remote/upstream-affecting, history-rewriting, or destructive git operations without explicit permission.
+  - Examples: `git push`, `git pull`, `git merge`, `git rebase`, `git tag`, `git reset --hard`, `git clean`, deleting remote branches, any force operation.
 - Commits: local commits are pre-approved by default for the active task unless the user says otherwise.
   - If the user says "no commits" (or similar), do not commit without explicit permission.
   - If pre-approved, commit at logical milestones without interrupting active implementation.
   - Do not auto-commit purely exploratory or debug-only changes unless explicitly requested.
-  - Before committing, provide a brief scope summary (`git status` + diff summary) so the user can correct scope if needed.
-- Before each commit, run `git status` and `git diff` (or `git diff --stat` + focused diffs) to confirm scope and show what will be committed.
+- If a local git command may discard user work or interfere with unrelated in-progress changes, ask first.
+- Before each commit, run `git status` and `git diff` (or `git diff --stat` + focused diffs), and provide a brief scope summary so the user can correct scope if needed.
 - If staged/changed files include unrelated work, ask for confirmation before committing.
 - Run sensitive git operations in isolation (no chained commands). In particular, never combine `commit`/`push` with other commands in a single shell invocation.
 
@@ -19,16 +28,18 @@ These rules express my default preferences across projects. If a repo has its ow
 
 - Use a task identifier for each unit of work when available (issue number, TODO id, or short slug).
 - Keep task state explicit: `todo`, `in_progress`, `blocked`, `done`.
+- Record bookkeeping in the repo's existing task system if one exists; otherwise include it in status updates or handoffs rather than creating new files.
 - Record blockers and next step in one line each when work pauses or context switches.
 - For non-trivial decisions, add a brief decision note (chosen option + reason).
 - End each task with a short handoff: what changed, what remains, risks, and next command/action.
 
 ## Traceability & Reproducibility
 
-- Include a `Generated-by: <agent>` trailer in commit messages for agent-authored work.
-- When a session or conversation produced a change, reference it in the commit body (session URL/ID or prompt summary).
-- Run the project's validation step (test suite, lint, type-check) before committing and note the result.
-- Record the model used for the task when it matters for reproducing the output (e.g. in the commit body or task note).
+- These are default practices: apply them when useful and proportionate to the task, not as absolute requirements for every trivial change.
+- Include a `Generated-by: <agent>` trailer in commit messages for agent-authored work when the project already uses trailers or when attribution would be helpful.
+- When useful and non-sensitive, reference the session/conversation that produced a change in the commit body or task note.
+- Run relevant validation (tests, lint, type-check, smoke tests) when available and proportionate to the change; if skipped, say why.
+- Record the model used for the task when it materially affects reproducibility and doing so is useful and non-sensitive.
 - Prefer surgical edits over full file rewrites so diffs stay reviewable and traceable.
 
 ## File/Folder Deletion
