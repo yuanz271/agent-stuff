@@ -15,6 +15,14 @@ These rules express my default preferences across projects. If a repo has its ow
 - If staged/changed files include unrelated work, ask for confirmation before committing.
 - Run sensitive git operations in isolation (no chained commands). In particular, never combine `commit`/`push` with other commands in a single shell invocation.
 
+## Task Bookkeeping
+
+- Use a task identifier for each unit of work when available (issue number, TODO id, or short slug).
+- Keep task state explicit: `todo`, `in_progress`, `blocked`, `done`.
+- Record blockers and next step in one line each when work pauses or context switches.
+- For non-trivial decisions, add a brief decision note (chosen option + reason).
+- End each task with a short handoff: what changed, what remains, risks, and next command/action.
+
 ## File/Folder Deletion
 
 - Never delete files or folders without explicit permission.
