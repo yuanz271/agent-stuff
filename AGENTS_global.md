@@ -23,6 +23,14 @@ These rules express my default preferences across projects. If a repo has its ow
 - For non-trivial decisions, add a brief decision note (chosen option + reason).
 - End each task with a short handoff: what changed, what remains, risks, and next command/action.
 
+## Traceability & Reproducibility
+
+- Include a `Generated-by: <agent>` trailer in commit messages for agent-authored work.
+- When a session or conversation produced a change, reference it in the commit body (session URL/ID or prompt summary).
+- Run the project's validation step (test suite, lint, type-check) before committing and note the result.
+- Record the model used for the task when it matters for reproducing the output (e.g. in the commit body or task note).
+- Prefer surgical edits over full file rewrites so diffs stay reviewable and traceable.
+
 ## File/Folder Deletion
 
 - Never delete files or folders without explicit permission.
