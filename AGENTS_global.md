@@ -12,8 +12,8 @@ Treat permission and side-effect rules as hard constraints. Treat bookkeeping, t
 ## Git (Local + Remote)
 
 - Routine local git commands are allowed by default when they do not rewrite history, discard changes, or affect remotes.
-  - Examples: `git status`, `git diff`, `git log`, `git show`, `git blame`, `git add`, `git branch`, `git switch`, `git checkout` (non-destructive), and `git commit`.
-- Do not run remote/upstream-affecting, history-rewriting, or destructive git operations without explicit permission.
+  - Examples: `git status`, `git diff`, `git log`, `git show`, `git blame`, `git add`, `git branch` (list/create non-destructively), `git switch`, `git checkout` (non-destructive), and `git commit`.
+- Do not run remote/upstream-affecting, history-rewriting, history-shaping, or destructive git operations without explicit permission.
   - Examples: `git push`, `git pull`, `git merge`, `git rebase`, `git tag`, `git reset --hard`, `git clean`, deleting remote branches, any force operation.
 - Commits: local commits are pre-approved by default for the active task unless the user says otherwise.
   - If the user says "no commits" (or similar), do not commit without explicit permission.
@@ -27,7 +27,7 @@ Treat permission and side-effect rules as hard constraints. Treat bookkeeping, t
 ## Task Bookkeeping
 
 - Use a task identifier for each unit of work when available (issue number, TODO id, or short slug).
-- Keep task state explicit: `todo`, `in_progress`, `blocked`, `done`.
+- For non-trivial or multi-step tasks, keep task state explicit: `todo`, `in_progress`, `blocked`, `done`.
 - Record bookkeeping in the repo's existing task system if one exists; otherwise include it in status updates or handoffs rather than creating new files.
 - Record blockers and next step in one line each when work pauses or context switches.
 - For non-trivial decisions, add a brief decision note (chosen option + reason).
