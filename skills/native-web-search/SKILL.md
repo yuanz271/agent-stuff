@@ -44,4 +44,8 @@ The script instructs the model to:
 ## Notes
 
 - No extra npm install is required.
+- Authentication is environment-variable based (no pi settings/auth files):
+  - `CODEX_API_KEY` or `OPENAI_API_KEY` for `openai-codex`
+  - `ANTHROPIC_API_KEY` for `anthropic`
+  - Optional `CHATGPT_ACCOUNT_ID` for ChatGPT backend tokens
 - If module resolution fails, set `PI_AI_MODULE_PATH` to `@mariozechner/pi-ai`'s `dist/index.js` path.

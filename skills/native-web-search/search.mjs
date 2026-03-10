@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { existsSync, readFileSync, writeFileSync, realpathSync } from "fs";
-import { spawnSync, execSync } from "child_process";
+import { existsSync, realpathSync } from "fs";
+import { spawnSync } from "child_process";
 import { homedir } from "os";
 import { dirname, isAbsolute, join, resolve } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
@@ -71,48 +71,15 @@ function usage() {
 	return `Usage:
   node search.mjs "<query>" [--purpose "<why>"] [--provider openai-codex|anthropic] [--model <id>] [--json]
 
+Auth:
+  openai-codex: set CODEX_API_KEY (or OPENAI_API_KEY)
+  anthropic: set ANTHROPIC_API_KEY
+  optional for ChatGPT backend tokens: CHATGPT_ACCOUNT_ID
+
 Examples:
-  node search.mjs "latest python release" --purpose "update dependency notes"
-  node search.mjs "HTTP/3 browser support 2026" --provider openai-codex
-  node search.mjs "vite 7 breaking changes" --json`;
-}
-
-function readJson(path, fallback = {}) {
-	if (!existsSync(path)) return fallback;
-	try {
-		return JSON.parse(readFileSync(path, "utf8"));
-	} catch {
-		return fallback;
-	}
-}
-
-function writeJson(path, value) {
-	writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-}
-
-function resolveConfigValue(config) {
-	if (typeof config !== "string" || !config) return undefined;
-	if (config.startsWith("!")) {
-		try {
-			const out = execSync(config.slice(1), {
-				encoding: "utf8",
-				timeout: 10000,
-				stdio: ["ignore", "pipe", "ignore"],
-			}).trim();
-			return out || undefined;
-		} catch {
-			return undefined;
-		}
-	}
-	return process.env[config] || config;
-}
-
-function getAgentDir() {
-	const configured = process.env.PI_CODING_AGENT_DIR;
-	if (!configured) return join(homedir(), ".pi", "agent");
-	if (configured === "~") return homedir();
-	if (configured.startsWith("~/")) return join(homedir(), configured.slice(2));
-	return configured;
+  CODEX_API_KEY=... node search.mjs "latest python release" --purpose "update dependency notes"
+  OPENAI_API_KEY=... node search.mjs "HTTP/3 browser support 2026" --provider openai-codex
+  ANTHROPIC_API_KEY=... node search.mjs "vite 7 breaking changes" --provider anthropic --json`;
 }
 
 function normalizeProvider(provider) {
@@ -123,17 +90,10 @@ function normalizeProvider(provider) {
 	return undefined;
 }
 
-function pickProvider(argProvider, settings, auth) {
+function pickProvider(argProvider) {
 	const forced = normalizeProvider(argProvider);
 	if (forced) return forced;
-
-	const fromSettings = normalizeProvider(settings?.defaultProvider);
-	if (fromSettings) return fromSettings;
-
-	if (auth?.["openai-codex"]) return "openai-codex";
-	if (auth?.anthropic) return "anthropic";
-
-	throw new Error("Could not determine provider. Pass --provider openai-codex|anthropic");
+	return "openai-codex";
 }
 
 function decodeJwtAccountId(jwt) {
@@ -254,48 +214,20 @@ function pickFastModel(provider, requestedModel, piAi) {
 	return heuristic || models[0];
 }
 
-async function resolveApiKey(provider, auth, authPath, piAi) {
-	const entry = auth?.[provider];
-	if (!entry) {
-		throw new Error(`No credentials for provider '${provider}' in ${authPath}`);
-	}
-
-	const inferredType = entry.type || (entry.access && entry.refresh ? "oauth" : entry.key ? "api_key" : undefined);
-
-	if (inferredType === "api_key") {
-		const key = resolveConfigValue(entry.key);
-		if (!key) throw new Error(`API key for ${provider} is empty or unresolved.`);
-		return { apiKey: key, accountId: entry.accountId };
-	}
-
-	if (inferredType !== "oauth") {
-		throw new Error(`Unsupported credential type for ${provider}: ${String(entry.type || "unknown")}`);
-	}
-
-	if (typeof piAi.getOAuthApiKey !== "function") {
-		throw new Error("Loaded pi-ai module does not export getOAuthApiKey");
-	}
-
-	const oauthCreds = {};
-	for (const [k, v] of Object.entries(auth || {})) {
-		if (v && (v.type === "oauth" || (v.access && v.refresh && v.expires))) {
-			oauthCreds[k] = v;
+function resolveApiKey(provider) {
+	if (provider === "openai-codex") {
+		const apiKey = process.env.CODEX_API_KEY || process.env.OPENAI_API_KEY;
+		if (!apiKey) {
+			throw new Error("Missing API key. Set CODEX_API_KEY or OPENAI_API_KEY.");
 		}
+		return { apiKey, accountId: process.env.CHATGPT_ACCOUNT_ID };
 	}
 
-	const refreshed = await piAi.getOAuthApiKey(provider, oauthCreds);
-	if (!refreshed) {
-		throw new Error(`No OAuth credentials available for provider '${provider}'`);
+	const apiKey = process.env.ANTHROPIC_API_KEY;
+	if (!apiKey) {
+		throw new Error("Missing ANTHROPIC_API_KEY.");
 	}
-
-	const mergedCred = { type: "oauth", ...(entry || {}), ...(refreshed.newCredentials || {}) };
-	auth[provider] = mergedCred;
-	writeJson(authPath, auth);
-
-	return {
-		apiKey: refreshed.apiKey,
-		accountId: mergedCred.accountId,
-	};
+	return { apiKey };
 }
 
 function buildUserPrompt(query, purpose) {
@@ -495,16 +427,10 @@ async function main() {
 		process.exit(args.help ? 0 : 1);
 	}
 
-	const agentDir = getAgentDir();
-	const authPath = join(agentDir, "auth.json");
-	const settingsPath = join(agentDir, "settings.json");
-	const auth = readJson(authPath, {});
-	const settings = readJson(settingsPath, {});
-
-	const provider = pickProvider(args.provider, settings, auth);
+	const provider = pickProvider(args.provider);
 	const piAi = await loadPiAi();
 	const model = pickFastModel(provider, args.model, piAi);
-	const { apiKey, accountId } = await resolveApiKey(provider, auth, authPath, piAi);
+	const { apiKey, accountId } = resolveApiKey(provider);
 
 	const text =
 		provider === "openai-codex"
