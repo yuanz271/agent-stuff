@@ -45,7 +45,6 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 
 Reference documents in the [`docs`](docs) folder:
 
-* [`opencode-plan-mode.md`](docs/opencode-plan-mode.md) - OpenCode's plan mode architecture (two-agent plan/build workflow)
 * [`pi-extension-writing-guide.md`](docs/pi-extension-writing-guide.md) - Guide to writing pi-coding-agent extensions
 
 ## Plumbing Commands
