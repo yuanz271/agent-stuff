@@ -40,6 +40,11 @@ interface JsonRpcResponse {
 	params?: unknown;
 }
 
+interface JsonRpcError {
+	code: number;
+	message: string;
+}
+
 interface LspLocation {
 	uri: string;
 	range: {
@@ -317,6 +322,27 @@ class LspClient {
 				}
 			}
 
+			if (msg.method && typeof msg.id === "number") {
+				switch (msg.method) {
+					case "workspace/configuration":
+						this.respond(msg.id, [{}]);
+						break;
+					case "window/workDoneProgress/create":
+					case "client/registerCapability":
+					case "client/unregisterCapability":
+						this.respond(msg.id, null);
+						break;
+					case "workspace/workspaceFolders":
+						this.respond(msg.id, [
+							{ name: path.basename(this.root), uri: pathToFileURL(this.root).href },
+						]);
+						break;
+					default:
+						this.respond(msg.id, null);
+				}
+				continue;
+			}
+
 			if (typeof msg.id === "number") {
 				const pending = this.pending.get(msg.id);
 				if (!pending) continue;
@@ -334,7 +360,11 @@ class LspClient {
 		this.process.stdin.write(Buffer.concat([header, body]));
 	}
 
-	private async request(method: string, params?: unknown, timeoutMs = 20_000): Promise<unknown> {
+	private respond(id: number, result?: unknown, error?: JsonRpcError): void {
+		this.send({ jsonrpc: "2.0", id, ...(error ? { error } : { result: result ?? null }) });
+	}
+
+	private async request(method: string, params?: unknown, timeoutMs = 45_000): Promise<unknown> {
 		const id = this.sequence++;
 		const payload: JsonRpcRequest = { jsonrpc: "2.0", id, method, params };
 		return await new Promise<unknown>((resolve, reject) => {
@@ -492,12 +522,9 @@ export default function lspExtension(pi: ExtensionAPI): void {
 	function updateStatus(ctx?: ExtensionContext | null): void {
 		const target = ctx ?? lastUiContext;
 		if (!target?.hasUI) return;
-		if (clients.size === 0) {
-			target.ui.setStatus("lsp", undefined);
-			return;
-		}
-		const serverIds = Array.from(new Set(Array.from(clients.values()).map((client) => client.serverId))).sort();
-		target.ui.setStatus("lsp", `LSP: ${clients.size} (${serverIds.join(",")})`);
+		// Keep UI clean: no custom footer/editor status line for LSP.
+		target.ui.setStatus("lsp", undefined);
+		target.ui.setWidget("lsp-status", undefined);
 	}
 
 	async function getOrSpawnClient(key: string, server: LspServerConfig, root: string, ctx?: ExtensionContext): Promise<LspClient | null> {
@@ -548,7 +575,7 @@ export default function lspExtension(pi: ExtensionAPI): void {
 	}
 
 	pi.registerTool({
-		name: "lspx_query",
+		name: "lsp_query",
 		label: "LSP Query",
 		description:
 			"Query language servers with lazy auto-start for code intelligence (definition, references, hover, symbols, implementation, call hierarchy).",
