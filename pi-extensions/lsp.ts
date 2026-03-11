@@ -78,7 +78,7 @@ const SERVERS: LspServerConfig[] = [
 	{
 		id: "python",
 		extensions: [".py", ".pyi"],
-		commands: [["pyright-langserver", "--stdio"], ["basedpyright-langserver", "--stdio"]],
+		commands: [["ty", "server"], ["pyrefly", "lsp"], ["pyright-langserver", "--stdio"], ["basedpyright-langserver", "--stdio"]],
 		rootMarkers: ["pyproject.toml", "requirements.txt", "setup.py", "pyrightconfig.json"],
 	},
 ];
@@ -135,6 +135,13 @@ function chooseCommand(config: LspServerConfig, root: string): string[] | null {
 		if (hasCommand(binary)) return cmd;
 	}
 	return null;
+}
+
+function commandLabel(command: string[]): string {
+	if (command.length === 0) return "unknown";
+	const bin = path.basename(command[0]!);
+	if (command.length === 1) return bin;
+	return `${bin} ${command.slice(1).join(" ")}`;
 }
 
 function findNearestRoot(startFile: string, markers: string[], fallback: string): string {
@@ -266,6 +273,7 @@ class LspClient {
 	constructor(
 		public readonly serverId: string,
 		public readonly root: string,
+		public readonly commandLabel: string,
 		private readonly process: ChildProcessWithoutNullStreams,
 		private readonly onExit?: () => void,
 	) {
@@ -532,8 +540,8 @@ export default function lspExtension(pi: ExtensionAPI): void {
 			target.ui.setStatus("lsp", target.ui.theme.fg("dim", "LSP: idle"));
 			return;
 		}
-		const serverIds = Array.from(new Set(Array.from(clients.values()).map((client) => client.serverId))).sort();
-		target.ui.setStatus("lsp", target.ui.theme.fg("accent", `LSP: ${serverIds.join(",")}`));
+		const servers = Array.from(new Set(Array.from(clients.values()).map((client) => client.commandLabel))).sort();
+		target.ui.setStatus("lsp", target.ui.theme.fg("accent", `LSP: ${servers.join(",")}`));
 	}
 
 	async function getOrSpawnClient(key: string, server: LspServerConfig, root: string, ctx?: ExtensionContext): Promise<LspClient | null> {
@@ -551,7 +559,7 @@ export default function lspExtension(pi: ExtensionAPI): void {
 				stdio: ["pipe", "pipe", "pipe"],
 				windowsHide: true,
 			});
-			const client = new LspClient(server.id, root, child, () => {
+			const client = new LspClient(server.id, root, commandLabel(command), child, () => {
 				clients.delete(key);
 				updateStatus();
 			});
@@ -587,7 +595,7 @@ export default function lspExtension(pi: ExtensionAPI): void {
 		if (clients.size === 0) return ["LSP: idle"];
 		const lines = ["LSP clients:"];
 		for (const [key, client] of clients.entries()) {
-			lines.push(`- ${client.serverId} @ ${client.root} (${key})`);
+			lines.push(`- ${client.commandLabel} @ ${client.root} (${key})`);
 		}
 		if (spawning.size > 0) {
 			lines.push(`Spawning: ${spawning.size}`);
