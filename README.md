@@ -31,6 +31,7 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 * [`btw.ts`](pi-extensions/btw.ts) - Side-conversation extension (`/btw`) for parallel Q&A that can be injected or summarized back into the main session.
 * [`context.ts`](pi-extensions/context.ts) - Quick context breakdown (extensions, skills, AGENTS.md/CLAUDE.md) + token usage; highlights skills that were actually read/loaded.
 * [`control.ts`](pi-extensions/control.ts) - Session control helpers (list controllable sessions etc.).
+* [`delegate.ts`](pi-extensions/delegate.ts) - Thin `/delegate` command that runs a task in an isolated child `pi` process using the current model/tools (supports `--bg`, temp log output, and completion notification).
 * [`prompt-editor.ts`](pi-extensions/prompt-editor.ts) - In-editor prompt mode selector (default/fast/precise) with per-mode model & thinking persistence, global/project config, prompt history, and shortcuts (Ctrl+Shift+M, Ctrl+Space).
 * [`prompt-template-model.ts`](pi-extensions/prompt-template-model.ts) - Extends prompt templates with `model`/`skill`/`thinking` frontmatter, auto-switching and optional restore, plus `/chain-prompts`.
 * [`files.ts`](pi-extensions/files.ts) - Unified file browser that merges git status (dirty first) with session references, plus reveal/open/edit and diff actions.
