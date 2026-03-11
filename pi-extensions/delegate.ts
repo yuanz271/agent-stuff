@@ -27,6 +27,7 @@ interface DelegateResult {
 	task: string;
 	model: string;
 	exitCode: number;
+	status: "success" | "failed" | "killed";
 	success: boolean;
 	background: boolean;
 	outputPath: string;
@@ -143,7 +144,7 @@ function buildCommandArgs(modelSpec: string, activeTools: string[], task: string
 
 function buildResultMessage(result: DelegateResult): string {
 	const lines = [
-		`Delegate task (${result.success ? "success" : "failed"})`,
+		`Delegate task (${result.status})`,
 		`Task ID: ${result.taskId}`,
 		`Task: ${result.task}`,
 		`Model: ${result.model}`,
@@ -172,15 +173,18 @@ function finalizeResult(params: {
 	background: boolean;
 	outputPath: string;
 	rawOutput: string;
+	status?: "success" | "failed" | "killed";
 }): DelegateResult {
 	const cleaned = stripTerminalControlSequences(params.rawOutput).trim();
 	const truncated = truncateOutput(cleaned);
+	const status = params.status ?? (params.exitCode === 0 ? "success" : "failed");
 	return {
 		taskId: params.taskId,
 		task: params.task,
 		model: params.model,
 		exitCode: params.exitCode,
-		success: params.exitCode === 0,
+		status,
+		success: status === "success",
 		background: params.background,
 		outputPath: params.outputPath,
 		output: truncated.text,
@@ -191,9 +195,9 @@ function finalizeResult(params: {
 }
 
 function emitCompletion(pi: ExtensionAPI, ctx: ExtensionContext, result: DelegateResult): void {
-	const status = result.success ? "success" : "failed";
+	const level = result.status === "success" ? "info" : "warning";
 	try {
-		ctx.ui.notify(`Delegated task ${result.taskId} finished (${status})`, result.success ? "info" : "warning");
+		ctx.ui.notify(`Delegated task ${result.taskId} finished (${result.status})`, level);
 	} catch {}
 
 	pi.events.emit("delegate:complete", result);
@@ -293,6 +297,7 @@ function startBackgroundRun(
 			task,
 			model: modelSpec,
 			exitCode,
+			status: finalStatus,
 			background: true,
 			outputPath,
 			rawOutput,
