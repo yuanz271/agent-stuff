@@ -578,7 +578,7 @@ export default function lspExtension(pi: ExtensionAPI): void {
 		name: "lsp_query",
 		label: "LSP Query",
 		description:
-			"Query language servers with lazy auto-start for code intelligence (definition, references, hover, symbols, implementation, call hierarchy).",
+			"Internal coding tool for semantic code navigation and diagnostics. Use for definitions/references/hover/symbols/implementation/call hierarchy, especially around read/edit/write loops.",
 		parameters: Type.Object({
 			operation: StringEnum(
 				[
@@ -744,19 +744,6 @@ export default function lspExtension(pi: ExtensionAPI): void {
 		}
 	});
 
-	pi.registerCommand("lsp-status", {
-		description: "Show active LSP clients started by this extension",
-		handler: async (_args, ctx) => {
-			lastUiContext = ctx;
-			updateStatus(ctx);
-			if (clients.size === 0) {
-				ctx.ui.notify("No active LSP clients.", "info");
-				return;
-			}
-			const lines = Array.from(clients.values()).map((client) => `${client.serverId} @ ${client.root}`);
-			pi.sendMessage({ customType: "lsp-status", content: lines.join("\n"), display: true }, { triggerTurn: false });
-		},
-	});
 
 	pi.on("session_start", async (_event, ctx) => {
 		lastUiContext = ctx;
