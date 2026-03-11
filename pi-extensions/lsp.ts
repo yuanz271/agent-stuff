@@ -112,9 +112,27 @@ function hasCommand(command: string): boolean {
 	return result.status === 0;
 }
 
-function chooseCommand(config: LspServerConfig): string[] | null {
+function resolveLocalBinary(command: string, root: string): string | null {
+	const names = process.platform === "win32" ? [command, `${command}.cmd`, `${command}.exe`] : [command];
+	const candidates: string[] = [];
+	for (const name of names) {
+		candidates.push(path.join(root, "node_modules", ".bin", name));
+		candidates.push(path.join(root, ".venv", "bin", name));
+		candidates.push(path.join(root, "venv", "bin", name));
+	}
+	for (const candidate of candidates) {
+		if (fs.existsSync(candidate)) return candidate;
+	}
+	return null;
+}
+
+function chooseCommand(config: LspServerConfig, root: string): string[] | null {
 	for (const cmd of config.commands) {
-		if (cmd.length > 0 && hasCommand(cmd[0]!)) return cmd;
+		if (cmd.length === 0) continue;
+		const binary = cmd[0]!;
+		const local = resolveLocalBinary(binary, root);
+		if (local) return [local, ...cmd.slice(1)];
+		if (hasCommand(binary)) return cmd;
 	}
 	return null;
 }
@@ -526,7 +544,7 @@ export default function lspExtension(pi: ExtensionAPI): void {
 		if (inflight) return await inflight;
 
 		const task = (async () => {
-			const command = chooseCommand(server);
+			const command = chooseCommand(server, root);
 			if (!command) return null;
 			const child = spawn(command[0]!, command.slice(1), {
 				cwd: root,
