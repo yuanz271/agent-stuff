@@ -139,9 +139,7 @@ function chooseCommand(config: LspServerConfig, root: string): string[] | null {
 
 function commandLabel(command: string[]): string {
 	if (command.length === 0) return "unknown";
-	const bin = path.basename(command[0]!);
-	if (command.length === 1) return bin;
-	return `${bin} ${command.slice(1).join(" ")}`;
+	return path.basename(command[0]!);
 }
 
 function findNearestRoot(startFile: string, markers: string[], fallback: string): string {
@@ -531,17 +529,20 @@ export default function lspExtension(pi: ExtensionAPI): void {
 	const clients = new Map<string, LspClient>();
 	const spawning = new Map<string, Promise<LspClient | null>>();
 	let lastUiContext: ExtensionContext | null = null;
+	let queryInFlight = 0;
+	let queryVisibleUntil = 0;
 
 	function updateStatus(ctx?: ExtensionContext | null): void {
 		const target = ctx ?? lastUiContext;
 		if (!target?.hasUI) return;
 		target.ui.setWidget("lsp-status", undefined);
-		if (clients.size === 0) {
-			target.ui.setStatus("lsp", target.ui.theme.fg("dim", "LSP: idle"));
+
+		if (queryInFlight > 0 || Date.now() < queryVisibleUntil) {
+			target.ui.setStatus("lsp", target.ui.theme.fg("warning", "LSP: querying"));
 			return;
 		}
-		const servers = Array.from(new Set(Array.from(clients.values()).map((client) => client.commandLabel))).sort();
-		target.ui.setStatus("lsp", target.ui.theme.fg("accent", `LSP: ${servers.join(",")}`));
+
+		target.ui.setStatus("lsp", target.ui.theme.fg("dim", "LSP: idle"));
 	}
 
 	async function getOrSpawnClient(key: string, server: LspServerConfig, root: string, ctx?: ExtensionContext): Promise<LspClient | null> {
@@ -622,6 +623,40 @@ export default function lspExtension(pi: ExtensionAPI): void {
 				{ triggerTurn: false },
 			);
 		},
+	});
+
+	pi.on("tool_execution_start", async (event, ctx) => {
+		if (event.toolName !== "lsp_query") return;
+		queryInFlight++;
+		queryVisibleUntil = Date.now() + 1500;
+		lastUiContext = ctx;
+		updateStatus(ctx);
+	});
+
+	pi.on("tool_execution_end", async (event, ctx) => {
+		if (event.toolName !== "lsp_query") return;
+		queryInFlight = Math.max(0, queryInFlight - 1);
+		queryVisibleUntil = Date.now() + 800;
+		lastUiContext = ctx;
+		updateStatus(ctx);
+	});
+
+	pi.on("tool_call", async (event, ctx) => {
+		if (event.toolName !== "lsp_query") return;
+		queryInFlight++;
+		queryVisibleUntil = Date.now() + 1500;
+		lastUiContext = ctx;
+		updateStatus(ctx);
+		return undefined;
+	});
+
+	pi.on("tool_result", async (event, ctx) => {
+		if (event.toolName !== "lsp_query") return;
+		queryInFlight = Math.max(0, queryInFlight - 1);
+		queryVisibleUntil = Date.now() + 800;
+		lastUiContext = ctx;
+		updateStatus(ctx);
+		return undefined;
 	});
 
 	pi.registerCommand("lsp-reload", {
