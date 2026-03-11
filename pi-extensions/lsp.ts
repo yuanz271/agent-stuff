@@ -565,7 +565,47 @@ export default function lspExtension(pi: ExtensionAPI): void {
 		return result;
 	}
 
+	function statusLines(): string[] {
+		if (clients.size === 0) return ["LSP: idle"];
+		const lines = ["LSP clients:"];
+		for (const [key, client] of clients.entries()) {
+			lines.push(`- ${client.serverId} @ ${client.root} (${key})`);
+		}
+		if (spawning.size > 0) {
+			lines.push(`Spawning: ${spawning.size}`);
+		}
+		return lines;
+	}
 
+	async function reloadClients(ctx: ExtensionContext): Promise<void> {
+		for (const client of clients.values()) {
+			client.shutdown();
+		}
+		clients.clear();
+		spawning.clear();
+		updateStatus(ctx);
+	}
+
+	pi.registerCommand("lsp-status", {
+		description: "Show background LSP runtime status",
+		handler: async (_args, ctx) => {
+			lastUiContext = ctx;
+			updateStatus(ctx);
+			pi.sendMessage(
+				{ customType: "lsp-status", content: statusLines().join("\n"), display: true },
+				{ triggerTurn: false },
+			);
+		},
+	});
+
+	pi.registerCommand("lsp-reload", {
+		description: "Reload background LSP clients",
+		handler: async (_args, ctx) => {
+			lastUiContext = ctx;
+			await reloadClients(ctx);
+			ctx.ui.notify("LSP clients reloaded.", "success");
+		},
+	});
 
 	pi.on("tool_result", async (event, ctx) => {
 		if (event.isError) return;
