@@ -10,6 +10,18 @@ const MAX_OUTPUT_BYTES = 50 * 1024;
 const MAX_OUTPUT_LINES = 2000;
 const BUILTIN_TOOLS = new Set(["read", "bash", "edit", "write", "grep", "find", "ls"]);
 
+interface DelegateTaskMeta {
+	taskId: string;
+	task: string;
+	model: string;
+	pid?: number;
+	status: "running" | "terminating" | "success" | "failed" | "killed";
+	exitCode?: number;
+	outputPath: string;
+	startedAt: number;
+	endedAt?: number;
+}
+
 interface DelegateResult {
 	taskId: string;
 	task: string;
@@ -59,6 +71,25 @@ function ensureOutputDir(): void {
 
 function outputPathForTask(taskId: string): string {
 	return path.join(OUTPUT_DIR, `${taskId}.log`);
+}
+
+function metaPathForTask(taskId: string): string {
+	return path.join(OUTPUT_DIR, `${taskId}.json`);
+}
+
+function writeTaskMeta(meta: DelegateTaskMeta): void {
+	try {
+		fs.writeFileSync(metaPathForTask(meta.taskId), JSON.stringify(meta, null, 2), "utf-8");
+	} catch {}
+}
+
+function readTaskMeta(taskId: string): DelegateTaskMeta | null {
+	try {
+		const raw = fs.readFileSync(metaPathForTask(taskId), "utf-8");
+		return JSON.parse(raw) as DelegateTaskMeta;
+	} catch {
+		return null;
+	}
 }
 
 function stripTerminalControlSequences(text: string): string {
@@ -179,6 +210,35 @@ function emitCompletion(pi: ExtensionAPI, ctx: ExtensionContext, result: Delegat
 	);
 }
 
+function terminateTaskById(taskId: string): { ok: boolean; message: string; meta?: DelegateTaskMeta } {
+	const meta = readTaskMeta(taskId);
+	if (!meta) {
+		return { ok: false, message: `Unknown task ID: ${taskId}` };
+	}
+	if (!meta.pid) {
+		return { ok: false, message: `Task ${taskId} has no recorded PID.` };
+	}
+	if (meta.status !== "running" && meta.status !== "terminating") {
+		return { ok: false, message: `Task ${taskId} is already ${meta.status}.`, meta };
+	}
+
+	try {
+		meta.status = "terminating";
+		writeTaskMeta(meta);
+		try {
+			process.kill(-meta.pid, "SIGTERM");
+		} catch {
+			process.kill(meta.pid, "SIGTERM");
+		}
+		return { ok: true, message: `Sent SIGTERM to task ${taskId} (pid ${meta.pid}).`, meta };
+	} catch (error) {
+		meta.status = "running";
+		writeTaskMeta(meta);
+		const detail = error instanceof Error ? error.message : String(error);
+		return { ok: false, message: `Failed to terminate task ${taskId}: ${detail}`, meta };
+	}
+}
+
 function startBackgroundRun(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
@@ -187,7 +247,7 @@ function startBackgroundRun(
 	modelSpec: string,
 	cmdArgs: string[],
 	outputPath: string,
-): void {
+): { pid?: number } {
 	const outFd = fs.openSync(outputPath, "a");
 	const child = spawn("pi", cmdArgs, {
 		cwd: ctx.cwd,
@@ -196,12 +256,37 @@ function startBackgroundRun(
 	});
 	fs.closeSync(outFd);
 
-	child.on("close", (code) => {
+	writeTaskMeta({
+		taskId,
+		task,
+		model: modelSpec,
+		pid: child.pid,
+		status: "running",
+		outputPath,
+		startedAt: Date.now(),
+	});
+
+	child.on("close", (code, signal) => {
 		const exitCode = code ?? 1;
 		let rawOutput = "";
 		try {
 			rawOutput = fs.readFileSync(outputPath, "utf-8");
 		} catch {}
+
+		const previousMeta = readTaskMeta(taskId);
+		const wasTerminating = previousMeta?.status === "terminating";
+		const finalStatus: DelegateTaskMeta["status"] = wasTerminating || signal ? "killed" : exitCode === 0 ? "success" : "failed";
+		writeTaskMeta({
+			taskId,
+			task,
+			model: modelSpec,
+			pid: child.pid,
+			status: finalStatus,
+			exitCode,
+			outputPath,
+			startedAt: previousMeta?.startedAt ?? Date.now(),
+			endedAt: Date.now(),
+		});
 
 		const result = finalizeResult({
 			taskId,
@@ -216,6 +301,7 @@ function startBackgroundRun(
 	});
 
 	child.unref();
+	return { pid: child.pid };
 }
 
 export default function delegateExtension(pi: ExtensionAPI): void {
@@ -240,7 +326,7 @@ export default function delegateExtension(pi: ExtensionAPI): void {
 			const cmdArgs = buildCommandArgs(modelSpec, pi.getActiveTools(), task);
 
 			if (hasBgFlag) {
-				startBackgroundRun(pi, ctx, taskId, task, modelSpec, cmdArgs, outputPath);
+				const { pid } = startBackgroundRun(pi, ctx, taskId, task, modelSpec, cmdArgs, outputPath);
 				ctx.ui.notify(`Delegated task started in background: ${taskId}`, "info");
 				pi.sendMessage(
 					{
@@ -250,6 +336,7 @@ export default function delegateExtension(pi: ExtensionAPI): void {
 							`Task ID: ${taskId}`,
 							`Task: ${task}`,
 							`Model: ${modelSpec}`,
+							`PID: ${pid ?? "unknown"}`,
 							`Output log: ${outputPath}`,
 							"",
 							`Tail logs with: tail -f ${outputPath}`,
@@ -259,6 +346,7 @@ export default function delegateExtension(pi: ExtensionAPI): void {
 							taskId,
 							task,
 							model: modelSpec,
+							pid,
 							command: ["pi", ...cmdArgs].join(" "),
 							outputPath,
 							background: true,
@@ -290,6 +378,39 @@ export default function delegateExtension(pi: ExtensionAPI): void {
 					content: buildResultMessage(final),
 					display: true,
 					details: final,
+				},
+				{ triggerTurn: false },
+			);
+		},
+	});
+
+	pi.registerCommand("delegate-kill", {
+		description: "Terminate a background delegated task by task ID",
+		handler: async (args, ctx) => {
+			const taskId = args.trim();
+			if (!taskId) {
+				ctx.ui.notify("Usage: /delegate-kill <task-id>", "warning");
+				return;
+			}
+
+			const result = terminateTaskById(taskId);
+			ctx.ui.notify(result.message, result.ok ? "info" : "warning");
+			pi.sendMessage(
+				{
+					customType: MESSAGE_TYPE,
+					content: [
+						result.ok ? "Delegate task termination requested" : "Delegate task termination failed",
+						`Task ID: ${taskId}`,
+						result.message,
+					].join("\n"),
+					display: true,
+					details: {
+						taskId,
+						ok: result.ok,
+						message: result.message,
+						status: result.meta?.status,
+						pid: result.meta?.pid,
+					},
 				},
 				{ triggerTurn: false },
 			);
