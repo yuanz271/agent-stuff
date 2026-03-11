@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-const MESSAGE_TYPE = "delegate-run";
+const MESSAGE_TYPE = "delegate-task";
 
 function parseArgs(rawArgs: string): { task: string; hasBgFlag: boolean } {
 	const tokens = rawArgs.trim().split(/\s+/).filter(Boolean);
@@ -43,7 +43,7 @@ function stripTerminalControlSequences(text: string): string {
 
 function buildResultMessage(task: string, modelSpec: string, output: string, exitCode: number): string {
 	return [
-		`Delegate run (${exitCode === 0 ? "success" : "failed"})`,
+		`Delegate task (${exitCode === 0 ? "success" : "failed"})`,
 		`Task: ${task}`,
 		`Model: ${modelSpec}`,
 		"",
@@ -62,7 +62,7 @@ function buildCommandArgs(modelSpec: string, activeTools: string[], task: string
 
 function startBackgroundRun(pi: ExtensionAPI, ctx: ExtensionContext, task: string, modelSpec: string, cmdArgs: string[]): { runId: string; outputPath: string } {
 	const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-	const outDir = path.join(os.tmpdir(), "pi-delegate-runs");
+	const outDir = path.join(os.tmpdir(), "pi-delegate-tasks");
 	fs.mkdirSync(outDir, { recursive: true });
 	const outputPath = path.join(outDir, `${runId}.log`);
 
@@ -78,8 +78,8 @@ function startBackgroundRun(pi: ExtensionAPI, ctx: ExtensionContext, task: strin
 		const exitCode = code ?? 1;
 		const status = exitCode === 0 ? "success" : "failed";
 		const message = [
-			`Delegate run finished (${status})`,
-			`Run ID: ${runId}`,
+			`Delegate task finished (${status})`,
+			`Task ID: ${runId}`,
 			`Task: ${task}`,
 			`Model: ${modelSpec}`,
 			`Exit code: ${exitCode}`,
@@ -87,10 +87,17 @@ function startBackgroundRun(pi: ExtensionAPI, ctx: ExtensionContext, task: strin
 		].join("\n");
 
 		try {
-			ctx.ui.notify(`Delegated run ${runId} finished (${status})`, exitCode === 0 ? "info" : "warning");
+			ctx.ui.notify(`Delegated task ${runId} finished (${status})`, exitCode === 0 ? "info" : "warning");
 		} catch {}
 
 		pi.events.emit("delegate:complete", {
+			runId,
+			task,
+			model: modelSpec,
+			exitCode,
+			outputPath,
+		});
+		pi.events.emit("delegate:task_complete", {
 			runId,
 			task,
 			model: modelSpec,
@@ -123,7 +130,7 @@ function startBackgroundRun(pi: ExtensionAPI, ctx: ExtensionContext, task: strin
 
 export default function delegateExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("delegate", {
-		description: "Run a task in an isolated child pi process using current model/tools",
+		description: "Delegate a task to an isolated child pi process using current model/tools",
 		handler: async (args, ctx) => {
 			const { task, hasBgFlag } = parseArgs(args);
 			if (!task) {
@@ -141,13 +148,13 @@ export default function delegateExtension(pi: ExtensionAPI): void {
 
 			if (hasBgFlag) {
 				const { runId, outputPath } = startBackgroundRun(pi, ctx, task, modelSpec, cmdArgs);
-				ctx.ui.notify(`Delegated run started in background: ${runId}`, "info");
+				ctx.ui.notify(`Delegated task started in background: ${runId}`, "info");
 				pi.sendMessage(
 					{
 						customType: MESSAGE_TYPE,
 						content: [
-							"Delegate run queued (background)",
-							`Run ID: ${runId}`,
+							"Delegate task queued (background)",
+							`Task ID: ${runId}`,
 							`Task: ${task}`,
 							`Model: ${modelSpec}`,
 							`Output log: ${outputPath}`,
@@ -169,7 +176,7 @@ export default function delegateExtension(pi: ExtensionAPI): void {
 				return;
 			}
 
-			ctx.ui.notify("Starting delegated run...", "info");
+			ctx.ui.notify("Starting delegated task...", "info");
 			const result = await pi.exec("pi", cmdArgs);
 			const rawOutput = (result.stdout || result.stderr || "").trim();
 			const output = stripTerminalControlSequences(rawOutput).trim();
