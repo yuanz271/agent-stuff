@@ -8,6 +8,7 @@ const MESSAGE_TYPE = "Delegate Task";
 const OUTPUT_DIR = path.join(os.tmpdir(), "pi-delegate-tasks");
 const MAX_OUTPUT_BYTES = 50 * 1024;
 const MAX_OUTPUT_LINES = 2000;
+const BUILTIN_TOOLS = new Set(["read", "bash", "edit", "write", "grep", "find", "ls"]);
 
 interface DelegateResult {
 	taskId: string;
@@ -101,8 +102,9 @@ function truncateOutput(text: string): { text: string; truncated: boolean; total
 
 function buildCommandArgs(modelSpec: string, activeTools: string[], task: string): string[] {
 	const args = ["-p", "--no-session", "--models", modelSpec];
-	if (activeTools.length > 0) {
-		args.push("--tools", activeTools.join(","));
+	const allowedTools = activeTools.filter((tool) => BUILTIN_TOOLS.has(tool));
+	if (allowedTools.length > 0) {
+		args.push("--tools", allowedTools.join(","));
 	}
 	args.push(task);
 	return args;
