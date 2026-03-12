@@ -1,6 +1,4 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { StringEnum } from "@mariozechner/pi-ai";
-import { Type } from "@sinclair/typebox";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -532,16 +530,28 @@ export default function lspExtension(pi: ExtensionAPI): void {
 	let queryInFlight = 0;
 	let queryVisibleUntil = 0;
 
+	const markQueryStart = (ctx: ExtensionContext) => {
+		queryInFlight++;
+		queryVisibleUntil = Date.now() + 1200;
+		lastUiContext = ctx;
+		updateStatus(ctx);
+	};
+
+	const markQueryEnd = (ctx: ExtensionContext) => {
+		queryInFlight = Math.max(0, queryInFlight - 1);
+		queryVisibleUntil = Date.now() + 700;
+		lastUiContext = ctx;
+		updateStatus(ctx);
+	};
+
 	function updateStatus(ctx?: ExtensionContext | null): void {
 		const target = ctx ?? lastUiContext;
 		if (!target?.hasUI) return;
 		target.ui.setWidget("lsp-status", undefined);
-
 		if (queryInFlight > 0 || Date.now() < queryVisibleUntil) {
 			target.ui.setStatus("lsp", target.ui.theme.fg("warning", "LSP: querying"));
 			return;
 		}
-
 		target.ui.setStatus("lsp", target.ui.theme.fg("dim", "LSP: idle"));
 	}
 
@@ -610,6 +620,8 @@ export default function lspExtension(pi: ExtensionAPI): void {
 		}
 		clients.clear();
 		spawning.clear();
+		queryInFlight = 0;
+		queryVisibleUntil = 0;
 		updateStatus(ctx);
 	}
 
@@ -625,40 +637,6 @@ export default function lspExtension(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.on("tool_execution_start", async (event, ctx) => {
-		if (event.toolName !== "lsp_query") return;
-		queryInFlight++;
-		queryVisibleUntil = Date.now() + 1500;
-		lastUiContext = ctx;
-		updateStatus(ctx);
-	});
-
-	pi.on("tool_execution_end", async (event, ctx) => {
-		if (event.toolName !== "lsp_query") return;
-		queryInFlight = Math.max(0, queryInFlight - 1);
-		queryVisibleUntil = Date.now() + 800;
-		lastUiContext = ctx;
-		updateStatus(ctx);
-	});
-
-	pi.on("tool_call", async (event, ctx) => {
-		if (event.toolName !== "lsp_query") return;
-		queryInFlight++;
-		queryVisibleUntil = Date.now() + 1500;
-		lastUiContext = ctx;
-		updateStatus(ctx);
-		return undefined;
-	});
-
-	pi.on("tool_result", async (event, ctx) => {
-		if (event.toolName !== "lsp_query") return;
-		queryInFlight = Math.max(0, queryInFlight - 1);
-		queryVisibleUntil = Date.now() + 800;
-		lastUiContext = ctx;
-		updateStatus(ctx);
-		return undefined;
-	});
-
 	pi.registerCommand("lsp-reload", {
 		description: "Reload background LSP clients",
 		handler: async (_args, ctx) => {
@@ -666,6 +644,19 @@ export default function lspExtension(pi: ExtensionAPI): void {
 			await reloadClients(ctx);
 			ctx.ui.notify("LSP clients reloaded.", "success");
 		},
+	});
+
+	// Lightweight querying indicator (only active when lsp_query exists and is called).
+	pi.on("tool_call", async (event, ctx) => {
+		if (event.toolName !== "lsp_query") return;
+		markQueryStart(ctx);
+		return undefined;
+	});
+
+	pi.on("tool_result", async (event, ctx) => {
+		if (event.toolName !== "lsp_query") return;
+		markQueryEnd(ctx);
+		return undefined;
 	});
 
 	pi.on("tool_result", async (event, ctx) => {
@@ -738,6 +729,8 @@ export default function lspExtension(pi: ExtensionAPI): void {
 		}
 		clients.clear();
 		spawning.clear();
+		queryInFlight = 0;
+		queryVisibleUntil = 0;
 		updateStatus();
 	});
 }
