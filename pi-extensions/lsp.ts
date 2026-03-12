@@ -726,6 +726,12 @@ export default function lspExtension(pi: ExtensionAPI): void {
 		updateStatus(ctx);
 	});
 
+	// Helps re-assert footer status after extension reloads where session_start/switch may not fire.
+	pi.on("session_tree", async (_event, ctx) => {
+		lastUiContext = ctx;
+		updateStatus(ctx);
+	});
+
 	pi.on("session_shutdown", async () => {
 		for (const client of clients.values()) {
 			client.shutdown();
