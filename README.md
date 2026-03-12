@@ -18,7 +18,7 @@ All skill files are in the [`skills`](skills) folder:
 * [`/librarian`](skills/librarian) - Caching and refreshing remote git repositories in `~/.cache/checkouts`
 * [`/mermaid`](skills/mermaid) - Creating and validating Mermaid diagrams with the official Mermaid CLI
 * [`/native-web-search`](skills/native-web-search) - Fast internet research with concise summaries and explicit full source URLs
-* [`/pdf`](skills/pdf) - PDF processing: text/table extraction, merge/split/rotate, form filling (fillable and non-fillable), OCR, encryption, and PDF creation
+* [`/paper-reader`](skills/paper-reader) - Read and analyze academic paper PDFs with text-first extraction, OCR fallback, structured result extraction, and critical appraisal
 * [`/simplify`](skills/simplify) - Portable prompt-only guidance for simplifying recently changed code while preserving behavior
 * [`/summarize`](skills/summarize) - Converting URLs/files to Markdown with optional summaries
 * [`/tmux`](skills/tmux) - Driving tmux directly with keystrokes and pane output scraping
