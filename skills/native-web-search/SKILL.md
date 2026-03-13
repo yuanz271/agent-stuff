@@ -32,6 +32,7 @@ Optional flags:
 - `--model <model-id>`
 - `--timeout <ms>`
 - `--json`
+- `--debug` (print transport/proxy/connectivity diagnostics to stderr)
 
 ## Output expectations
 
@@ -50,3 +51,15 @@ The script instructs the model to:
   - `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) for `gemini` (only when explicitly selected)
   - `CODEX_API_KEY` (or `OPENAI_API_KEY`) for `openai-codex` (optional `CHATGPT_ACCOUNT_ID`)
 - If module resolution fails, set `PI_AI_MODULE_PATH` to `@mariozechner/pi-ai`'s `dist/index.js` path.
+
+## Sandbox/Proxy troubleshooting
+
+If requests fail with `fetch failed` under sandbox mode:
+
+1. Run with diagnostics:
+   ```bash
+   node search.mjs "<query>" --provider anthropic --debug --json
+   ```
+2. Ensure sandbox `allowedDomains` includes your provider endpoint domain.
+3. Check proxy env variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`).
+4. If needed, run the session with `--no-sandbox` for web research commands.

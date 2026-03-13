@@ -13,6 +13,7 @@ function parseArgs(argv) {
 		purpose: "general research support",
 		timeoutMs: 120000,
 		json: false,
+		debug: false,
 		help: false,
 		query: "",
 	};
@@ -26,6 +27,10 @@ function parseArgs(argv) {
 		}
 		if (arg === "--json") {
 			out.json = true;
+			continue;
+		}
+		if (arg === "--debug") {
+			out.debug = true;
 			continue;
 		}
 		if (arg === "--provider") {
@@ -69,7 +74,7 @@ function parseArgs(argv) {
 
 function usage() {
 	return `Usage:
-  node search.mjs "<query>" [--purpose "<why>"] [--provider openai|openai-codex|anthropic|gemini] [--model <id>] [--json]
+  node search.mjs "<query>" [--purpose "<why>"] [--provider openai|openai-codex|anthropic|gemini] [--model <id>] [--json] [--debug]
 
 Auth:
   openai: set OPENAI_API_KEY
@@ -275,6 +280,96 @@ function resolveCodexUrl(baseUrl = "https://chatgpt.com/backend-api") {
 	return `${normalized}/codex/responses`;
 }
 
+function hasProxyEnv() {
+	return Boolean(
+		process.env.HTTP_PROXY ||
+			process.env.HTTPS_PROXY ||
+			process.env.ALL_PROXY ||
+			process.env.http_proxy ||
+			process.env.https_proxy ||
+			process.env.all_proxy,
+	);
+}
+
+function formatProxyEnvForDiag() {
+	const keys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"];
+	const out = {};
+	for (const key of keys) {
+		const value = process.env[key];
+		if (!value) continue;
+		out[key] = value.replace(/:\/\/([^:@/]+):([^@/]+)@/g, "://$1:***@");
+	}
+	return out;
+}
+
+function normalizeFetchError(err) {
+	const message = err?.message || String(err);
+	const code = err?.cause?.code || err?.code;
+	const cause = err?.cause?.message || undefined;
+	return { message, code, cause };
+}
+
+function shouldTryCurlFallback(err) {
+	const code = err?.cause?.code || err?.code || "";
+	if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "ECONNREFUSED" || code === "ETIMEDOUT") return true;
+	const msg = String(err?.message || "").toLowerCase();
+	return msg.includes("fetch failed") || msg.includes("network");
+}
+
+function runCurlRequest(url, { method = "GET", headers = {}, body, timeoutMs = 120000 }) {
+	const args = ["-sS", "-L", "--max-time", String(Math.max(1, Math.ceil(timeoutMs / 1000))), "-X", method];
+	for (const [key, value] of Object.entries(headers || {})) {
+		if (value === undefined || value === null) continue;
+		args.push("-H", `${key}: ${value}`);
+	}
+	if (body !== undefined) {
+		args.push("--data-binary", body);
+	}
+	args.push(url, "-w", "\n__CURL_STATUS__:%{http_code}");
+
+	const res = spawnSync("curl", args, {
+		encoding: "utf8",
+		maxBuffer: 20 * 1024 * 1024,
+		env: process.env,
+	});
+	if (res.error) throw res.error;
+	if (res.status !== 0) {
+		throw new Error(`curl failed (${res.status}): ${(res.stderr || res.stdout || "").trim()}`);
+	}
+	const out = res.stdout || "";
+	const marker = "\n__CURL_STATUS__:";
+	const idx = out.lastIndexOf(marker);
+	if (idx === -1) {
+		throw new Error("curl output parse failed");
+	}
+	const text = out.slice(0, idx);
+	const status = Number(out.slice(idx + marker.length).trim());
+	if (!Number.isFinite(status)) throw new Error("curl returned invalid status code");
+	return { status, ok: status >= 200 && status < 300, text, transport: "curl" };
+}
+
+async function requestTextWithFallback(url, { method = "GET", headers = {}, body, timeoutMs = 120000, debug = false } = {}) {
+	const signal = typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined;
+	try {
+		const res = await fetch(url, {
+			method,
+			headers,
+			body,
+			signal,
+		});
+		const text = await res.text();
+		return { status: res.status, ok: res.ok, text, transport: "fetch" };
+	} catch (err) {
+		if (!shouldTryCurlFallback(err)) throw err;
+		if (debug) {
+			const info = normalizeFetchError(err);
+			console.error(`[debug] fetch failed (${info.code || "no-code"}): ${info.message}${info.cause ? ` | cause: ${info.cause}` : ""}`);
+		}
+		if (!hasProxyEnv()) throw err;
+		return runCurlRequest(url, { method, headers, body, timeoutMs });
+	}
+}
+
 function extractEventData(chunk) {
 	const payload = chunk
 		.split(/\r?\n/)
@@ -406,7 +501,7 @@ function buildAnthropicHeaders(apiKey) {
 	};
 }
 
-async function runOpenAISearch({ model, apiKey, query, purpose, timeoutMs, baseUrl }) {
+async function runOpenAISearch({ model, apiKey, query, purpose, timeoutMs, baseUrl, debug = false }) {
 	const endpoint = `${String(baseUrl || "https://api.openai.com/v1").replace(/\/+$/, "")}/responses`;
 	const body = {
 		model,
@@ -415,9 +510,7 @@ async function runOpenAISearch({ model, apiKey, query, purpose, timeoutMs, baseU
 		tools: [{ type: "web_search_preview" }],
 	};
 
-	const signal = typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined;
-
-	const res = await fetch(endpoint, {
+	const response = await requestTextWithFallback(endpoint, {
 		method: "POST",
 		headers: {
 			authorization: `Bearer ${apiKey}`,
@@ -425,12 +518,12 @@ async function runOpenAISearch({ model, apiKey, query, purpose, timeoutMs, baseU
 			accept: "application/json",
 		},
 		body: JSON.stringify(body),
-		signal,
+		timeoutMs,
+		debug,
 	});
-
-	const payloadText = await res.text();
-	if (!res.ok) {
-		throw new Error(`OpenAI request failed (${res.status}): ${payloadText}`);
+	const payloadText = response.text;
+	if (!response.ok) {
+		throw new Error(`OpenAI request failed (${response.status}) via ${response.transport}: ${payloadText}`);
 	}
 
 	let parsed;
@@ -456,7 +549,7 @@ async function runOpenAISearch({ model, apiKey, query, purpose, timeoutMs, baseU
 	return text;
 }
 
-async function runGeminiSearch({ model, apiKey, query, purpose, timeoutMs, baseUrl }) {
+async function runGeminiSearch({ model, apiKey, query, purpose, timeoutMs, baseUrl, debug = false }) {
 	const base = String(baseUrl || "https://generativelanguage.googleapis.com/v1beta").replace(/\/+$/, "");
 	const endpoint = `${base}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
 	const body = {
@@ -472,21 +565,20 @@ async function runGeminiSearch({ model, apiKey, query, purpose, timeoutMs, baseU
 		tools: [{ google_search: {} }],
 	};
 
-	const signal = typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined;
-
-	const res = await fetch(endpoint, {
+	const response = await requestTextWithFallback(endpoint, {
 		method: "POST",
 		headers: {
 			"content-type": "application/json",
 			accept: "application/json",
 		},
 		body: JSON.stringify(body),
-		signal,
+		timeoutMs,
+		debug,
 	});
 
-	const payloadText = await res.text();
-	if (!res.ok) {
-		throw new Error(`Gemini request failed (${res.status}): ${payloadText}`);
+	const payloadText = response.text;
+	if (!response.ok) {
+		throw new Error(`Gemini request failed (${response.status}) via ${response.transport}: ${payloadText}`);
 	}
 
 	let parsed;
@@ -509,7 +601,7 @@ async function runGeminiSearch({ model, apiKey, query, purpose, timeoutMs, baseU
 	return text;
 }
 
-async function runAnthropicSearch({ model, apiKey, query, purpose, timeoutMs }) {
+async function runAnthropicSearch({ model, apiKey, query, purpose, timeoutMs, debug = false }) {
 	const body = {
 		model,
 		max_tokens: 1800,
@@ -519,18 +611,17 @@ async function runAnthropicSearch({ model, apiKey, query, purpose, timeoutMs }) 
 		messages: [{ role: "user", content: buildUserPrompt(query, purpose) }],
 	};
 
-	const signal = typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined;
-
-	const res = await fetch("https://api.anthropic.com/v1/messages", {
+	const response = await requestTextWithFallback("https://api.anthropic.com/v1/messages", {
 		method: "POST",
 		headers: buildAnthropicHeaders(apiKey),
 		body: JSON.stringify(body),
-		signal,
+		timeoutMs,
+		debug,
 	});
 
-	const payload = await res.text();
-	if (!res.ok) {
-		throw new Error(`Anthropic request failed (${res.status}): ${payload}`);
+	const payload = response.text;
+	if (!response.ok) {
+		throw new Error(`Anthropic request failed (${response.status}) via ${response.transport}: ${payload}`);
 	}
 
 	let parsed;
@@ -553,6 +644,26 @@ async function runAnthropicSearch({ model, apiKey, query, purpose, timeoutMs }) 
 	return text;
 }
 
+function resolveEndpointForDiag(provider, model) {
+	if (provider === "openai-codex") return resolveCodexUrl(model.baseUrl);
+	if (provider === "openai") return `${String(model.baseUrl || "https://api.openai.com/v1").replace(/\/+$/, "")}/responses`;
+	if (provider === "gemini") {
+		const base = String(model.baseUrl || "https://generativelanguage.googleapis.com/v1beta").replace(/\/+$/, "");
+		return `${base}/models/${encodeURIComponent(model.id)}:generateContent`;
+	}
+	return "https://api.anthropic.com/v1/messages";
+}
+
+async function runConnectivityProbe(url, timeoutMs) {
+	const response = await requestTextWithFallback(url, {
+		method: "GET",
+		headers: { accept: "application/json" },
+		timeoutMs: Math.min(timeoutMs, 8000),
+		debug: false,
+	});
+	return { status: response.status, ok: response.ok, transport: response.transport };
+}
+
 async function main() {
 	const args = parseArgs(process.argv.slice(2));
 	if (args.help || !args.query) {
@@ -564,6 +675,31 @@ async function main() {
 	const piAi = await loadPiAi();
 	const model = pickFastModel(provider, args.model, piAi);
 	const { apiKey, accountId } = resolveApiKey(provider);
+	const endpoint = resolveEndpointForDiag(provider, model);
+
+	if (args.debug) {
+		const debugInfo = {
+			provider,
+			model: model.id,
+			endpoint,
+			hasProxyEnv: hasProxyEnv(),
+			proxyEnv: formatProxyEnvForDiag(),
+		};
+		if (args.json) {
+			console.error(JSON.stringify({ debug: debugInfo }, null, 2));
+		} else {
+			console.error("[debug]", JSON.stringify(debugInfo, null, 2));
+		}
+		try {
+			const probe = await runConnectivityProbe(endpoint, args.timeoutMs);
+			if (args.json) console.error(JSON.stringify({ probe }, null, 2));
+			else console.error(`[debug] probe ${probe.ok ? "ok" : "not-ok"}: status=${probe.status} transport=${probe.transport}`);
+		} catch (err) {
+			const info = normalizeFetchError(err);
+			if (args.json) console.error(JSON.stringify({ probeError: info }, null, 2));
+			else console.error(`[debug] probe failed: ${info.code || "no-code"} ${info.message}`);
+		}
+	}
 
 	let text;
 	if (provider === "openai-codex") {
@@ -584,6 +720,7 @@ async function main() {
 			purpose: args.purpose,
 			timeoutMs: args.timeoutMs,
 			baseUrl: model.baseUrl,
+			debug: args.debug,
 		});
 	} else if (provider === "gemini") {
 		text = await runGeminiSearch({
@@ -593,6 +730,7 @@ async function main() {
 			purpose: args.purpose,
 			timeoutMs: args.timeoutMs,
 			baseUrl: model.baseUrl,
+			debug: args.debug,
 		});
 	} else {
 		text = await runAnthropicSearch({
@@ -601,6 +739,7 @@ async function main() {
 			query: args.query,
 			purpose: args.purpose,
 			timeoutMs: args.timeoutMs,
+			debug: args.debug,
 		});
 	}
 
@@ -612,6 +751,7 @@ async function main() {
 					model: model.id,
 					query: args.query,
 					purpose: args.purpose,
+					endpoint,
 					result: text,
 				},
 				null,
@@ -628,6 +768,11 @@ async function main() {
 }
 
 main().catch((err) => {
-	console.error(`Error: ${err?.message || err}`);
+	const info = normalizeFetchError(err);
+	if (info.code || info.cause) {
+		console.error(`Error: ${info.message} (${info.code || "no-code"}${info.cause ? `; cause: ${info.cause}` : ""})`);
+	} else {
+		console.error(`Error: ${info.message}`);
+	}
 	process.exit(1);
 });
