@@ -34,3 +34,10 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## damage-control extension
+
+- **Source**: https://github.com/cagdotin/agents
+- **Included paths in this repo**:
+  - `pi-extensions/damage-control/*`
+- **Upstream license note**: upstream `README.md` states MIT, but no root `LICENSE` file was present in the referenced repository at the time of import. Verify upstream licensing terms before redistribution.

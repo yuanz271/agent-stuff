@@ -32,6 +32,7 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 * [`control.ts`](pi-extensions/control.ts) - Session control helpers (list controllable sessions etc.).
 * [`delegate.ts`](pi-extensions/delegate.ts) - Thin `/delegate` command that runs a task in an isolated child `pi` process using the current model/tools (supports `--bg`, completion notification, and `/delegate-kill <task-id>` termination).
 * [`detour.ts`](pi-extensions/detour.ts) - Side-question mode (`/detour`, `/end-detour [--summary]`) that branches from current context, enforces the same permissions as plan mode (read/grep/find/ls/questionnaire + safe-bash allowlist), and returns to the original branch on exit.
+* [`damage-control`](pi-extensions/damage-control) - Default-on safety guardrails for tool calls with layered policy rules, runtime panel (`/damage-control`, `/dc`), and policy event logging.
 * [`pi-autoresearch`](pi-extensions/pi-autoresearch) - Domain-agnostic autonomous experiment loop tooling (`init_experiment`, `run_experiment`, `log_experiment`) with status widget, `/autoresearch` dashboard, session persistence, and optional backpressure checks.
 * [`plan-mode`](pi-extensions/plan-mode) - Read-only planning/execution mode with restricted tools, plan extraction, and progress tracking.
 * [`prompt-editor.ts`](pi-extensions/prompt-editor.ts) - In-editor prompt mode selector (default/fast/precise) with per-mode model & thinking persistence, global/project config, prompt history, and shortcuts (Ctrl+Shift+M, Ctrl+Space).
