@@ -1104,24 +1104,61 @@ function renderCwdTable(range: RangeAgg, mode: MeasurementMode, maxRows = 8): st
 	return lines;
 }
 
-function renderDowTable(range: RangeAgg, mode: MeasurementMode): string[] {
+function dowMetricForRange(
+	range: RangeAgg,
+	mode: MeasurementMode,
+): { kind: "sessions" | "messages" | "tokens"; perDow: Map<DowKey, number>; total: number } {
 	const metric = graphMetricForRange(range, mode);
 	const kind = metric.kind;
 
-	let perDow: Map<DowKey, number>;
-	let total = 0;
-
 	if (kind === "tokens") {
-		perDow = range.dowTokens;
-		total = range.totalTokens;
-	} else if (kind === "messages") {
-		perDow = range.dowMessages;
-		total = range.totalMessages;
-	} else {
-		perDow = range.dowSessions;
-		total = range.sessions;
+		return { kind, perDow: range.dowTokens, total: range.totalTokens };
+	}
+	if (kind === "messages") {
+		return { kind, perDow: range.dowMessages, total: range.totalMessages };
+	}
+	return { kind, perDow: range.dowSessions, total: range.sessions };
+}
+
+function renderDowDistributionLines(
+	range: RangeAgg,
+	mode: MeasurementMode,
+	dowColors: Map<DowKey, RGB>,
+	width: number,
+): string[] {
+	const { kind, perDow, total } = dowMetricForRange(range, mode);
+	const dayWidth = 3;
+	const pctWidth = 4; // "100%"
+	const valueWidth = kind === "tokens" ? 10 : 8;
+	const showValue = width >= dayWidth + 1 + 10 + 1 + pctWidth + 1 + valueWidth;
+	const fixedWidth = dayWidth + 1 + 1 + pctWidth + (showValue ? 1 + valueWidth : 0);
+	const barWidth = Math.max(1, width - fixedWidth);
+	const fallbackColor: RGB = { r: 160, g: 160, b: 160 };
+
+	const lines: string[] = [];
+	for (const dow of DOW_NAMES) {
+		const value = perDow.get(dow) ?? 0;
+		const share = total > 0 ? value / total : 0;
+		let filled = share > 0 ? Math.round(share * barWidth) : 0;
+		if (share > 0) filled = Math.max(1, filled);
+		filled = Math.min(barWidth, filled);
+		const empty = Math.max(0, barWidth - filled);
+
+		const color = dowColors.get(dow) ?? fallbackColor;
+		const filledBar = filled > 0 ? ansiFg(color, "█".repeat(filled)) : "";
+		const emptyBar = empty > 0 ? ansiFg(EMPTY_CELL_BG, "█".repeat(empty)) : "";
+		const pct = padLeft(`${Math.round(share * 100)}%`, pctWidth);
+
+		let line = `${padRight(dow, dayWidth)} ${filledBar}${emptyBar} ${pct}`;
+		if (showValue) line += ` ${padLeft(formatCount(value), valueWidth)}`;
+		lines.push(line);
 	}
 
+	return lines;
+}
+
+function renderDowTable(range: RangeAgg, mode: MeasurementMode): string[] {
+	const { kind, perDow, total } = dowMetricForRange(range, mode);
 	const valueWidth = kind === "tokens" ? 10 : 8;
 	const dowWidth = 5; // "day  "
 
@@ -1403,25 +1440,31 @@ class BreakdownComponent implements Component {
 			}
 		}
 
-		const summary = rangeSummary(range, selectedDays, metric.kind) + dim(`   (graph: ${metric.kind}/day)`);
+		const graphDescriptor = this.view === "dow" ? `share of ${metric.kind} by weekday` : `${metric.kind}/day`;
+		const summary = rangeSummary(range, selectedDays, metric.kind) + dim(`   (graph: ${graphDescriptor})`);
 
-		const maxScale = selectedDays === 7 ? 4 : selectedDays === 30 ? 3 : 2;
-		const weeks = weeksForRange(range);
-		const leftMargin = 4; // "Mon " (or 4 spaces)
-		const gap = 1;
-		const graphArea = Math.max(1, width - leftMargin);
-		// Each week column uses: cellWidth + gap. Last column also gets gap (fine; we truncate anyway).
-		const idealCellWidth = Math.floor((graphArea + gap) / Math.max(1, weeks)) - gap;
-		const cellWidth = Math.min(maxScale, Math.max(1, idealCellWidth));
+		let graphLines: string[];
+		if (this.view === "dow") {
+			graphLines = renderDowDistributionLines(range, this.measurement, this.data.dowPalette.dowColors, width);
+		} else {
+			const maxScale = selectedDays === 7 ? 4 : selectedDays === 30 ? 3 : 2;
+			const weeks = weeksForRange(range);
+			const leftMargin = 4; // "Mon " (or 4 spaces)
+			const gap = 1;
+			const graphArea = Math.max(1, width - leftMargin);
+			// Each week column uses: cellWidth + gap. Last column also gets gap (fine; we truncate anyway).
+			const idealCellWidth = Math.floor((graphArea + gap) / Math.max(1, weeks)) - gap;
+			const cellWidth = Math.min(maxScale, Math.max(1, idealCellWidth));
 
-		const graphLines = renderGraphLines(
-			range,
-			activeColorMap,
-			activeOtherColor,
-			this.measurement,
-			{ cellWidth, gap },
-			this.view,
-		);
+			graphLines = renderGraphLines(
+				range,
+				activeColorMap,
+				activeOtherColor,
+				this.measurement,
+				{ cellWidth, gap },
+				this.view,
+			);
+		}
 		const tableLines =
 			this.view === "model" ? renderModelTable(range, metric.kind, 8)
 			: this.view === "cwd" ? renderCwdTable(range, metric.kind, 8)
@@ -1435,52 +1478,54 @@ class BreakdownComponent implements Component {
 		lines.push(truncateToWidth(summary, width));
 		lines.push("");
 
-		// Render legend on the RIGHT of the graph if there is space.
-		const graphWidth = Math.max(0, ...graphLines.map((l) => visibleWidth(l)));
-		const sep = 2;
-		const legendWidth = width - graphWidth - sep;
-		const showSideLegend = legendWidth >= 22;
-
-		if (showSideLegend) {
-			const legendBlock: string[] = [];
-			const legendTitle =
-				this.view === "model" ? "Top models (30d palette):"
-				: this.view === "cwd" ? "Top directories (30d palette):"
-				: this.view === "dow" ? "Day of week:"
-				: "Time of day:";
-			legendBlock.push(dim(legendTitle));
-			legendBlock.push(...legendItems);
-			// Fit into 7 rows (same as graph). If too many, show a final "+N more" line.
-			const maxLegendRows = graphLines.length;
-			let legendLines = legendBlock.slice(0, maxLegendRows);
-			if (legendBlock.length > maxLegendRows) {
-				const remaining = legendBlock.length - (maxLegendRows - 1);
-				legendLines = [...legendBlock.slice(0, maxLegendRows - 1), dim(`+${remaining} more`)];
-			}
-			while (legendLines.length < graphLines.length) legendLines.push("");
-
-			const padRightAnsi = (s: string, target: number): string => {
-				const w = visibleWidth(s);
-				return w >= target ? s : s + " ".repeat(target - w);
-			};
-
-			for (let i = 0; i < graphLines.length; i++) {
-				const left = padRightAnsi(graphLines[i] ?? "", graphWidth);
-				const right = truncateToWidth(legendLines[i] ?? "", Math.max(0, legendWidth));
-				lines.push(truncateToWidth(left + " ".repeat(sep) + right, width));
-			}
-		} else {
-			// Fallback: graph only (legend will be shown below).
+		if (this.view === "dow") {
 			for (const gl of graphLines) lines.push(truncateToWidth(gl, width));
-			lines.push("");
-			// Compact legend below, left-aligned.
-			const legendTitleBelow =
-				this.view === "model" ? "Top models (30d palette):"
-				: this.view === "cwd" ? "Top directories (30d palette):"
-				: this.view === "dow" ? "Day of week:"
-				: "Time of day:";
-			lines.push(truncateToWidth(dim(legendTitleBelow), width));
-			for (const it of legendItems) lines.push(truncateToWidth(it, width));
+		} else {
+			// Render legend on the RIGHT of the graph if there is space.
+			const graphWidth = Math.max(0, ...graphLines.map((l) => visibleWidth(l)));
+			const sep = 2;
+			const legendWidth = width - graphWidth - sep;
+			const showSideLegend = legendWidth >= 22;
+
+			if (showSideLegend) {
+				const legendBlock: string[] = [];
+				const legendTitle =
+					this.view === "model" ? "Top models (30d palette):"
+					: this.view === "cwd" ? "Top directories (30d palette):"
+					: "Time of day:";
+				legendBlock.push(dim(legendTitle));
+				legendBlock.push(...legendItems);
+				// Fit into 7 rows (same as graph). If too many, show a final "+N more" line.
+				const maxLegendRows = graphLines.length;
+				let legendLines = legendBlock.slice(0, maxLegendRows);
+				if (legendBlock.length > maxLegendRows) {
+					const remaining = legendBlock.length - (maxLegendRows - 1);
+					legendLines = [...legendBlock.slice(0, maxLegendRows - 1), dim(`+${remaining} more`)];
+				}
+				while (legendLines.length < graphLines.length) legendLines.push("");
+
+				const padRightAnsi = (s: string, target: number): string => {
+					const w = visibleWidth(s);
+					return w >= target ? s : s + " ".repeat(target - w);
+				};
+
+				for (let i = 0; i < graphLines.length; i++) {
+					const left = padRightAnsi(graphLines[i] ?? "", graphWidth);
+					const right = truncateToWidth(legendLines[i] ?? "", Math.max(0, legendWidth));
+					lines.push(truncateToWidth(left + " ".repeat(sep) + right, width));
+				}
+			} else {
+				// Fallback: graph only (legend will be shown below).
+				for (const gl of graphLines) lines.push(truncateToWidth(gl, width));
+				lines.push("");
+				// Compact legend below, left-aligned.
+				const legendTitleBelow =
+					this.view === "model" ? "Top models (30d palette):"
+					: this.view === "cwd" ? "Top directories (30d palette):"
+					: "Time of day:";
+				lines.push(truncateToWidth(dim(legendTitleBelow), width));
+				for (const it of legendItems) lines.push(truncateToWidth(it, width));
+			}
 		}
 
 		lines.push("");
