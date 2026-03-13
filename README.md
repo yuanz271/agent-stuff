@@ -23,26 +23,26 @@ All skill files are in the [`skills`](skills) folder:
 * [`/summarize`](skills/summarize) - Converting URLs/files to Markdown with optional summaries, including structured research-paper critique mode for PDF papers
 * [`/tmux`](skills/tmux) - Driving tmux directly with keystrokes and pane output scraping
 * [`/uv`](skills/uv) - Using `uv` for Python dependency management and script execution
-* [`/plan`](skills/plan) - Prompt-only plan mode that self-activates on planning intent
 
 ## PI Coding Agent Extensions
 
-Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](pi-extensions) folder. The package also ships an extra extension focused on increasing reliability:
+Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](pi-extensions) folder:
 
 * [`answer.ts`](pi-extensions/answer.ts) - Interactive TUI for answering questions one by one.
 * [`control.ts`](pi-extensions/control.ts) - Session control helpers (list controllable sessions etc.).
 * [`delegate.ts`](pi-extensions/delegate.ts) - Thin `/delegate` command that runs a task in an isolated child `pi` process using the current model/tools (supports `--bg`, completion notification, and `/delegate-kill <task-id>` termination).
 * [`detour.ts`](pi-extensions/detour.ts) - Side-question mode (`/detour`, `/end-detour [--summary]`) that branches from current context, enforces the same permissions as plan mode (read/grep/find/ls/questionnaire + safe-bash allowlist), and returns to the original branch on exit.
 * [`pi-autoresearch`](pi-extensions/pi-autoresearch) - Domain-agnostic autonomous experiment loop tooling (`init_experiment`, `run_experiment`, `log_experiment`) with status widget, `/autoresearch` dashboard, session persistence, and optional backpressure checks.
+* [`plan-mode`](pi-extensions/plan-mode) - Read-only planning/execution mode with restricted tools, plan extraction, and progress tracking.
 * [`prompt-editor.ts`](pi-extensions/prompt-editor.ts) - In-editor prompt mode selector (default/fast/precise) with per-mode model & thinking persistence, global/project config, prompt history, and shortcuts (Ctrl+Shift+M, Ctrl+Space).
 * [`files.ts`](pi-extensions/files.ts) - Unified file browser that merges git status (dirty first) with session references, plus reveal/open/edit and diff actions.
 * [`init.ts`](pi-extensions/init.ts) - Pi-specific `/init` bootstrap command that embeds its contributor-guide prompt and asks pi to generate the current repo's `AGENTS.md`.
 * [`loop.ts`](pi-extensions/loop.ts) - Runs a prompt loop for rapid iterative coding with optional auto-continue control.
 * [`lsp.ts`](pi-extensions/lsp.ts) - Lazy auto-start background LSP integration for agent coding loops: prefers project-local LSP binaries (`node_modules/.bin`, `.venv/bin`) before global PATH, injects concise diagnostics after `write`/`edit`, and provides lightweight debug commands (`/lsp-status`, `/lsp-reload`).
 * [`review.ts`](pi-extensions/review.ts) - Code review command inspired by Codex. Supports reviewing uncommitted changes, against a base branch (PR style), specific commits, or with custom instructions, plus optional loop fixing mode that iterates review→fix until blocking findings are cleared. Includes Ctrl+R shortcut.
+* [`sandbox`](pi-extensions/sandbox) - OS-level sandboxing for bash commands (filesystem/network restrictions) using `@anthropic-ai/sandbox-runtime`.
 * [`session-breakdown.ts`](pi-extensions/session-breakdown.ts) - Interactive TUI to analyze the last 7/30/90 days of Pi session usage (sessions + cost by model) with a GitHub-style usage graph.
-* [`todos.ts`](pi-extensions/todos.ts) - Todo manager extension with file-backed storage and a TUI for listing and editing todos.
-* [`uv.ts`](pi-extensions/uv.ts) - Helpers for working with uv (Python packaging/workflows).
+* [`subagent`](pi-extensions/subagent) - Delegates tasks to specialized subagents with isolated contexts; supports single, parallel, and chained workflows.
 
 ## Docs
 
