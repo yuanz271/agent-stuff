@@ -110,13 +110,12 @@ function pickProvider(argProvider) {
 	const forced = normalizeProvider(argProvider);
 	if (forced) return forced;
 
-	// Do not auto-select Gemini API. Use --provider gemini explicitly.
-	// But auto-select gemini-cli if no API keys are set and CLI is available.
+	// Prefer gemini-cli first (no API key needed, uses local Vertex AI auth).
+	if (isGeminiCliAvailable()) return "gemini-cli";
 	if (process.env.OPENAI_API_KEY) return "openai";
 	if (process.env.ANTHROPIC_API_KEY) return "anthropic";
 	if (process.env.CODEX_API_KEY) return "openai-codex";
 	if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) return "gemini";
-	if (isGeminiCliAvailable()) return "gemini-cli";
 	return "openai";
 }
 
