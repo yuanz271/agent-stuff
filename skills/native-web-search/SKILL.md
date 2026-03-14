@@ -28,7 +28,7 @@ node search.mjs "vite 7 breaking changes" --purpose "prepare migration checklist
 
 Optional flags:
 
-- `--provider openai|openai-codex|anthropic|gemini` (Gemini is opt-in; use `--provider gemini` explicitly)
+- `--provider openai|openai-codex|anthropic|gemini|gemini-cli` (Gemini API is opt-in; `gemini-cli` uses local CLI with Vertex AI auth — no API key needed)
 - `--model <model-id>`
 - `--timeout <ms>`
 - `--json`
@@ -50,6 +50,8 @@ The script instructs the model to:
   - `ANTHROPIC_API_KEY` for `anthropic`
   - `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) for `gemini` (only when explicitly selected)
   - `CODEX_API_KEY` (or `OPENAI_API_KEY`) for `openai-codex` (optional `CHATGPT_ACCOUNT_ID`)
+  - **No key needed** for `gemini-cli` — uses local `gemini` CLI with existing Vertex AI / Google auth
+- Auto-selection order: `openai` → `anthropic` → `openai-codex` → `gemini` (API) → `gemini-cli` (if CLI installed and no API keys set)
 - If module resolution fails, set `PI_AI_MODULE_PATH` to `@mariozechner/pi-ai`'s `dist/index.js` path.
 
 ## Sandbox/Proxy troubleshooting

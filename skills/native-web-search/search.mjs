@@ -74,15 +74,17 @@ function parseArgs(argv) {
 
 function usage() {
 	return `Usage:
-  node search.mjs "<query>" [--purpose "<why>"] [--provider openai|openai-codex|anthropic|gemini] [--model <id>] [--json] [--debug]
+  node search.mjs "<query>" [--purpose "<why>"] [--provider openai|openai-codex|anthropic|gemini|gemini-cli] [--model <id>] [--json] [--debug]
 
 Auth:
   openai: set OPENAI_API_KEY
   anthropic: set ANTHROPIC_API_KEY
   gemini: set GEMINI_API_KEY (or GOOGLE_API_KEY)
+  gemini-cli: no API key needed (uses local gemini CLI with Vertex AI / Google auth)
   openai-codex: set CODEX_API_KEY (or OPENAI_API_KEY), optional CHATGPT_ACCOUNT_ID
 
 Examples:
+  node search.mjs "latest python release" --provider gemini-cli --purpose "update dependency notes"
   OPENAI_API_KEY=... node search.mjs "latest python release" --provider openai --purpose "update dependency notes"
   ANTHROPIC_API_KEY=... node search.mjs "HTTP/3 browser support 2026" --provider anthropic
   GEMINI_API_KEY=... node search.mjs "vite 7 breaking changes" --provider gemini --json`;
@@ -91,6 +93,7 @@ Examples:
 function normalizeProvider(provider) {
 	if (!provider) return undefined;
 	const p = String(provider).toLowerCase().trim();
+	if (p === "gemini-cli") return "gemini-cli";
 	if (p === "openai" || p === "openai-api") return "openai";
 	if (p.includes("anthropic") || p.includes("claude")) return "anthropic";
 	if (p.includes("gemini") || p.includes("google")) return "gemini";
@@ -98,14 +101,22 @@ function normalizeProvider(provider) {
 	return undefined;
 }
 
+function isGeminiCliAvailable() {
+	const result = spawnSync("gemini", ["--version"], { encoding: "utf8", timeout: 5000 });
+	return result.status === 0;
+}
+
 function pickProvider(argProvider) {
 	const forced = normalizeProvider(argProvider);
 	if (forced) return forced;
 
-	// Do not auto-select Gemini. Use --provider gemini explicitly.
+	// Do not auto-select Gemini API. Use --provider gemini explicitly.
+	// But auto-select gemini-cli if no API keys are set and CLI is available.
 	if (process.env.OPENAI_API_KEY) return "openai";
 	if (process.env.ANTHROPIC_API_KEY) return "anthropic";
 	if (process.env.CODEX_API_KEY) return "openai-codex";
+	if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) return "gemini";
+	if (isGeminiCliAvailable()) return "gemini-cli";
 	return "openai";
 }
 
@@ -234,6 +245,10 @@ function pickFastModel(provider, requestedModel, piAi) {
 }
 
 function resolveApiKey(provider) {
+	if (provider === "gemini-cli") {
+		return { apiKey: "__cli__" };
+	}
+
 	if (provider === "openai-codex") {
 		const apiKey = process.env.CODEX_API_KEY || process.env.OPENAI_API_KEY;
 		if (!apiKey) {
@@ -601,6 +616,46 @@ async function runGeminiSearch({ model, apiKey, query, purpose, timeoutMs, baseU
 	return text;
 }
 
+async function runGeminiCliSearch({ model, query, purpose, timeoutMs, debug = false }) {
+	const prompt = `${buildSystemPrompt()}\n\n${buildUserPrompt(query, purpose)}`;
+	const args = ["-p", prompt, "--approval-mode", "yolo", "-o", "text"];
+	if (model) args.push("-m", model);
+
+	if (debug) {
+		console.error(`[debug] gemini-cli args: gemini ${args.map((a) => JSON.stringify(a)).join(" ")}`);
+	}
+
+	const timeoutSec = Math.max(10, Math.ceil(timeoutMs / 1000));
+	const result = spawnSync("gemini", args, {
+		encoding: "utf8",
+		timeout: timeoutMs + 5000,
+		maxBuffer: 10 * 1024 * 1024,
+		env: { ...process.env, GEMINI_CLI_TIMEOUT: String(timeoutSec) },
+	});
+
+	if (result.error) {
+		throw new Error(`gemini-cli spawn failed: ${result.error.message}`);
+	}
+
+	// Filter out YOLO warning lines from stdout
+	const stdout = (result.stdout || "")
+		.split(/\r?\n/)
+		.filter((line) => !line.startsWith("YOLO mode is enabled"))
+		.join("\n")
+		.trim();
+
+	if (result.status !== 0) {
+		const stderr = (result.stderr || "").trim();
+		throw new Error(`gemini-cli exited ${result.status}: ${stderr || stdout || "(no output)"}`);
+	}
+
+	if (!stdout) {
+		throw new Error("gemini-cli returned empty output");
+	}
+
+	return stdout;
+}
+
 async function runAnthropicSearch({ model, apiKey, query, purpose, timeoutMs, debug = false }) {
 	const body = {
 		model,
@@ -645,6 +700,7 @@ async function runAnthropicSearch({ model, apiKey, query, purpose, timeoutMs, de
 }
 
 function resolveEndpointForDiag(provider, model) {
+	if (provider === "gemini-cli") return "gemini-cli (local)";
 	if (provider === "openai-codex") return resolveCodexUrl(model.baseUrl);
 	if (provider === "openai") return `${String(model.baseUrl || "https://api.openai.com/v1").replace(/\/+$/, "")}/responses`;
 	if (provider === "gemini") {
@@ -702,7 +758,15 @@ async function main() {
 	}
 
 	let text;
-	if (provider === "openai-codex") {
+	if (provider === "gemini-cli") {
+		text = await runGeminiCliSearch({
+			model: args.model,
+			query: args.query,
+			purpose: args.purpose,
+			timeoutMs: args.timeoutMs,
+			debug: args.debug,
+		});
+	} else if (provider === "openai-codex") {
 		text = await runCodexSearch({
 			model: model.id,
 			apiKey,
