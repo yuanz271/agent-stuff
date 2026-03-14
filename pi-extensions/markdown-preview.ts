@@ -2124,9 +2124,10 @@ export default function (pi: ExtensionAPI) {
 		let isLatex = false;
 		if (parsed.file) {
 			try {
-				const expanded = parsed.file.startsWith("~/") ? join(homedir(), parsed.file.slice(2))
-					: parsed.file === "~" ? homedir()
-					: parsed.file;
+				const rawFile = parsed.file.startsWith("@") ? parsed.file.slice(1) : parsed.file;
+				const expanded = rawFile.startsWith("~/") ? join(homedir(), rawFile.slice(2))
+					: rawFile === "~" ? homedir()
+					: rawFile;
 				const filePath = resolvePath(ctx.cwd, expanded);
 				const fileContent = await readFile(filePath, "utf-8");
 				resourcePath = dirname(filePath);
