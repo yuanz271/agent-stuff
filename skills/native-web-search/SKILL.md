@@ -53,8 +53,6 @@ The script instructs the model to:
   - **No key needed** for `gemini-cli` — uses local `gemini` CLI with existing Vertex AI / Google auth
 - Auto-selection order: `gemini-cli` (if installed) → `openai` → `anthropic` → `openai-codex` → `gemini` (API)
 - If module resolution fails, set `PI_AI_MODULE_PATH` to `@mariozechner/pi-ai`'s `dist/index.js` path.
-- If OAuth helper resolution fails, set `PI_AI_OAUTH_MODULE_PATH` to `@mariozechner/pi-ai`'s `dist/oauth.js` path.
-- For OAuth providers, the script can fall back to a still-valid cached `access` token from `~/.pi/agent/auth.json`.
 
 ## Sandbox/Proxy troubleshooting
 
