@@ -106,7 +106,7 @@ Produce in this order. Each file uses the format in Step 7.
 4. **`<prefix>-synthesis-note.md`** — final position, relation to existing work, extension ideas
 
 Optional:
-5. **`<prefix>_vs_<other>_comparison.md`** — cross-paper comparison if relevant
+5. **`<slug>-comparison.md`** — cross-paper comparison if relevant (two or more papers)
 
 ---
 
