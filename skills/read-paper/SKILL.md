@@ -20,10 +20,10 @@ The **stem** is the PDF filename without extension (e.g. `vaswani2017-transforme
 
 Load and follow the `pdf-extract` skill to extract the PDF. Pass:
 - **input**: `<pdf-path>`
-- **output**: `<pdf-dir>/<stem>-main-text-clean.md`
+- **output**: `<pdf-dir>/<stem>-paper.md`
 
 Expected output file:
-- `<pdf-dir>/<stem>-main-text-clean.md`
+- `<pdf-dir>/<stem>-paper.md`
 
 ---
 
@@ -115,7 +115,7 @@ After deliverables, emit a completed checklist:
 
 ```
 ## A. Text processing
-- [x] Clean markdown generated (<stem>-main-text-clean.md)
+- [x] Clean markdown generated (<stem>-paper.md)
 
 ## C. Structural scan
 - [x] Section headings mapped
@@ -172,7 +172,7 @@ All files co-located with the PDF in `<pdf-dir>`, named after the PDF filename s
 
 | File | Purpose |
 |---|---|
-| `<stem>-main-text-clean.md` | Extracted markdown |
+| `<stem>-paper.md` | Extracted markdown |
 | `<stem>-discussion-notes.md` | Pass A–D notes + interrogation |
 | `<stem>-executive-summary.md` | One-page summary |
 | `<stem>-formal-critique-memo.md` | Detailed critique |
