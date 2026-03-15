@@ -12,7 +12,7 @@ Collect before starting:
 - **Title**
 - **Venue / year**
 - **Output directory** (default: same directory as the PDF)
-- **Appendix** (default: derive from PDF filename — use the hash/slug already in the filename if present, e.g. `209423f076b6479ab3a4f45886e30306-Paper-Conference`)
+- **Prefix** (default: derive from PDF filename — use the hash/slug already in the filename if present, e.g. `209423f076b6479ab3a4f45886e30306-Paper-Conference`)
 
 ---
 
@@ -20,10 +20,10 @@ Collect before starting:
 
 1. If a URL is given, download the PDF:
    ```bash
-   curl -L "<url>" -o "<appendix>.pdf"
+   curl -L "<url>" -o "<prefix>.pdf"
    ```
-2. Verify the file exists and size is non-trivial (`ls -lh <appendix>.pdf`).
-3. Confirm the appendix follows the naming convention:
+2. Verify the file exists and size is non-trivial (`ls -lh <prefix>.pdf`).
+3. Confirm the prefix follows the naming convention:
    - `<hash-or-slug>-Paper-Conference.pdf`
    - Example: `209423f076b6479ab3a4f45886e30306-Paper-Conference.pdf`
 
@@ -36,13 +36,13 @@ Choose extractor based on content:
 **Math-heavy papers** (equations, multi-column, tables): use `pdf-extract` skill:
 ```bash
 cd ~/.agent-stuff/skills/pdf-extract
-node extract.mjs <appendix>.pdf --output <outdir>/<title>-main-text-clean.md
+node extract.mjs <prefix>.pdf --output <outdir>/<title>-main-text-clean.md
 ```
 
 **Prose-only papers**: use `summarize` skill:
 ```bash
 cd ~/.agent-stuff/skills/summarize
-uvx --from 'markitdown[pdf]' markitdown <appendix>.pdf > <outdir>/<title>-main-text-clean.md
+uvx --from 'markitdown[pdf]' markitdown <prefix>.pdf > <outdir>/<title>-main-text-clean.md
 ```
 
 Also produce a plain-text copy:
@@ -115,13 +115,13 @@ Answer each of these explicitly:
 
 Produce in this order. Each file uses the format in Step 7.
 
-1. **`<appendix>-discussion-notes.md`** — raw technical notes from all four passes + interrogation answers
-2. **`<appendix>-executive-summary.md`** — one page; accessible to a lab member unfamiliar with the paper
-3. **`<appendix>-formal-critique-memo.md`** — detailed critique; use the `critique` skill for structure if helpful
-4. **`<appendix>-synthesis-note.md`** — final position, relation to existing work, extension ideas
+1. **`<prefix>-discussion-notes.md`** — raw technical notes from all four passes + interrogation answers
+2. **`<prefix>-executive-summary.md`** — one page; accessible to a lab member unfamiliar with the paper
+3. **`<prefix>-formal-critique-memo.md`** — detailed critique; use the `critique` skill for structure if helpful
+4. **`<prefix>-synthesis-note.md`** — final position, relation to existing work, extension ideas
 
 Optional:
-5. **`<appendix>_vs_<other>_comparison.md`** — cross-paper comparison if relevant
+5. **`<prefix>_vs_<other>_comparison.md`** — cross-paper comparison if relevant
 
 ---
 
