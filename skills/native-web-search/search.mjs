@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { existsSync, realpathSync } from "fs";
-import { spawnSync } from "child_process";
+import { existsSync, readFileSync, writeFileSync, realpathSync } from "fs";
+import { spawnSync, execSync } from "child_process";
 import { homedir } from "os";
 import { dirname, isAbsolute, join, resolve } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
@@ -13,8 +13,8 @@ function parseArgs(argv) {
 		purpose: "general research support",
 		timeoutMs: 120000,
 		json: false,
-		debug: false,
 		help: false,
+		debug: false,
 		query: "",
 	};
 
@@ -78,16 +78,54 @@ function usage() {
 
 Auth:
   openai: set OPENAI_API_KEY
-  anthropic: set ANTHROPIC_API_KEY
+  anthropic: set ANTHROPIC_API_KEY (or use OAuth via ~/.pi/agent/auth.json)
   gemini: set GEMINI_API_KEY (or GOOGLE_API_KEY)
   gemini-cli: no API key needed (uses local gemini CLI with Vertex AI / Google auth)
-  openai-codex: set CODEX_API_KEY (or OPENAI_API_KEY), optional CHATGPT_ACCOUNT_ID
+  openai-codex: OAuth via ~/.pi/agent/auth.json, or set CODEX_API_KEY / OPENAI_API_KEY
 
 Examples:
   node search.mjs "latest python release" --provider gemini-cli --purpose "update dependency notes"
   OPENAI_API_KEY=... node search.mjs "latest python release" --provider openai --purpose "update dependency notes"
   ANTHROPIC_API_KEY=... node search.mjs "HTTP/3 browser support 2026" --provider anthropic
   GEMINI_API_KEY=... node search.mjs "vite 7 breaking changes" --provider gemini --json`;
+}
+
+function readJson(path, fallback = {}) {
+	if (!existsSync(path)) return fallback;
+	try {
+		return JSON.parse(readFileSync(path, "utf8"));
+	} catch {
+		return fallback;
+	}
+}
+
+function writeJson(path, value) {
+	writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function resolveConfigValue(config) {
+	if (typeof config !== "string" || !config) return undefined;
+	if (config.startsWith("!")) {
+		try {
+			const out = execSync(config.slice(1), {
+				encoding: "utf8",
+				timeout: 10000,
+				stdio: ["ignore", "pipe", "ignore"],
+			}).trim();
+			return out || undefined;
+		} catch {
+			return undefined;
+		}
+	}
+	return process.env[config] || config;
+}
+
+function getAgentDir() {
+	const configured = process.env.PI_CODING_AGENT_DIR;
+	if (!configured) return join(homedir(), ".pi", "agent");
+	if (configured === "~") return homedir();
+	if (configured.startsWith("~/")) return join(homedir(), configured.slice(2));
+	return configured;
 }
 
 function normalizeProvider(provider) {
@@ -106,17 +144,24 @@ function isGeminiCliAvailable() {
 	return result.status === 0;
 }
 
-function pickProvider(argProvider) {
+function pickProvider(argProvider, settings, auth) {
 	const forced = normalizeProvider(argProvider);
 	if (forced) return forced;
 
+	const fromSettings = normalizeProvider(settings?.defaultProvider);
+	if (fromSettings) return fromSettings;
+
 	// Prefer gemini-cli first (no API key needed, uses local Vertex AI auth).
 	if (isGeminiCliAvailable()) return "gemini-cli";
+
 	if (process.env.OPENAI_API_KEY) return "openai";
 	if (process.env.ANTHROPIC_API_KEY) return "anthropic";
-	if (process.env.CODEX_API_KEY) return "openai-codex";
 	if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) return "gemini";
-	return "openai";
+
+	if (auth?.["openai-codex"]) return "openai-codex";
+	if (auth?.anthropic) return "anthropic";
+
+	throw new Error("Could not determine provider. Pass --provider openai-codex|anthropic|gemini-cli|gemini|openai");
 }
 
 function decodeJwtAccountId(jwt) {
@@ -142,7 +187,7 @@ function findPiExecutable() {
 	return first || undefined;
 }
 
-function collectModuleCandidates() {
+function collectModuleCandidates(fileName = "index.js", envVarName = "PI_AI_MODULE_PATH") {
 	const candidates = new Set();
 
 	const add = (p) => {
@@ -151,16 +196,16 @@ function collectModuleCandidates() {
 		candidates.add(abs);
 	};
 
-	if (process.env.PI_AI_MODULE_PATH) add(process.env.PI_AI_MODULE_PATH);
+	if (envVarName && process.env[envVarName]) add(process.env[envVarName]);
 
 	const cwd = process.cwd();
 	const scriptDir = dirname(fileURLToPath(import.meta.url));
 	for (const start of [cwd, scriptDir]) {
 		let dir = start;
 		for (let i = 0; i < 8; i++) {
-			add(join(dir, "node_modules", "@mariozechner", "pi-ai", "dist", "index.js"));
-			add(join(dir, "packages", "ai", "dist", "index.js"));
-			add(join(dir, "ai", "dist", "index.js"));
+			add(join(dir, "node_modules", "@mariozechner", "pi-ai", "dist", fileName));
+			add(join(dir, "packages", "ai", "dist", fileName));
+			add(join(dir, "ai", "dist", fileName));
 			const parent = dirname(dir);
 			if (parent === dir) break;
 			dir = parent;
@@ -172,16 +217,16 @@ function collectModuleCandidates() {
 		try {
 			const piReal = realpathSync(piExec);
 			const piDir = dirname(piReal);
-			add(join(piDir, "..", "..", "ai", "dist", "index.js"));
-			add(join(piDir, "..", "..", "pi-ai", "dist", "index.js"));
-			add(join(piDir, "..", "node_modules", "@mariozechner", "pi-ai", "dist", "index.js"));
-			add(join(piDir, "..", "..", "node_modules", "@mariozechner", "pi-ai", "dist", "index.js"));
+			add(join(piDir, "..", "..", "ai", "dist", fileName));
+			add(join(piDir, "..", "..", "pi-ai", "dist", fileName));
+			add(join(piDir, "..", "node_modules", "@mariozechner", "pi-ai", "dist", fileName));
+			add(join(piDir, "..", "..", "node_modules", "@mariozechner", "pi-ai", "dist", fileName));
 		} catch {
 			// ignore
 		}
 	}
 
-	add(join(homedir(), "Development", "pi-mono", "packages", "ai", "dist", "index.js"));
+	add(join(homedir(), "Development", "pi-mono", "packages", "ai", "dist", fileName));
 
 	return Array.from(candidates);
 }
@@ -195,7 +240,7 @@ async function loadPiAi() {
 		tried.push(`@mariozechner/pi-ai (${err?.code || err?.message || "not found"})`);
 	}
 
-	for (const candidate of collectModuleCandidates()) {
+	for (const candidate of collectModuleCandidates("index.js", "PI_AI_MODULE_PATH")) {
 		if (!existsSync(candidate)) continue;
 		try {
 			return await import(pathToFileURL(candidate).href);
@@ -209,6 +254,81 @@ async function loadPiAi() {
 	);
 }
 
+async function loadPiAiOAuth(piAi) {
+	if (typeof piAi?.getOAuthApiKey === "function") {
+		return { getOAuthApiKey: piAi.getOAuthApiKey.bind(piAi) };
+	}
+
+	const tried = [];
+
+	try {
+		const oauth = await import("@mariozechner/pi-ai/oauth");
+		if (typeof oauth.getOAuthApiKey === "function") {
+			return { getOAuthApiKey: oauth.getOAuthApiKey.bind(oauth) };
+		}
+		tried.push("@mariozechner/pi-ai/oauth (missing getOAuthApiKey export)");
+	} catch (err) {
+		tried.push(`@mariozechner/pi-ai/oauth (${err?.code || err?.message || "not found"})`);
+	}
+
+	for (const candidate of collectModuleCandidates("oauth.js", "PI_AI_OAUTH_MODULE_PATH")) {
+		if (!existsSync(candidate)) continue;
+		try {
+			const oauth = await import(pathToFileURL(candidate).href);
+			if (typeof oauth.getOAuthApiKey === "function") {
+				return { getOAuthApiKey: oauth.getOAuthApiKey.bind(oauth) };
+			}
+			tried.push(`${candidate} (missing getOAuthApiKey export)`);
+		} catch (err) {
+			tried.push(`${candidate} (${err?.code || err?.message || "failed"})`);
+		}
+	}
+
+	return {
+		getOAuthApiKey: undefined,
+		error: `Could not load getOAuthApiKey. Set PI_AI_OAUTH_MODULE_PATH to pi-ai dist/oauth.js.\nTried:\n- ${tried.join("\n- ")}`,
+	};
+}
+
+function parseExpiryTimestamp(expires) {
+	if (typeof expires === "number" && Number.isFinite(expires)) {
+		if (expires <= 0) return undefined;
+		return expires < 1_000_000_000_000 ? expires * 1000 : expires;
+	}
+
+	if (typeof expires === "string") {
+		const trimmed = expires.trim();
+		if (!trimmed) return undefined;
+
+		const numeric = Number(trimmed);
+		if (Number.isFinite(numeric)) {
+			return parseExpiryTimestamp(numeric);
+		}
+
+		const parsed = Date.parse(trimmed);
+		if (Number.isFinite(parsed)) return parsed;
+	}
+
+	return undefined;
+}
+
+function getCachedOAuthAccess(entry, now = Date.now()) {
+	if (!entry || typeof entry !== "object") return undefined;
+
+	const apiKey = resolveConfigValue(entry.access);
+	if (!apiKey) return undefined;
+
+	const expiresAt = parseExpiryTimestamp(entry.expires);
+	if (!expiresAt) return undefined;
+
+	if (now + 30_000 >= expiresAt) return undefined;
+
+	return {
+		apiKey,
+		accountId: entry.accountId,
+	};
+}
+
 function pickFastModel(provider, requestedModel, piAi) {
 	const models = typeof piAi.getModels === "function" ? piAi.getModels(provider) : [];
 	if (!Array.isArray(models) || models.length === 0) {
@@ -216,6 +336,7 @@ function pickFastModel(provider, requestedModel, piAi) {
 		if (provider === "openai-codex") return { id: "gpt-5.1-codex-mini", baseUrl: "https://chatgpt.com/backend-api" };
 		if (provider === "openai") return { id: "gpt-4.1-mini", baseUrl: "https://api.openai.com/v1" };
 		if (provider === "gemini") return { id: "gemini-2.5-flash", baseUrl: "https://generativelanguage.googleapis.com/v1beta" };
+		if (provider === "gemini-cli") return { id: "gemini-2.5-flash", baseUrl: undefined };
 		return { id: "claude-haiku-4-5", baseUrl: "https://api.anthropic.com" };
 	}
 
@@ -230,7 +351,7 @@ function pickFastModel(provider, requestedModel, piAi) {
 			? ["gpt-5.1-codex-mini", "gpt-5.3-codex-spark", "gpt-5.1"]
 			: provider === "openai"
 				? ["gpt-4.1-mini", "gpt-4o-mini", "gpt-4.1"]
-				: provider === "gemini"
+				: provider === "gemini" || provider === "gemini-cli"
 					? ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"]
 					: ["claude-haiku-4-5", "claude-3-5-haiku-latest", "claude-3-5-haiku-20241022"];
 
@@ -243,40 +364,87 @@ function pickFastModel(provider, requestedModel, piAi) {
 	return heuristic || models[0];
 }
 
-function resolveApiKey(provider) {
+async function resolveApiKey(provider, auth, authPath, piAi) {
+	// Providers that don't use auth.json
 	if (provider === "gemini-cli") {
 		return { apiKey: "__cli__" };
 	}
-
-	if (provider === "openai-codex") {
-		const apiKey = process.env.CODEX_API_KEY || process.env.OPENAI_API_KEY;
-		if (!apiKey) {
-			throw new Error("Missing API key. Set CODEX_API_KEY or OPENAI_API_KEY.");
-		}
-		return { apiKey, accountId: process.env.CHATGPT_ACCOUNT_ID };
-	}
-
 	if (provider === "openai") {
 		const apiKey = process.env.OPENAI_API_KEY;
-		if (!apiKey) {
-			throw new Error("Missing OPENAI_API_KEY.");
-		}
-		return { apiKey };
+		if (apiKey) return { apiKey };
 	}
-
 	if (provider === "gemini") {
 		const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-		if (!apiKey) {
-			throw new Error("Missing GEMINI_API_KEY (or GOOGLE_API_KEY).");
-		}
-		return { apiKey };
+		if (apiKey) return { apiKey };
+	}
+	if (provider === "openai-codex") {
+		const apiKey = process.env.CODEX_API_KEY || process.env.OPENAI_API_KEY;
+		if (apiKey) return { apiKey, accountId: process.env.CHATGPT_ACCOUNT_ID };
+	}
+	if (provider === "anthropic") {
+		const apiKey = process.env.ANTHROPIC_API_KEY;
+		if (apiKey) return { apiKey };
 	}
 
-	const apiKey = process.env.ANTHROPIC_API_KEY;
-	if (!apiKey) {
-		throw new Error("Missing ANTHROPIC_API_KEY.");
+	// Fall back to auth.json for OAuth-capable providers
+	const entry = auth?.[provider];
+	if (!entry) {
+		const envHint =
+			provider === "openai" ? " or set OPENAI_API_KEY" :
+			provider === "gemini" ? " or set GEMINI_API_KEY" :
+			provider === "openai-codex" ? " or set CODEX_API_KEY / OPENAI_API_KEY" :
+			provider === "anthropic" ? " or set ANTHROPIC_API_KEY" : "";
+		throw new Error(`No credentials for provider '${provider}' in ${authPath}${envHint}`);
 	}
-	return { apiKey };
+
+	const inferredType = entry.type || (entry.access && entry.refresh ? "oauth" : entry.key ? "api_key" : undefined);
+
+	if (inferredType === "api_key") {
+		const key = resolveConfigValue(entry.key);
+		if (!key) throw new Error(`API key for ${provider} is empty or unresolved.`);
+		return { apiKey: key, accountId: entry.accountId };
+	}
+
+	if (inferredType !== "oauth") {
+		throw new Error(`Unsupported credential type for ${provider}: ${String(entry.type || "unknown")}`);
+	}
+
+	const fallbackToken = getCachedOAuthAccess(entry);
+	const oauth = await loadPiAiOAuth(piAi);
+
+	if (typeof oauth.getOAuthApiKey !== "function") {
+		if (fallbackToken) return fallbackToken;
+		throw new Error(oauth.error || "Loaded pi-ai module does not export getOAuthApiKey");
+	}
+
+	const oauthCreds = {};
+	for (const [k, v] of Object.entries(auth || {})) {
+		if (v && (v.type === "oauth" || (v.access && v.refresh && v.expires))) {
+			oauthCreds[k] = v;
+		}
+	}
+
+	let refreshed;
+	try {
+		refreshed = await oauth.getOAuthApiKey(provider, oauthCreds);
+	} catch (err) {
+		if (fallbackToken) return fallbackToken;
+		throw err;
+	}
+
+	if (!refreshed?.apiKey) {
+		if (fallbackToken) return fallbackToken;
+		throw new Error(`No OAuth credentials available for provider '${provider}'`);
+	}
+
+	const mergedCred = { type: "oauth", ...(entry || {}), ...(refreshed.newCredentials || {}) };
+	auth[provider] = mergedCred;
+	writeJson(authPath, auth);
+
+	return {
+		apiKey: refreshed.apiKey,
+		accountId: mergedCred.accountId,
+	};
 }
 
 function buildUserPrompt(query, purpose) {
@@ -365,12 +533,7 @@ function runCurlRequest(url, { method = "GET", headers = {}, body, timeoutMs = 1
 async function requestTextWithFallback(url, { method = "GET", headers = {}, body, timeoutMs = 120000, debug = false } = {}) {
 	const signal = typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined;
 	try {
-		const res = await fetch(url, {
-			method,
-			headers,
-			body,
-			signal,
-		});
+		const res = await fetch(url, { method, headers, body, signal });
 		const text = await res.text();
 		return { status: res.status, ok: res.ok, text, transport: "fetch" };
 	} catch (err) {
@@ -493,6 +656,55 @@ async function runCodexSearch({ model, apiKey, accountId, query, purpose, timeou
 	return finalText;
 }
 
+async function runOpenAISearch({ model, apiKey, query, purpose, timeoutMs, baseUrl, debug = false }) {
+	const base = String(baseUrl || "https://api.openai.com/v1").replace(/\/+$/, "");
+	const endpoint = `${base}/responses`;
+	const body = {
+		model,
+		store: false,
+		instructions: buildSystemPrompt(),
+		input: [{ role: "user", content: buildUserPrompt(query, purpose) }],
+		tools: [{ type: "web_search_preview" }],
+		tool_choice: "auto",
+	};
+
+	const response = await requestTextWithFallback(endpoint, {
+		method: "POST",
+		headers: {
+			authorization: `Bearer ${apiKey}`,
+			"content-type": "application/json",
+			accept: "application/json",
+		},
+		body: JSON.stringify(body),
+		timeoutMs,
+		debug,
+	});
+
+	if (!response.ok) {
+		throw new Error(`OpenAI request failed (${response.status}) via ${response.transport}: ${response.text}`);
+	}
+
+	let parsed;
+	try {
+		parsed = JSON.parse(response.text);
+	} catch {
+		throw new Error("OpenAI returned non-JSON response");
+	}
+
+	const text = (parsed.output || [])
+		.filter((item) => item.type === "message")
+		.flatMap((item) => (Array.isArray(item.content) ? item.content : []))
+		.filter((part) => part.type === "output_text" && typeof part.text === "string")
+		.map((part) => part.text)
+		.join("\n\n")
+		.trim();
+
+	if (!text) {
+		throw new Error("OpenAI returned no text content");
+	}
+	return text;
+}
+
 function buildAnthropicHeaders(apiKey) {
 	const oauthToken = typeof apiKey === "string" && apiKey.includes("sk-ant-oat");
 	if (oauthToken) {
@@ -515,51 +727,45 @@ function buildAnthropicHeaders(apiKey) {
 	};
 }
 
-async function runOpenAISearch({ model, apiKey, query, purpose, timeoutMs, baseUrl, debug = false }) {
-	const endpoint = `${String(baseUrl || "https://api.openai.com/v1").replace(/\/+$/, "")}/responses`;
+async function runAnthropicSearch({ model, apiKey, query, purpose, timeoutMs, debug = false }) {
 	const body = {
 		model,
-		instructions: buildSystemPrompt(),
-		input: buildUserPrompt(query, purpose),
-		tools: [{ type: "web_search_preview" }],
+		max_tokens: 1800,
+		temperature: 0,
+		system: buildSystemPrompt(),
+		tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }],
+		messages: [{ role: "user", content: buildUserPrompt(query, purpose) }],
 	};
 
-	const response = await requestTextWithFallback(endpoint, {
+	const response = await requestTextWithFallback("https://api.anthropic.com/v1/messages", {
 		method: "POST",
-		headers: {
-			authorization: `Bearer ${apiKey}`,
-			"content-type": "application/json",
-			accept: "application/json",
-		},
+		headers: buildAnthropicHeaders(apiKey),
 		body: JSON.stringify(body),
 		timeoutMs,
 		debug,
 	});
-	const payloadText = response.text;
+
 	if (!response.ok) {
-		throw new Error(`OpenAI request failed (${response.status}) via ${response.transport}: ${payloadText}`);
+		throw new Error(`Anthropic request failed (${response.status}) via ${response.transport}: ${response.text}`);
 	}
 
 	let parsed;
 	try {
-		parsed = JSON.parse(payloadText);
+		parsed = JSON.parse(response.text);
 	} catch {
-		throw new Error("OpenAI returned non-JSON response");
+		throw new Error("Anthropic returned non-JSON response");
 	}
 
-	const textFromOutputText = typeof parsed.output_text === "string" ? parsed.output_text.trim() : "";
-	if (textFromOutputText) return textFromOutputText;
-
-	const text = (parsed.output || [])
-		.flatMap((item) => (Array.isArray(item?.content) ? item.content : []))
-		.filter((item) => item?.type === "output_text" && typeof item?.text === "string")
+	const text = (parsed.content || [])
+		.filter((item) => item.type === "text" && typeof item.text === "string")
 		.map((item) => item.text)
 		.join("\n\n")
 		.trim();
 
 	if (!text) {
-		throw new Error("OpenAI returned no text content");
+		throw new Error("Anthropic returned no text content");
 	}
+
 	return text;
 }
 
@@ -590,14 +796,13 @@ async function runGeminiSearch({ model, apiKey, query, purpose, timeoutMs, baseU
 		debug,
 	});
 
-	const payloadText = response.text;
 	if (!response.ok) {
-		throw new Error(`Gemini request failed (${response.status}) via ${response.transport}: ${payloadText}`);
+		throw new Error(`Gemini request failed (${response.status}) via ${response.transport}: ${response.text}`);
 	}
 
 	let parsed;
 	try {
-		parsed = JSON.parse(payloadText);
+		parsed = JSON.parse(response.text);
 	} catch {
 		throw new Error("Gemini returned non-JSON response");
 	}
@@ -655,49 +860,6 @@ async function runGeminiCliSearch({ model, query, purpose, timeoutMs, debug = fa
 	return stdout;
 }
 
-async function runAnthropicSearch({ model, apiKey, query, purpose, timeoutMs, debug = false }) {
-	const body = {
-		model,
-		max_tokens: 1800,
-		temperature: 0,
-		system: buildSystemPrompt(),
-		tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }],
-		messages: [{ role: "user", content: buildUserPrompt(query, purpose) }],
-	};
-
-	const response = await requestTextWithFallback("https://api.anthropic.com/v1/messages", {
-		method: "POST",
-		headers: buildAnthropicHeaders(apiKey),
-		body: JSON.stringify(body),
-		timeoutMs,
-		debug,
-	});
-
-	const payload = response.text;
-	if (!response.ok) {
-		throw new Error(`Anthropic request failed (${response.status}) via ${response.transport}: ${payload}`);
-	}
-
-	let parsed;
-	try {
-		parsed = JSON.parse(payload);
-	} catch {
-		throw new Error("Anthropic returned non-JSON response");
-	}
-
-	const text = (parsed.content || [])
-		.filter((item) => item.type === "text" && typeof item.text === "string")
-		.map((item) => item.text)
-		.join("\n\n")
-		.trim();
-
-	if (!text) {
-		throw new Error("Anthropic returned no text content");
-	}
-
-	return text;
-}
-
 function resolveEndpointForDiag(provider, model) {
 	if (provider === "gemini-cli") return "gemini-cli (local)";
 	if (provider === "openai-codex") return resolveCodexUrl(model.baseUrl);
@@ -726,10 +888,16 @@ async function main() {
 		process.exit(args.help ? 0 : 1);
 	}
 
-	const provider = pickProvider(args.provider);
+	const agentDir = getAgentDir();
+	const authPath = join(agentDir, "auth.json");
+	const settingsPath = join(agentDir, "settings.json");
+	const auth = readJson(authPath, {});
+	const settings = readJson(settingsPath, {});
+
+	const provider = pickProvider(args.provider, settings, auth);
 	const piAi = await loadPiAi();
 	const model = pickFastModel(provider, args.model, piAi);
-	const { apiKey, accountId } = resolveApiKey(provider);
+	const { apiKey, accountId } = await resolveApiKey(provider, auth, authPath, piAi);
 	const endpoint = resolveEndpointForDiag(provider, model);
 
 	if (args.debug) {
@@ -745,14 +913,16 @@ async function main() {
 		} else {
 			console.error("[debug]", JSON.stringify(debugInfo, null, 2));
 		}
-		try {
-			const probe = await runConnectivityProbe(endpoint, args.timeoutMs);
-			if (args.json) console.error(JSON.stringify({ probe }, null, 2));
-			else console.error(`[debug] probe ${probe.ok ? "ok" : "not-ok"}: status=${probe.status} transport=${probe.transport}`);
-		} catch (err) {
-			const info = normalizeFetchError(err);
-			if (args.json) console.error(JSON.stringify({ probeError: info }, null, 2));
-			else console.error(`[debug] probe failed: ${info.code || "no-code"} ${info.message}`);
+		if (provider !== "gemini-cli") {
+			try {
+				const probe = await runConnectivityProbe(endpoint, args.timeoutMs);
+				if (args.json) console.error(JSON.stringify({ probe }, null, 2));
+				else console.error(`[debug] probe ${probe.ok ? "ok" : "not-ok"}: status=${probe.status} transport=${probe.transport}`);
+			} catch (err) {
+				const info = normalizeFetchError(err);
+				if (args.json) console.error(JSON.stringify({ probeError: info }, null, 2));
+				else console.error(`[debug] probe failed: ${info.code || "no-code"} ${info.message}`);
+			}
 		}
 	}
 

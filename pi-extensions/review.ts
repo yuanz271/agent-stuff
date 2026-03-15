@@ -401,6 +401,7 @@ Flag issues that:
 7. Have provable impact on other parts of the code — it is not enough to speculate that a change may disrupt another part, you must identify the parts that are provably affected.
 8. Are clearly not intentional changes by the author.
 9. Be particularly careful with untrusted user input and follow the specific guidelines to review.
+10. Treat silent local error recovery (especially parsing/IO/network fallbacks) as high-signal review candidates unless there is explicit boundary-level justification.
 
 ## Untrusted User Input
 
@@ -423,13 +424,46 @@ Flag issues that:
 
 ## Review priorities
 
-1. Call out newly added dependencies explicitly and explain why they're needed.
+1. Surface critical non-blocking human callouts (migrations, dependency churn, auth/permissions, compatibility, destructive operations) at the end.
 2. Prefer simple, direct solutions over wrappers or abstractions without clear value.
-3. Favor fail-fast behavior; avoid logging-and-continue patterns that hide errors.
-4. Prefer predictable production behavior; crashing is better than silent degradation.
-5. Treat back pressure handling as critical to system stability.
-6. Apply system-level thinking; flag changes that increase operational risk or on-call wakeups.
-7. Ensure that errors are always checked against codes or stable identifiers, never error messages.
+3. Treat back pressure handling as critical to system stability.
+4. Apply system-level thinking; flag changes that increase operational risk or on-call wakeups.
+5. Ensure that errors are always checked against codes or stable identifiers, never error messages.
+
+## Fail-fast error handling (strict)
+
+When reviewing added or modified error handling, default to fail-fast behavior.
+
+1. Evaluate every new or changed \`try/catch\`: identify what can fail and why local handling is correct at that exact layer.
+2. Prefer propagation over local recovery. If the current scope cannot fully recover while preserving correctness, rethrow (optionally with context) instead of returning fallbacks.
+3. Flag catch blocks that hide failure signals (e.g. returning \`null\`/\`[]\`/\`false\`, swallowing JSON parse failures, logging-and-continue, or “best effort” silent recovery).
+4. JSON parsing/decoding should fail loudly by default. Quiet fallback parsing is only acceptable with an explicit compatibility requirement and clear tested behavior.
+5. Boundary handlers (HTTP routes, CLI entrypoints, supervisors) may translate errors, but must not pretend success or silently degrade.
+6. If a catch exists only to satisfy lint/style without real handling, treat it as a bug.
+7. When uncertain, prefer crashing fast over silent degradation.
+
+## Required human callouts (non-blocking, at the very end)
+
+After findings/verdict, you MUST append this final section:
+
+## Human Reviewer Callouts (Non-Blocking)
+
+Include only applicable callouts (no yes/no lines):
+
+- **This change adds a database migration:** <files/details>
+- **This change introduces a new dependency:** <package(s)/details>
+- **This change changes a dependency (or the lockfile):** <files/package(s)/details>
+- **This change modifies auth/permission behavior:** <what changed and where>
+- **This change introduces backwards-incompatible public schema/API/contract changes:** <what changed and where>
+- **This change includes irreversible or destructive operations:** <operation and scope>
+
+Rules for this section:
+1. These are informational callouts for the human reviewer, not fix items.
+2. Do not include them in Findings unless there is an independent defect.
+3. These callouts alone must not change the verdict.
+4. Only include callouts that apply to the reviewed change.
+5. Keep each emitted callout bold exactly as written.
+6. If none apply, write "- (none)".
 
 ## Priority levels
 
@@ -445,11 +479,12 @@ Provide your findings in a clear, structured format:
 1. List each finding with its priority tag, file location, and explanation.
 2. Findings must reference locations that overlap with the actual diff — don't flag pre-existing code.
 3. Keep line references as short as possible (avoid ranges over 5-10 lines; pick the most suitable subrange).
-4. At the end, provide an overall verdict: "correct" (no blocking issues) or "needs attention" (has blocking issues).
+4. Provide an overall verdict: "correct" (no blocking issues) or "needs attention" (has blocking issues).
 5. Ignore trivial style issues unless they obscure meaning or violate documented standards.
 6. Do not generate a full PR fix — only flag issues and optionally provide short suggestion blocks.
+7. End with the required "Human Reviewer Callouts (Non-Blocking)" section and all applicable bold callouts (no yes/no).
 
-Output all findings the author would fix if they knew about them. If there are no qualifying findings, explicitly state the code looks good. Don't stop at the first finding - list every qualifying issue.`;
+Output all findings the author would fix if they knew about them. If there are no qualifying findings, explicitly state the code looks good. Don't stop at the first finding - list every qualifying issue. Then append the required non-blocking callouts section.`;
 
 async function loadProjectReviewGuidelines(cwd: string): Promise<string | null> {
 	let currentDir = path.resolve(cwd);
@@ -1718,6 +1753,19 @@ For EACH finding, include:
 - Any constraints or preferences mentioned during review
 - Or "(none)"
 
+## Human Reviewer Callouts (Non-Blocking)
+Include only applicable callouts (no yes/no lines):
+- **This change adds a database migration:** <files/details>
+- **This change introduces a new dependency:** <package(s)/details>
+- **This change changes a dependency (or the lockfile):** <files/package(s)/details>
+- **This change modifies auth/permission behavior:** <what changed and where>
+- **This change introduces backwards-incompatible public schema/API/contract changes:** <what changed and where>
+- **This change includes irreversible or destructive operations:** <operation and scope>
+
+If none apply, write "- (none)".
+
+These are informational callouts for humans and are not fix items by themselves.
+
 Preserve exact file paths, function names, and error messages where available.`;
 
 	const REVIEW_FIX_FINDINGS_PROMPT = `Use the latest review summary in this session and implement the review findings now.
@@ -1726,8 +1774,12 @@ Instructions:
 1. Treat the summary's Findings/Fix Queue as a checklist.
 2. Fix in priority order: P0, P1, then P2 (include P3 if quick and safe).
 3. If a finding is invalid/already fixed/not possible right now, briefly explain why and continue.
-4. Run relevant tests/checks for touched code where practical.
-5. End with: fixed items, deferred/skipped items (with reasons), and verification results.`;
+4. Treat "Human Reviewer Callouts (Non-Blocking)" as informational only; do not convert them into fix tasks unless there is a separate explicit finding.
+5. Follow fail-fast error handling: do not add local catch/fallback recovery unless this scope is an explicit boundary that can safely translate the failure.
+6. If you add or keep a \`try/catch\`, explain the expected failure mode and either rethrow with context or return a boundary-safe error response.
+7. JSON parsing/decoding should fail loudly by default; avoid silent fallback parsing.
+8. Run relevant tests/checks for touched code where practical.
+9. End with: fixed items, deferred/skipped items (with reasons), and verification results.`;
 
 	type EndReviewAction = "returnOnly" | "returnAndFix" | "returnAndSummarize";
 	type EndReviewActionResult = "ok" | "cancelled" | "error";
