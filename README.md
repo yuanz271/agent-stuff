@@ -21,6 +21,7 @@ All skill files are in the [`skills`](skills) folder:
 * [`/autoresearch-create`](skills/autoresearch-create) - Sets up and runs an autonomous experiment loop for a chosen optimization target (goal/metric/scope/constraints).
 * [`/critique`](skills/critique) - Structured critique of writing or code with numbered critiques (C1, C2, ...), severity, quoted passages, and inline {C1} markers in an annotated copy
 * [`/simplify`](skills/simplify) - Portable prompt-only guidance for simplifying recently changed code while preserving behavior
+* [`/pdf-extract`](skills/pdf-extract) - High-fidelity PDF → Markdown via Vertex AI Gemini (equations, tables, multi-column layout)
 * [`/summarize`](skills/summarize) - Converting URLs/files to Markdown with optional summaries, including structured research-paper critique mode for PDF papers
 * [`/tmux`](skills/tmux) - Driving tmux directly with keystrokes and pane output scraping
 * [`/uv`](skills/uv) - Using `uv` for Python dependency management and script execution
