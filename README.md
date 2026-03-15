@@ -44,7 +44,7 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 * [`review.ts`](pi-extensions/review.ts) - Code review command inspired by Codex. Supports reviewing uncommitted changes, against a base branch (PR style), specific commits, or with custom instructions, plus optional loop fixing mode that iterates review→fix until blocking findings are cleared. Includes Ctrl+R shortcut.
 * [`multi-edit.ts`](pi-extensions/multi-edit.ts) - Replaces the built-in `edit` tool with batch `multi` edits and Codex-style `patch` support, including preflight validation.
 * [`session-breakdown.ts`](pi-extensions/session-breakdown.ts) - TUI for 7/30/90-day session and cost analysis with usage graph.
-* [`todos.ts`](pi-extensions/todos.ts) - Todo manager extension with file-backed storage and TUI.
+
 * [`subagent`](pi-extensions/subagent) - Delegates tasks to specialized subagents with isolated contexts; supports single, parallel, and chained workflows.
 * [`uv.ts`](pi-extensions/uv.ts) - Bash wrapper that routes Python tooling (`pip`, `poetry`, `python -m ...`) toward `uv` workflows via intercepted commands.
 
