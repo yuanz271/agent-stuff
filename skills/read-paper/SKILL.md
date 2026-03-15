@@ -8,30 +8,15 @@ Full structured workflow for reading and analyzing a research paper PDF. Produce
 ## Inputs
 
 Collect before starting:
-- **Paper URL** or **local PDF path**
+- **Local PDF path**
 - **Title**
 - **Venue / year** (e.g. NeurIPS 2024, arXiv 2023, Nature Neuroscience 2022, bioRxiv 2025)
 - **Output directory** (default: `./pdf/`)
-- **Prefix** (default: stem of the PDF filename, e.g. `attention-is-all-you-need` from `attention-is-all-you-need.pdf`; if the filename already contains a hash/slug such as `209423f076b6479ab3a4f45886e30306`, use that as-is)
+- **Prefix** (default: stem of the PDF filename, e.g. `attention-is-all-you-need` from `attention-is-all-you-need.pdf`; if the filename already contains a hash/slug such as `209423f076b6479ab3a4f45886e30306`, use that as-is; otherwise derive a short slug from the title and year, e.g. `vaswani2017-transformer`)
 
 ---
 
-## Step 1 — Acquire and normalize
-
-1. If a URL is given, download the PDF:
-   ```bash
-   mkdir -p ./pdf
-   curl -L "<url>" -o "./pdf/<prefix>.pdf"
-   ```
-2. Verify the file exists and size is non-trivial (`ls -lh ./pdf/<prefix>.pdf`).
-3. Determine the prefix from the saved filename:
-   - Use the full stem if the filename is already descriptive (e.g. `attention-is-all-you-need`)
-   - Use the hash/slug if present (e.g. `209423f076b6479ab3a4f45886e30306` from an OpenReview/proceedings URL)
-   - Otherwise derive a short slug from the title (e.g. `vaswani2017-transformer`)
-
----
-
-## Step 2 — Extract machine-readable text
+## Step 1 — Extract machine-readable text
 
 Load and follow the `pdf-extract` skill to extract the PDF. Pass:
 - **input**: `./pdf/<prefix>.pdf`
@@ -127,12 +112,7 @@ Every deliverable must include:
 After deliverables, emit a completed checklist:
 
 ```
-## A. Acquisition
-- [x] PDF downloaded
-- [x] File opens and size looks correct
-- [x] Stable local naming applied
-
-## B. Text processing
+## A. Text processing
 - [x] Clean markdown generated (<title>-main-text-clean.md)
 
 ## C. Structural scan
@@ -186,7 +166,6 @@ Fill in `[ ]`/`[x]` accurately. Fill in the decision log.
 
 | File | Purpose |
 |---|---|
-| `<prefix>.pdf` | Original PDF |
 | `<title>-main-text-clean.md` | Extracted markdown |
 | `<prefix>-discussion-notes.md` | Pass A–D notes + interrogation |
 | `<prefix>-executive-summary.md` | One-page summary |
