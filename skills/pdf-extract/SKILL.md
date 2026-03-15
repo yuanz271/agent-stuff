@@ -25,17 +25,14 @@ Use `summarize`/`markitdown` for quick prose-only PDFs or when Vertex AI is unav
 Install dependencies (once per machine):
 
 ```bash
-cd ~/.agent-stuff/skills/pdf-extract
 npm install
 ```
 
 ## Usage
 
-Run from the skill directory:
+Paths are relative to this skill directory.
 
 ```bash
-cd ~/.agent-stuff/skills/pdf-extract
-
 # Print extracted Markdown to stdout
 node extract.mjs <path-to-pdf>
 
@@ -45,15 +42,6 @@ node extract.mjs paper.pdf --output paper-clean.md
 # Use a GCS URI instead of a local file
 node extract.mjs gs://my-bucket/paper.pdf --output paper-clean.md
 ```
-
-### Paper reading workflow (steps 1–2)
-
-```bash
-cd ~/.agent-stuff/skills/pdf-extract
-node extract.mjs ~/papers/<hash>-Paper.pdf --output ~/papers/<hash>-Paper-main-text-clean.md
-```
-
-Then proceed with discussion notes, executive summary, and critique as in `paper_reading_workflow.md`.
 
 ## Output
 
