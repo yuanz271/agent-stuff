@@ -35,6 +35,16 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## pi-side-chat
+
+- **Source**: https://github.com/nicobailon/pi-side-chat
+- **Included paths in this repo**:
+  - `pi-extensions/side-chat/*`
+- **Upstream license**: MIT License
+- **Upstream copyright**: Copyright (c) 2026 Nico Bailon
+
+MIT License — same terms as stated in upstream `package.json` (`"license": "MIT"`).
+
 ## damage-control extension
 
 - **Source**: https://github.com/cagdotin/agents
