@@ -10,9 +10,9 @@ Full structured workflow for reading and analyzing a research paper PDF. Produce
 Collect before starting:
 - **Paper URL** or **local PDF path**
 - **Title**
-- **Venue / year**
+- **Venue / year** (e.g. NeurIPS 2024, arXiv 2023, Nature Neuroscience 2022, bioRxiv 2025)
 - **Output directory** (default: `./pdf/`)
-- **Prefix** (default: stem of the PDF filename, e.g. `attention-is-all-you-need` from `attention-is-all-you-need.pdf`; if the filename already contains a hash/slug such as `209423f076b6479ab3a4f45886e30306-Paper-Conference`, use that as-is)
+- **Prefix** (default: stem of the PDF filename, e.g. `attention-is-all-you-need` from `attention-is-all-you-need.pdf`; if the filename already contains a hash/slug such as `209423f076b6479ab3a4f45886e30306`, use that as-is)
 
 ---
 
@@ -26,7 +26,7 @@ Collect before starting:
 2. Verify the file exists and size is non-trivial (`ls -lh ./pdf/<prefix>.pdf`).
 3. Determine the prefix from the saved filename:
    - Use the full stem if the filename is already descriptive (e.g. `attention-is-all-you-need`)
-   - Use the hash/slug if present (e.g. `209423f076b6479ab3a4f45886e30306-Paper-Conference`)
+   - Use the hash/slug if present (e.g. `209423f076b6479ab3a4f45886e30306` from an OpenReview/proceedings URL)
    - Otherwise derive a short slug from the title (e.g. `vaswani2017-transformer`)
 
 ---
@@ -214,7 +214,7 @@ Fill in `[ ]`/`[x]` accurately. Fill in the decision log.
 | `<prefix>-formal-critique-memo.md` | Detailed critique |
 | `<prefix>-synthesis-note.md` | Final position + extensions |
 
-`<prefix>` is the PDF filename stem. Use whatever is already in the filename; if downloading fresh, use a short descriptive slug (e.g. `vaswani2017-transformer`) or the hash from the proceedings URL if available.
+`<prefix>` is the PDF filename stem. Use whatever is already in the filename; if downloading fresh, derive a short slug from the title and year (e.g. `vaswani2017-transformer`, `kingma2013-vae`, `svoboda2022-neuropixels`). Sources include arXiv, bioRxiv, OpenReview, journals, and proceedings — naming is source-agnostic.
 
 ---
 
