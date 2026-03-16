@@ -17,3 +17,15 @@ When porting or copying code from an external repository:
 1. Check the upstream license before copying. Confirm it permits reuse (MIT, Apache-2.0, BSD, etc.).
 2. Add an entry to `THIRD_PARTY_NOTICES.md` with source URL, included paths, license type, and copyright notice.
 3. If no license file is present, note that explicitly in `THIRD_PARTY_NOTICES.md` and verify before redistribution.
+
+## Upstream sync reminder
+
+This repo is no longer in a GitHub fork network. Manually check upstream periodically:
+- Upstream: `https://github.com/mitsuhiko/agent-stuff.git`
+- Suggested cadence: every Monday
+- Quick checklist:
+  1. `git fetch upstream`
+  2. `git log --oneline main..upstream/main`
+  3. Cherry-pick selected fixes/features
+  4. Run minimal validation
+  5. `git push`
