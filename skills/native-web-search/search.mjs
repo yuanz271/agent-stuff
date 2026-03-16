@@ -225,8 +225,8 @@ function pickFastModel(provider, requestedModel, piAi) {
 	return models.find((m) => /mini|haiku|spark|flash|fast/i.test(m.id)) ?? models[0];
 }
 
-function buildUserPrompt(query, purpose) {
-	return `Search the internet for: ${query}\n\nPurpose: ${purpose}\n\nReturn a concise research summary with:\n- 3 to 7 key findings\n- for every finding: title, why it matters for this purpose, and a full canonical URL (https://...)\n- if multiple sources disagree, call that out\n- finish with a short recommendation on which source(s) to trust first.`;
+function buildUserPrompt(query, purpose, currentYear) {
+	return `Search the internet for: ${query}\n\nPurpose: ${purpose}\nCurrent year: ${currentYear}\n\nAssume the current year is ${currentYear}. Do not default to earlier years. If you reference information from a prior year, explicitly label it as prior-year.\nPrioritize the latest available sources and updates (newest first when possible).\nIf a source appears outdated relative to ${currentYear}, explicitly label it as potentially stale.\nPrioritize web-search tool results as-is; avoid over-interpretation beyond cited pages.\n\nReturn a concise research summary with:\n- 3 to 7 key findings\n- for every finding: title, why it matters for this purpose, and a full canonical URL (https://...)\n- include publication/update year for each finding when available\n- if multiple sources disagree, call that out\n- finish with a short recommendation on which source(s) to trust first.`;
 }
 
 function buildSystemPrompt() {
@@ -341,7 +341,7 @@ async function runCodexSearch({ model, apiKey, accountId, query, purpose, timeou
 		body: JSON.stringify({
 			model, store: false, stream: true,
 			instructions: buildSystemPrompt(),
-			input: [{ role: "user", content: buildUserPrompt(query, purpose) }],
+			input: [{ role: "user", content: buildUserPrompt(query, purpose, new Date().getFullYear()) }],
 			tools: [{ type: "web_search" }],
 			tool_choice: "auto",
 		}),
@@ -394,7 +394,7 @@ async function runOpenAISearch({ model, apiKey, query, purpose, timeoutMs, baseU
 		body: JSON.stringify({
 			model, store: false,
 			instructions: buildSystemPrompt(),
-			input: [{ role: "user", content: buildUserPrompt(query, purpose) }],
+			input: [{ role: "user", content: buildUserPrompt(query, purpose, new Date().getFullYear()) }],
 			tools: [{ type: "web_search_preview" }],
 			tool_choice: "auto",
 		}),
@@ -431,7 +431,7 @@ async function runAnthropicSearch({ model, apiKey, query, purpose, timeoutMs, de
 			model, max_tokens: 1800, temperature: 0,
 			system: buildSystemPrompt(),
 			tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }],
-			messages: [{ role: "user", content: buildUserPrompt(query, purpose) }],
+			messages: [{ role: "user", content: buildUserPrompt(query, purpose, new Date().getFullYear()) }],
 		}),
 		timeoutMs, debug,
 	});
@@ -459,7 +459,7 @@ async function runGeminiSearch({ model, apiKey, query, purpose, timeoutMs, baseU
 		headers: { "content-type": "application/json", accept: "application/json" },
 		body: JSON.stringify({
 			systemInstruction: { parts: [{ text: buildSystemPrompt() }] },
-			contents: [{ role: "user", parts: [{ text: buildUserPrompt(query, purpose) }] }],
+			contents: [{ role: "user", parts: [{ text: buildUserPrompt(query, purpose, new Date().getFullYear()) }] }],
 			tools: [{ google_search: {} }],
 		}),
 		timeoutMs, debug,
@@ -481,7 +481,7 @@ async function runGeminiSearch({ model, apiKey, query, purpose, timeoutMs, baseU
 }
 
 async function runGeminiCliSearch({ model, query, purpose, timeoutMs, debug = false }) {
-	const prompt = `${buildSystemPrompt()}\n\n${buildUserPrompt(query, purpose)}`;
+	const prompt = `${buildSystemPrompt()}\n\n${buildUserPrompt(query, purpose, new Date().getFullYear())}`;
 	const args = ["-p", prompt, "--approval-mode", "yolo", "-o", "text"];
 	if (model) args.push("-m", model);
 
