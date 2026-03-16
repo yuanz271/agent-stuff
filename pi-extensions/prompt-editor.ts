@@ -76,6 +76,21 @@ async function getMtimeMs(p: string): Promise<number | null> {
 	}
 }
 
+async function resolvePersistPath(filePath: string): Promise<string> {
+	try {
+		const st = await fs.lstat(filePath);
+		if (!st.isSymbolicLink()) return filePath;
+		try {
+			return await fs.realpath(filePath);
+		} catch {
+			throw new Error(`Modes file symlink is broken: ${filePath}`);
+		}
+	} catch (err: any) {
+		if (err?.code === "ENOENT") return filePath;
+		throw err;
+	}
+}
+
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -489,6 +504,7 @@ async function ensureRuntime(pi: ExtensionAPI, ctx: ExtensionContext): Promise<v
 
 async function persistRuntime(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
 	if (!runtime.filePath) return;
+	const persistPath = await resolvePersistPath(runtime.filePath);
 
 	// Do not persist currentMode; multiple running pi sessions would fight over it.
 	// Instead we infer the mode on startup from the active model + thinking level.
@@ -496,12 +512,12 @@ async function persistRuntime(pi: ExtensionAPI, ctx: ExtensionContext): Promise<
 	const patch = computeModesPatch(runtime.baseline, runtime.data, false);
 	if (!patch) return;
 
-	await withFileLock(runtime.filePath, async () => {
+	await withFileLock(persistPath, async () => {
 		// Merge our local patch into the latest on disk to avoid clobbering other agents.
-		const latest = await loadModesFile(runtime.filePath, ctx, pi);
+		const latest = await loadModesFile(persistPath, ctx, pi);
 		applyModesPatch(latest, patch);
 		ensureDefaultModeEntries(latest, ctx, pi);
-		await saveModesFile(runtime.filePath, latest);
+		await saveModesFile(persistPath, latest);
 
 		runtime.data = latest;
 		runtime.baseline = cloneModesFile(latest);
