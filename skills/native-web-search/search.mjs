@@ -69,10 +69,11 @@ function parseArgs(argv) {
 
 function usage() {
 	return `Usage:
-  node search.mjs "<query>" [--purpose "<why>"] [--provider openai-codex|anthropic] [--model <id>] [--json]
+  node search.mjs "<query>" [--purpose "<why>"] [--provider gemini-cli|openai-codex|anthropic] [--model <id>] [--json]
 
 Examples:
   node search.mjs "latest python release" --purpose "update dependency notes"
+  node search.mjs "latest python release" --provider gemini-cli
   node search.mjs "HTTP/3 browser support 2026" --provider openai-codex
   node search.mjs "vite 7 breaking changes" --json`;
 }
@@ -118,14 +119,22 @@ function getAgentDir() {
 function normalizeProvider(provider) {
 	if (!provider) return undefined;
 	const p = String(provider).toLowerCase().trim();
+	if (p === "gemini-cli") return "gemini-cli";
 	if (p.includes("anthropic") || p.includes("claude")) return "anthropic";
 	if (p.includes("codex") || p === "openai" || p.startsWith("openai")) return "openai-codex";
 	return undefined;
 }
 
+function isGeminiCliAvailable() {
+	const result = spawnSync("gemini", ["--version"], { encoding: "utf8", timeout: 5000 });
+	return result.status === 0;
+}
+
 function pickProvider(argProvider, settings, auth) {
 	const forced = normalizeProvider(argProvider);
 	if (forced) return forced;
+
+	if (isGeminiCliAvailable()) return "gemini-cli";
 
 	const fromSettings = normalizeProvider(settings?.defaultProvider);
 	if (fromSettings) return fromSettings;
@@ -133,7 +142,7 @@ function pickProvider(argProvider, settings, auth) {
 	if (auth?.["openai-codex"]) return "openai-codex";
 	if (auth?.anthropic) return "anthropic";
 
-	throw new Error("Could not determine provider. Pass --provider openai-codex|anthropic");
+	throw new Error("Could not determine provider. Pass --provider gemini-cli|openai-codex|anthropic");
 }
 
 function decodeJwtAccountId(jwt) {
@@ -305,6 +314,7 @@ function pickFastModel(provider, requestedModel, piAi) {
 	const models = typeof piAi.getModels === "function" ? piAi.getModels(provider) : [];
 	if (!Array.isArray(models) || models.length === 0) {
 		if (requestedModel) return { id: requestedModel, baseUrl: undefined };
+		if (provider === "gemini-cli") return { id: "gemini-2.5-flash", baseUrl: undefined };
 		if (provider === "openai-codex") return { id: "gpt-5.1-codex-mini", baseUrl: "https://chatgpt.com/backend-api" };
 		return { id: "claude-haiku-4-5", baseUrl: "https://api.anthropic.com" };
 	}
@@ -330,6 +340,10 @@ function pickFastModel(provider, requestedModel, piAi) {
 }
 
 async function resolveApiKey(provider, auth, authPath, piAi) {
+	if (provider === "gemini-cli") {
+		return { apiKey: "__cli__", accountId: undefined };
+	}
+
 	const entry = auth?.[provider];
 	if (!entry) {
 		throw new Error(`No credentials for provider '${provider}' in ${authPath}`);
@@ -575,6 +589,34 @@ async function runAnthropicSearch({ model, apiKey, query, purpose, timeoutMs }) 
 	return text;
 }
 
+async function runGeminiCliSearch({ model, query, purpose, timeoutMs }) {
+	const prompt = `${buildSystemPrompt()}\n\n${buildUserPrompt(query, purpose, new Date().getFullYear())}`;
+	const args = ["-p", prompt, "--approval-mode", "yolo", "-o", "text"];
+	if (model) args.push("-m", model);
+
+	const result = spawnSync("gemini", args, {
+		encoding: "utf8",
+		timeout: timeoutMs + 5000,
+		maxBuffer: 10 * 1024 * 1024,
+		env: { ...process.env, GEMINI_CLI_TIMEOUT: String(Math.max(10, Math.ceil(timeoutMs / 1000))) },
+	});
+
+	if (result.error) throw new Error(`gemini-cli spawn failed: ${result.error.message}`);
+
+	const stdout = (result.stdout || "")
+		.split(/\r?\n/)
+		.filter((line) => !line.startsWith("YOLO mode is enabled"))
+		.join("\n")
+		.trim();
+
+	if (result.status !== 0) {
+		const stderr = (result.stderr || "").trim();
+		throw new Error(`gemini-cli exited ${result.status}: ${stderr || stdout || "(no output)"}`);
+	}
+	if (!stdout) throw new Error("gemini-cli returned empty output");
+	return stdout;
+}
+
 async function main() {
 	const args = parseArgs(process.argv.slice(2));
 	if (args.help || !args.query) {
@@ -594,23 +636,30 @@ async function main() {
 	const { apiKey, accountId } = await resolveApiKey(provider, auth, authPath, piAi);
 
 	const text =
-		provider === "openai-codex"
-			? await runCodexSearch({
-					model: model.id,
-					apiKey,
-					accountId,
+		provider === "gemini-cli"
+			? await runGeminiCliSearch({
+					model: args.model || model.id,
 					query: args.query,
 					purpose: args.purpose,
 					timeoutMs: args.timeoutMs,
-					baseUrl: model.baseUrl,
 			  })
-			: await runAnthropicSearch({
-					model: model.id,
-					apiKey,
-					query: args.query,
-					purpose: args.purpose,
-					timeoutMs: args.timeoutMs,
-			  });
+			: provider === "openai-codex"
+				? await runCodexSearch({
+						model: model.id,
+						apiKey,
+						accountId,
+						query: args.query,
+						purpose: args.purpose,
+						timeoutMs: args.timeoutMs,
+						baseUrl: model.baseUrl,
+				  })
+				: await runAnthropicSearch({
+						model: model.id,
+						apiKey,
+						query: args.query,
+						purpose: args.purpose,
+						timeoutMs: args.timeoutMs,
+				  });
 
 	if (args.json) {
 		console.log(
