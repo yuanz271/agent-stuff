@@ -41,5 +41,6 @@ Keep this list updated whenever importing or porting an extension/skill so sourc
 - `pi-extensions/damage-control/*` → `https://github.com/cagdotin/agents`
 - `pi-extensions/side-chat/*` → `https://github.com/nicobailon/pi-side-chat`
 - `pi-extensions/pi-tasks/*` → `https://github.com/tintinweb/pi-tasks`
+- `pi-extensions/pi-subagents/*` → `https://github.com/tintinweb/pi-subagents`
 
 Also update `THIRD_PARTY_NOTICES.md` whenever this list changes.

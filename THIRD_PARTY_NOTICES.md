@@ -61,3 +61,13 @@ MIT License — same terms as stated in upstream `package.json` (`"license": "MI
 - **Upstream copyright**: Copyright (c) 2026 tintinweb
 
 MIT License — same terms as stated in upstream `LICENSE`.
+
+## pi-subagents
+
+- **Source**: https://github.com/tintinweb/pi-subagents
+- **Included paths in this repo**:
+  - `pi-extensions/pi-subagents/*`
+- **Upstream license**: MIT License
+- **Upstream copyright**: Copyright (c) 2026 tintinweb
+
+MIT License — same terms as stated in upstream `LICENSE`.
