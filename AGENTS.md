@@ -32,6 +32,8 @@ This repo is no longer in a GitHub fork network. Manually check upstream periodi
 
 ## Import provenance (extensions/skills)
 
+Default provenance: unless explicitly listed otherwise below, repository content is sourced from `https://github.com/mitsuhiko/agent-stuff`.
+
 Keep this list updated whenever importing or porting an extension/skill so source tracking stays explicit.
 
 - `pi-extensions/pi-autoresearch/*` → `https://github.com/davebcn87/pi-autoresearch`
