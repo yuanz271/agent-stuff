@@ -4,7 +4,7 @@ bash_tool_patterns:
   - id: rm-recursive-force
     pattern: '\brm\s+(-[^\s]*)*[rRf]'
     reason: rm with recursive/force flags
-    action: block
+    action: ask
 
   - id: git-reset-hard
     pattern: '\bgit\s+reset\s+--hard\b'
