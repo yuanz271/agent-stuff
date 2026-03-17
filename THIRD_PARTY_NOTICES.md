@@ -51,3 +51,13 @@ MIT License — same terms as stated in upstream `package.json` (`"license": "MI
 - **Included paths in this repo**:
   - `pi-extensions/damage-control/*`
 - **Upstream license note**: upstream `README.md` states MIT, but no root `LICENSE` file was present in the referenced repository at the time of import. Verify upstream licensing terms before redistribution.
+
+## pi-tasks
+
+- **Source**: https://github.com/tintinweb/pi-tasks
+- **Included paths in this repo**:
+  - `pi-extensions/pi-tasks/*`
+- **Upstream license**: MIT License
+- **Upstream copyright**: Copyright (c) 2026 tintinweb
+
+MIT License — same terms as stated in upstream `LICENSE`.

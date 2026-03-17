@@ -44,7 +44,7 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 * [`loop.ts`](pi-extensions/loop.ts) - Runs a prompt loop for rapid iterative coding with optional auto-continue control.
 * [`lsp.ts`](pi-extensions/lsp.ts) - Lazy auto-start background LSP integration for agent coding loops: prefers project-local LSP binaries (`node_modules/.bin`, `.venv/bin`) before global PATH, injects concise diagnostics after `write`/`edit`, and provides lightweight debug commands (`/lsp-status`, `/lsp-reload`).
 * [`review.ts`](pi-extensions/review.ts) - Code review command inspired by Codex. Supports reviewing uncommitted changes, against a base branch (PR style), specific commits, or with custom instructions, plus optional loop fixing mode that iterates review→fix until blocking findings are cleared. Includes Ctrl+R shortcut.
-* [`todos.ts`](pi-extensions/todos.ts) - Persistent file-backed todo manager TUI with agent `todo` tool (`/tasks` command).
+* [`pi-tasks`](pi-extensions/pi-tasks) - Claude Code-style task tracking extension with task tools, widget, dependency graph, and optional subagent task execution (`/tasks` command).
 * [`session-breakdown.ts`](pi-extensions/session-breakdown.ts) - TUI for 7/30/90-day session and cost analysis with usage graph.
 
 * [`side-chat`](pi-extensions/side-chat) - Fork the current conversation into a non-capturing overlay side chat (`Alt+/`, `/side`) while the main agent keeps working.
