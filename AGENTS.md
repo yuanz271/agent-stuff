@@ -29,3 +29,15 @@ This repo is no longer in a GitHub fork network. Manually check upstream periodi
   3. Cherry-pick selected fixes/features
   4. Run minimal validation
   5. `git push`
+
+## Import provenance (extensions/skills)
+
+Keep this list updated whenever importing or porting an extension/skill so source tracking stays explicit.
+
+- `pi-extensions/pi-autoresearch/*` → `https://github.com/davebcn87/pi-autoresearch`
+- `skills/autoresearch-create/SKILL.md` → `https://github.com/davebcn87/pi-autoresearch`
+- `pi-extensions/damage-control/*` → `https://github.com/cagdotin/agents`
+- `pi-extensions/side-chat/*` → `https://github.com/nicobailon/pi-side-chat`
+- `pi-extensions/pi-tasks/*` → `https://github.com/tintinweb/pi-tasks`
+
+Also update `THIRD_PARTY_NOTICES.md` whenever this list changes.
