@@ -37,6 +37,7 @@ Default provenance: unless explicitly listed otherwise below, repository content
 Keep this list updated whenever importing or porting an extension/skill so source tracking stays explicit.
 
 - `default (all other repo content unless listed below)` → `https://github.com/mitsuhiko/agent-stuff` @ `dff57a95a670` (`origin/main`)
+- `pi-extensions/websearch/*` → original work, not ported from upstream
 - `pi-extensions/pi-autoresearch/*` → `https://github.com/davebcn87/pi-autoresearch` @ `21e7ae916fc6` (`origin/main`)
 - `skills/autoresearch-create/SKILL.md` → `https://github.com/davebcn87/pi-autoresearch` @ `21e7ae916fc6` (`origin/main`)
 - `pi-extensions/damage-control/*` → `https://github.com/cagdotin/agents` @ `d8974ff068b4` (`origin/master`)
