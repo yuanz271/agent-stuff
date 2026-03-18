@@ -17,7 +17,7 @@ All skill files are in the [`skills`](skills) folder:
 * [`/github`](skills/github) - Interacting with GitHub via the `gh` CLI (issues, PRs, runs, and APIs)
 * [`/librarian`](skills/librarian) - Caching and refreshing remote git repositories in `~/.cache/checkouts`
 * [`/mermaid`](skills/mermaid) - Creating and validating Mermaid diagrams with the official Mermaid CLI
-* [`/native-web-search`](skills/native-web-search) - Fast internet research with concise summaries and explicit full source URLs
+
 * [`/autoresearch-create`](skills/autoresearch-create) - Sets up and runs an autonomous experiment loop for a chosen optimization target (goal/metric/scope/constraints).
 * [`/critique`](skills/critique) - Structured critique of writing or code with numbered critiques (C1, C2, ...), severity, quoted passages, and inline {C1} markers in an annotated copy
 * [`/simplify`](skills/simplify) - Portable prompt-only guidance for simplifying recently changed code while preserving behavior
