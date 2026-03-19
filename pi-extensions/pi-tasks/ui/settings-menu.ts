@@ -29,22 +29,23 @@ export async function openSettingsMenu(
   await ui.custom((_tui, theme, _kb, done) => {
     const items: SettingItem[] = [
       {
+        id: "taskScope",
+        label: "Task storage",
+        description:
+          "memory: tasks live only in memory, lost when session ends. " +
+          "session: persisted per session (tasks-<sessionId>.json), survives resume. " +
+          "project: shared across all sessions (tasks.json). " +
+          "Takes effect on next session start.",
+        currentValue: cfg.taskScope ?? "session",
+        values: ["memory", "session", "project"],
+      },
+      {
         id: "autoCascade",
         label: "Auto-execute with agents",
         description:
           "When ON: pending agent tasks start automatically once their dependencies complete. " +
           "When OFF: use TaskExecute to launch them manually.",
         currentValue: (cfg.autoCascade ?? false) ? "on" : "off",
-        values: ["on", "off"],
-      },
-      {
-        id: "persist",
-        label: "Persist tasks across sessions",
-        description:
-          "When ON: pending and in-progress tasks are saved to .pi/tasks/tasks.json so they " +
-          "survive a restart. Completed tasks are never written to disk. " +
-          "Toggle takes effect on next session start.",
-        currentValue: (cfg.persistTasks ?? true) ? "on" : "off",
         values: ["on", "off"],
       },
     ];
@@ -58,8 +59,8 @@ export async function openSettingsMenu(
           cfg.autoCascade = newValue === "on";
           saveTasksConfig(cfg);
         }
-        if (id === "persist") {
-          cfg.persistTasks = newValue === "on";
+        if (id === "taskScope") {
+          cfg.taskScope = newValue as "memory" | "session" | "project";
           saveTasksConfig(cfg);
         }
       },

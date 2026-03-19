@@ -7,8 +7,8 @@
 
 import { truncateToWidth } from "@mariozechner/pi-tui";
 import type { AgentManager } from "../agent-manager.js";
-import type { SubagentType } from "../types.js";
 import { getConfig } from "../agent-types.js";
+import type { SubagentType } from "../types.js";
 
 // ---- Constants ----
 
@@ -55,6 +55,10 @@ export interface AgentActivity {
   tokens: string;
   responseText: string;
   session?: { getSessionStats(): { tokens: { total: number } } };
+  /** Current turn count. */
+  turnCount: number;
+  /** Effective max turns for this agent (undefined = unlimited). */
+  maxTurns?: number;
 }
 
 /** Metadata attached to Agent tool results for custom rendering. */
@@ -74,6 +78,10 @@ export interface AgentDetails {
   modelName?: string;
   /** Notable config tags (e.g. ["thinking: high", "isolated"]). */
   tags?: string[];
+  /** Current turn count. */
+  turnCount?: number;
+  /** Effective max turns (undefined = unlimited). */
+  maxTurns?: number;
   agentId?: string;
   error?: string;
 }
@@ -85,6 +93,11 @@ export function formatTokens(count: number): string {
   if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M token`;
   if (count >= 1_000) return `${(count / 1_000).toFixed(1)}k token`;
   return `${count} token`;
+}
+
+/** Format turn count with optional max limit: "⟳5≤30" or "⟳5". */
+export function formatTurns(turnCount: number, maxTurns?: number | null): string {
+  return maxTurns != null ? `⟳${turnCount}≤${maxTurns}` : `⟳${turnCount}`;
 }
 
 /** Format milliseconds as human-readable duration. */
@@ -214,7 +227,7 @@ export class AgentWidget {
   }
 
   /** Render a finished agent line. */
-  private renderFinishedLine(a: { type: SubagentType; status: string; description: string; toolUses: number; startedAt: number; completedAt?: number; error?: string }, theme: Theme): string {
+  private renderFinishedLine(a: { id: string; type: SubagentType; status: string; description: string; toolUses: number; startedAt: number; completedAt?: number; error?: string }, theme: Theme): string {
     const name = getDisplayName(a.type);
     const modeLabel = getPromptModeLabel(a.type);
     const duration = formatMs((a.completedAt ?? Date.now()) - a.startedAt);
@@ -241,6 +254,8 @@ export class AgentWidget {
     }
 
     const parts: string[] = [];
+    const activity = this.agentActivity.get(a.id);
+    if (activity) parts.push(formatTurns(activity.turnCount, activity.maxTurns));
     if (a.toolUses > 0) parts.push(`${a.toolUses} tool use${a.toolUses === 1 ? "" : "s"}`);
     parts.push(duration);
 
@@ -296,6 +311,7 @@ export class AgentWidget {
       }
 
       const parts: string[] = [];
+      if (bg) parts.push(formatTurns(bg.turnCount, bg.maxTurns));
       if (toolUses > 0) parts.push(`${toolUses} tool use${toolUses === 1 ? "" : "s"}`);
       if (tokenText) parts.push(tokenText);
       parts.push(elapsed);

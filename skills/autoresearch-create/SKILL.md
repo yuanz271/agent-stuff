@@ -11,7 +11,7 @@ Autonomous experiment loop: try ideas, keep what works, discard what doesn't, ne
 
 - **`init_experiment`** — configure session (name, metric, unit, direction). Call again to re-initialize with a new baseline when the optimization target changes.
 - **`run_experiment`** — runs command, times it, captures output.
-- **`log_experiment`** — records result. `keep` auto-commits. `discard`/`crash`/`checks_failed` → `git checkout -- .` to revert. Always include secondary `metrics` dict. Dashboard: ctrl+x.
+- **`log_experiment`** — records result. `keep` auto-commits. `discard`/`crash`/`checks_failed` auto-reverts code changes (autoresearch files preserved). Always include secondary `metrics` dict. Dashboard: ctrl+x.
 
 ## Setup
 
@@ -56,7 +56,23 @@ Update `autoresearch.md` periodically — especially the "What's Been Tried" sec
 
 ### `autoresearch.sh`
 
-Bash script (`set -euo pipefail`) that: pre-checks fast (syntax errors in <1s), runs the benchmark, outputs `METRIC name=number` lines. Keep it fast — every second is multiplied by hundreds of runs. Update it during the loop as needed.
+Bash script (`set -euo pipefail`) that: pre-checks fast (syntax errors in <1s), runs the benchmark, outputs `METRIC name=value` lines to stdout. These lines are automatically parsed by `run_experiment` — the primary metric (matching `init_experiment`'s `metric_name`) and any secondary metrics are extracted, shown in the TUI, and suggested as exact values for `log_experiment`. If no METRIC lines are found, the agent falls back to manually extracting values from the output. Keep the script fast — every second is multiplied by hundreds of runs. Update it during the loop as needed.
+
+**For fast, noisy benchmarks** (< 5s), run the workload multiple times inside the script and report the median. This produces stable data points and makes the confidence score reliable from the start. Slow workloads (ML training, large builds) don't need this — single runs are fine.
+
+### `autoresearch.config.json` (optional)
+
+JSON config file that lives in the pi session's working directory (`ctx.cwd`). Supported fields:
+
+- **`maxIterations`** (number) — maximum experiments before auto-stopping.
+- **`workingDir`** (string) — override the directory for all autoresearch operations: file I/O (`autoresearch.jsonl`, `autoresearch.md`, `autoresearch.sh`, `autoresearch.checks.sh`, `autoresearch.ideas.md`), command execution, and git operations. Supports absolute paths or relative paths (resolved against `ctx.cwd`). The config file itself always stays in `ctx.cwd`. Fails if the directory doesn't exist.
+
+```json
+{
+  "workingDir": "/path/to/project",
+  "maxIterations": 50
+}
+```
 
 ### `autoresearch.checks.sh` (optional)
 
@@ -86,6 +102,7 @@ pnpm typecheck 2>&1 | grep -i error || true
 **LOOP FOREVER.** Never ask "should I continue?" — the user expects autonomous work.
 
 - **Primary metric is king.** Improved → `keep`. Worse/equal → `discard`. Secondary metrics rarely affect this.
+- **Watch the confidence score.** After 3+ runs, `log_experiment` reports a confidence score (best improvement as a multiple of the session noise floor). ≥2.0× means the improvement is likely real. <1.0× means it's within noise — consider re-running to confirm before keeping. The score is advisory — it never auto-discards.
 - **Simpler is better.** Removing code for equal perf = keep. Ugly complexity for tiny gain = probably discard.
 - **Don't thrash.** Repeatedly reverting the same idea? Try something structurally different.
 - **Crashes:** fix if trivial, otherwise log and move on. Don't over-invest.

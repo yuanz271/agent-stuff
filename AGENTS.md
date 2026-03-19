@@ -38,12 +38,12 @@ Keep this list updated whenever importing or porting an extension/skill so sourc
 
 - `default (all other repo content unless listed below)` → `https://github.com/mitsuhiko/agent-stuff` @ `dff57a95a670` (`origin/main`)
 - `pi-extensions/websearch/*` → original work, not ported from upstream
-- `pi-extensions/pi-autoresearch/*` → `https://github.com/davebcn87/pi-autoresearch` @ `21e7ae916fc6` (`origin/main`)
-- `skills/autoresearch-create/SKILL.md` → `https://github.com/davebcn87/pi-autoresearch` @ `21e7ae916fc6` (`origin/main`)
+- `pi-extensions/pi-autoresearch/*` → `https://github.com/davebcn87/pi-autoresearch` @ `cf1bbf0` (`origin/main`)
+- `skills/autoresearch-create/SKILL.md` → `https://github.com/davebcn87/pi-autoresearch` @ `cf1bbf0` (`origin/main`)
 - `pi-extensions/damage-control/*` → `https://github.com/cagdotin/agents` @ `d8974ff068b4` (`origin/master`)
 - `pi-extensions/side-chat/*` → `https://github.com/nicobailon/pi-side-chat` @ `f1dba8bdb26e` (`origin/main`)
-- `pi-extensions/pi-tasks/*` → `https://github.com/tintinweb/pi-tasks` @ `578b1c9a6b4a` (`origin/master`)
-- `pi-extensions/pi-subagents/*` → `https://github.com/tintinweb/pi-subagents` @ `20d5c67fb239` (`origin/master`)
+- `pi-extensions/pi-tasks/*` → `https://github.com/tintinweb/pi-tasks` @ `ccddf93` (`origin/master`)
+- `pi-extensions/pi-subagents/*` → `https://github.com/tintinweb/pi-subagents` @ `af012a9` (`origin/master`)
 - `pi-extensions/pi-supervisor/*` → `https://github.com/tintinweb/pi-supervisor` @ `a6d8a501bae9` (`origin/master`)
 - `pi-extensions/pi-schedule-prompt/*` → `https://github.com/tintinweb/pi-schedule-prompt` @ `ef7ab49f2988` (`origin/master`)
 

@@ -75,6 +75,10 @@ export class TaskWidget {
 
   constructor(private store: TaskStore) {}
 
+  setStore(store: TaskStore) {
+    this.store = store;
+  }
+
   setUICtx(ctx: UICtx) {
     this.uiCtx = ctx;
   }

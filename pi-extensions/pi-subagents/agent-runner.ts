@@ -2,35 +2,35 @@
  * agent-runner.ts — Core execution engine: creates sessions, runs agents, collects results.
  */
 
+import type { Model } from "@mariozechner/pi-ai";
+import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import {
-  createAgentSession,
-  DefaultResourceLoader,
-  SessionManager,
-  SettingsManager,
   type AgentSession,
   type AgentSessionEvent,
+  createAgentSession,
+  DefaultResourceLoader,
   type ExtensionAPI,
+  SessionManager,
+  SettingsManager,
 } from "@mariozechner/pi-coding-agent";
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { Model } from "@mariozechner/pi-ai";
-import { getToolsForType, getConfig, getAgentConfig, getMemoryTools, getReadOnlyMemoryTools } from "./agent-types.js";
-import { buildAgentPrompt, type PromptExtras } from "./prompts.js";
+import { getAgentConfig, getConfig, getMemoryTools, getReadOnlyMemoryTools, getToolsForType } from "./agent-types.js";
 import { buildParentContext, extractText } from "./context.js";
 import { detectEnv } from "./env.js";
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "./memory.js";
+import { buildAgentPrompt, type PromptExtras } from "./prompts.js";
 import { preloadSkills } from "./skill-loader.js";
 import type { SubagentType, ThinkingLevel } from "./types.js";
 
 /** Names of tools registered by this extension that subagents must NOT inherit. */
 const EXCLUDED_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent"];
 
-/** Default max turns to prevent subagents from looping indefinitely. */
-let defaultMaxTurns = 50;
+/** Default max turns. undefined = unlimited (no turn limit). */
+let defaultMaxTurns: number | undefined;
 
-/** Get the default max turns value. */
-export function getDefaultMaxTurns(): number { return defaultMaxTurns; }
-/** Set the default max turns value (minimum 1). */
-export function setDefaultMaxTurns(n: number): void { defaultMaxTurns = Math.max(1, n); }
+/** Get the default max turns value. undefined = unlimited. */
+export function getDefaultMaxTurns(): number | undefined { return defaultMaxTurns; }
+/** Set the default max turns value. undefined = unlimited, otherwise minimum 1. */
+export function setDefaultMaxTurns(n: number | undefined): void { defaultMaxTurns = n != null ? Math.max(1, n) : undefined; }
 
 /** Additional turns allowed after the soft limit steer message. */
 let graceTurns = 5;
@@ -93,6 +93,8 @@ export interface RunOptions {
   /** Called on streaming text deltas from the assistant response. */
   onTextDelta?: (delta: string, fullText: string) => void;
   onSessionCreated?: (session: AgentSession) => void;
+  /** Called at the end of each agentic turn with the cumulative count. */
+  onTurnEnd?: (turnCount: number) => void;
 }
 
 export interface RunResult {
@@ -285,12 +287,15 @@ export async function runAgent(
   const unsubTurns = session.subscribe((event: AgentSessionEvent) => {
     if (event.type === "turn_end") {
       turnCount++;
-      if (!softLimitReached && turnCount >= maxTurns) {
-        softLimitReached = true;
-        session.steer("You have reached your turn limit. Wrap up immediately — provide your final answer now.");
-      } else if (softLimitReached && turnCount >= maxTurns + graceTurns) {
-        aborted = true;
-        session.abort();
+      options.onTurnEnd?.(turnCount);
+      if (maxTurns != null) {
+        if (!softLimitReached && turnCount >= maxTurns) {
+          softLimitReached = true;
+          session.steer("You have reached your turn limit. Wrap up immediately — provide your final answer now.");
+        } else if (softLimitReached && turnCount >= maxTurns + graceTurns) {
+          aborted = true;
+          session.abort();
+        }
       }
     }
     if (event.type === "message_start") {

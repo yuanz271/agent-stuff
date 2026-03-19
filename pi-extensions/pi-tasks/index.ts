@@ -44,15 +44,25 @@ export default function (pi: ExtensionAPI) {
   // Initialize store and config
   const cfg = loadTasksConfig();
   const piTasks = process.env.PI_TASKS;
-  const localTasksPath = join(process.cwd(), ".pi", "tasks", "tasks.json");
-  const store =
-    piTasks === "off"          ? new TaskStore() :
-    piTasks?.startsWith("/")   ? new TaskStore(piTasks) :
-    piTasks?.startsWith(".")   ? new TaskStore(resolve(piTasks)) :
-    piTasks                    ? new TaskStore(piTasks) :
-    cfg.persistTasks === false ? new TaskStore() :
-                                 new TaskStore(localTasksPath);
+  const taskScope = cfg.taskScope ?? "session";
 
+  /** Resolve the task store path from env/config (without session ID). */
+  function resolveStorePath(sessionId?: string): string | undefined {
+    if (piTasks === "off") return undefined;
+    if (piTasks?.startsWith("/")) return piTasks;
+    if (piTasks?.startsWith(".")) return resolve(piTasks);
+    if (piTasks) return piTasks;
+    if (taskScope === "memory") return undefined;
+    if (taskScope === "session" && sessionId) {
+      return join(process.cwd(), ".pi", "tasks", `tasks-${sessionId}.json`);
+    }
+    if (taskScope === "session") return undefined; // no session ID yet, start in-memory
+    return join(process.cwd(), ".pi", "tasks", "tasks.json");
+  }
+
+  // For project scope (or env override), create store immediately.
+  // For session scope, start with in-memory and upgrade once we have the session ID.
+  let store = new TaskStore(resolveStorePath());
   const tracker = new ProcessTracker();
   const widget = new TaskWidget(store);
 
@@ -165,13 +175,51 @@ export default function (pi: ExtensionAPI) {
     widget.update();
   });
 
+  // ── Session-scoped store upgrade ──
+  // For session scope, the store starts in-memory (no session ID at init time).
+  // Upgrade to file-backed on first context arrival (turn_start, before_agent_start,
+  // or tool_execution_start — whichever fires first).
+  let storeUpgraded = false;
+  let persistedTasksShown = false;
+  function upgradeStoreIfNeeded(ctx: ExtensionContext) {
+    if (storeUpgraded) return;
+    if (taskScope === "session" && !piTasks) {
+      const sessionId = ctx.sessionManager.getSessionId();
+      const path = resolveStorePath(sessionId);
+      store = new TaskStore(path);
+      widget.setStore(store);
+    }
+    storeUpgraded = true;
+  }
+
+  /** Restore widget on session start/resume if there's unfinished work.
+   *  On new sessions, auto-clear if all tasks are completed (clean slate).
+   *  On resume, always show tasks (user may want to review).
+   *  Only runs once — the first caller wins. */
+  function showPersistedTasks(isResume = false) {
+    if (persistedTasksShown) return;
+    persistedTasksShown = true;
+    const tasks = store.list();
+    if (tasks.length > 0) {
+      if (!isResume && tasks.every(t => t.status === "completed")) {
+        store.clearCompleted();
+        if (taskScope === "session") store.deleteFileIfEmpty();
+      } else {
+        widget.update();
+      }
+    }
+  }
+
   // ── Turn tracking for system-reminder injection ──
   let currentTurn = 0;
   let lastTaskToolUseTurn = 0;
   let reminderInjectedThisCycle = false;
 
-  pi.on("turn_start", async () => {
+  pi.on("turn_start", async (_event, ctx) => {
     currentTurn++;
+    latestCtx = ctx;
+    widget.setUICtx(ctx.ui as UICtx);
+    upgradeStoreIfNeeded(ctx);
   });
 
   // ── Token usage tracking ──
@@ -210,10 +258,28 @@ export default function (pi: ExtensionAPI) {
     };
   });
 
-  // Grab UI + extension context from every tool execution
+  // Grab UI context early — before_agent_start fires before any tool calls,
+  // so persisted tasks show up immediately on session start.
+  pi.on("before_agent_start", async (_event, ctx) => {
+    latestCtx = ctx;
+    widget.setUICtx(ctx.ui as UICtx);
+    upgradeStoreIfNeeded(ctx);
+    showPersistedTasks();
+  });
+
+  // session_switch fires on resume (reason: "resume") — reload persisted tasks.
+  pi.on("session_switch" as any, async (event: any, ctx: ExtensionContext) => {
+    latestCtx = ctx;
+    widget.setUICtx(ctx.ui as UICtx);
+    upgradeStoreIfNeeded(ctx);
+    showPersistedTasks(event?.reason === "resume");
+  });
+
+  // Keep latestCtx fresh on every tool execution as well.
   pi.on("tool_execution_start", async (_event, ctx) => {
     latestCtx = ctx;
     widget.setUICtx(ctx.ui as UICtx);
+    upgradeStoreIfNeeded(ctx);
     widget.update();
   });
 
@@ -733,9 +799,10 @@ Set up task dependencies:
         const choices: string[] = [
           `View all tasks (${taskCount})`,
           "Create task",
-          "Settings",
         ];
         if (completedCount > 0) choices.push(`Clear completed (${completedCount})`);
+        if (taskCount > 0) choices.push(`Clear all (${taskCount})`);
+        choices.push("Settings");
 
         const choice = await ui.select("Tasks", choices);
         if (!choice) return;
@@ -746,8 +813,14 @@ Set up task dependencies:
           await createTask();
         } else if (choice === "Settings") {
           await settingsMenu();
-        } else if (choice.startsWith("Clear")) {
+        } else if (choice.startsWith("Clear completed")) {
           store.clearCompleted();
+          if (taskScope === "session") store.deleteFileIfEmpty();
+          widget.update();
+          await mainMenu();
+        } else if (choice.startsWith("Clear all")) {
+          store.clearAll();
+          if (taskScope === "session") store.deleteFileIfEmpty();
           widget.update();
           await mainMenu();
         }

@@ -82,12 +82,12 @@ export class TaskStore {
     } catch { /* corrupt file — start fresh */ }
   }
 
-  /** Write store to disk atomically (file-backed mode only). Completed tasks are not persisted. */
+  /** Write store to disk atomically (file-backed mode only). */
   private save(): void {
     if (!this.filePath) return;
     const data: TaskStoreData = {
       nextId: this.nextId,
-      tasks: Array.from(this.tasks.values()).filter(t => t.status !== "completed"),
+      tasks: Array.from(this.tasks.values()),
     };
     const tmpPath = this.filePath + ".tmp";
     writeFileSync(tmpPath, JSON.stringify(data, null, 2));
@@ -263,6 +263,22 @@ export class TaskStore {
       }
       return true;
     });
+  }
+
+  /** Remove all tasks. */
+  clearAll(): number {
+    return this.withLock(() => {
+      const count = this.tasks.size;
+      this.tasks.clear();
+      return count;
+    });
+  }
+
+  /** Delete the backing file (if file-backed and empty). */
+  deleteFileIfEmpty(): boolean {
+    if (!this.filePath || this.tasks.size > 0) return false;
+    try { unlinkSync(this.filePath); } catch { /* ignore */ }
+    return true;
   }
 
   /** Remove all completed tasks. */

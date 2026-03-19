@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 
 export interface TasksConfig {
-  persistTasks?: boolean;  // default: true
+  taskScope?: "memory" | "session" | "project";  // default: "session"
   autoCascade?: boolean;   // default: false
 }
 

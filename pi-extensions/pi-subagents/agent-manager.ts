@@ -7,12 +7,11 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { ExtensionContext, ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { Model } from "@mariozechner/pi-ai";
-import type { AgentSession } from "@mariozechner/pi-coding-agent";
-import { runAgent, resumeAgent, type ToolActivity } from "./agent-runner.js";
-import type { SubagentType, AgentRecord, ThinkingLevel, IsolationMode } from "./types.js";
-import { createWorktree, cleanupWorktree, pruneWorktrees, type WorktreeInfo } from "./worktree.js";
+import type { AgentSession, ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { resumeAgent, runAgent, type ToolActivity } from "./agent-runner.js";
+import type { AgentRecord, IsolationMode, SubagentType, ThinkingLevel } from "./types.js";
+import { cleanupWorktree, createWorktree, pruneWorktrees, } from "./worktree.js";
 
 export type OnAgentComplete = (record: AgentRecord) => void;
 export type OnAgentStart = (record: AgentRecord) => void;
@@ -44,6 +43,8 @@ interface SpawnOptions {
   onTextDelta?: (delta: string, fullText: string) => void;
   /** Called when the agent session is created (for accessing session stats). */
   onSessionCreated?: (session: AgentSession) => void;
+  /** Called at the end of each agentic turn with the cumulative count. */
+  onTurnEnd?: (turnCount: number) => void;
 }
 
 export class AgentManager {
@@ -149,6 +150,7 @@ export class AgentManager {
         if (activity.type === "end") record.toolUses++;
         options.onToolActivity?.(activity);
       },
+      onTurnEnd: options.onTurnEnd,
       onTextDelta: options.onTextDelta,
       onSessionCreated: (session) => {
         record.session = session;
@@ -170,6 +172,12 @@ export class AgentManager {
         record.result = responseText;
         record.session = session;
         record.completedAt ??= Date.now();
+
+        // Final flush of streaming output file
+        if (record.outputCleanup) {
+          try { record.outputCleanup(); } catch { /* ignore */ }
+          record.outputCleanup = undefined;
+        }
 
         // Clean up worktree if used
         if (record.worktree) {
@@ -195,6 +203,12 @@ export class AgentManager {
         }
         record.error = err instanceof Error ? err.message : String(err);
         record.completedAt ??= Date.now();
+
+        // Final flush of streaming output file on error
+        if (record.outputCleanup) {
+          try { record.outputCleanup(); } catch { /* ignore */ }
+          record.outputCleanup = undefined;
+        }
 
         // Best-effort worktree cleanup on error
         if (record.worktree) {
