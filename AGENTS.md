@@ -41,6 +41,7 @@ Keep this list updated whenever importing or porting an extension/skill so sourc
 - `pi-extensions/pi-autoresearch/*` → `https://github.com/davebcn87/pi-autoresearch` @ `cf1bbf0` (`origin/main`)
 - `skills/autoresearch-create/SKILL.md` → `https://github.com/davebcn87/pi-autoresearch` @ `cf1bbf0` (`origin/main`)
 - `pi-extensions/damage-control/*` → `https://github.com/cagdotin/agents` @ `d8974ff068b4` (`origin/master`)
+- `pi-extensions/session-stats/*` → `https://github.com/cagdotin/agents` @ `d8974ff068b4` (`origin/master`)
 - `pi-extensions/side-chat/*` → `https://github.com/nicobailon/pi-side-chat` @ `f1dba8bdb26e` (`origin/main`)
 - `pi-extensions/pi-tasks/*` → `https://github.com/tintinweb/pi-tasks` @ `ccddf93` (`origin/master`)
 - `pi-extensions/pi-subagents/*` → `https://github.com/tintinweb/pi-subagents` @ `af012a9` (`origin/master`)
