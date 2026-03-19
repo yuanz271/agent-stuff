@@ -69,4 +69,6 @@ export interface SessionStats {
 	available_tool_count: number;
 	/** Names of all available tools */
 	available_tool_names: string[];
+	/** Skills invoked this session, in order of first use (deduplicated) */
+	skills_used: string[];
 }

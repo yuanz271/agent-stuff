@@ -23,6 +23,7 @@ export function create_stats(): SessionStats {
 		tool_details: create_tool_details(),
 		available_tool_count: 0,
 		available_tool_names: [],
+		skills_used: [],
 	};
 }
 
@@ -119,6 +120,27 @@ export function reconstruct_stats(
 					stats.user_prompt_count += 1;
 					last_was_user = true;
 					current_user_message_index += 1;
+
+					// Extract skill invocations from <skill name="..."> blocks in user message text.
+					const user_msg = message as { content?: unknown };
+					const user_text =
+						typeof user_msg.content === "string"
+							? user_msg.content
+							: Array.isArray(user_msg.content)
+								? (user_msg.content as Array<{ type?: string; text?: string }>)
+										.filter((b) => b?.type === "text")
+										.map((b) => b.text ?? "")
+										.join("\n")
+								: "";
+					const skill_regex = /<skill\s+name="([^"]+)"/g;
+					let skill_match: RegExpExecArray | null;
+					while ((skill_match = skill_regex.exec(user_text)) !== null) {
+						const skill_name = skill_match[1];
+						if (!stats.skills_used.includes(skill_name)) {
+							stats.skills_used.push(skill_name);
+						}
+					}
+
 					const user_marker = {
 						kind: "user-marker" as const,
 						timestamp: entry.timestamp,

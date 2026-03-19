@@ -321,6 +321,19 @@ export class SessionStatsPanel {
 
 		content.push("");
 
+		// ── skills section ───────────────────────────────────
+		const skills = stats.skills_used;
+		content.push(this.section_header("Skills", skills.length === 0 ? `${t.fg("dim", "none")} ` : "", iw));
+
+		if (skills.length > 0) {
+			content.push("");
+			for (const skill of skills) {
+				content.push(`    ${t.fg("accent", "◆")} ${skill}`);
+			}
+		}
+
+		content.push("");
+
 		// ── models section ───────────────────────────────────
 		const unique_models = get_unique_models_used(stats);
 		const current_model = get_current_model(stats);
@@ -832,6 +845,13 @@ export function build_plain_text_summary(stats: SessionStats): string {
 	}
 
 	append_plain_text_timeline(lines, "Write", "writes", details.write_timeline_events);
+
+	if (stats.skills_used.length > 0) {
+		lines.push(`Skills (${stats.skills_used.length}):`);
+		for (const skill of stats.skills_used) {
+			lines.push(`  ◆ ${skill}`);
+		}
+	}
 
 	const unique = get_unique_models_used(stats);
 	if (unique.length > 0) {
