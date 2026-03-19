@@ -23,6 +23,7 @@ When porting or copying code from an external repository:
 This repo is no longer in a GitHub fork network. Manually check upstream periodically:
 - Upstream: `https://github.com/mitsuhiko/agent-stuff.git`
 - Suggested cadence: every Monday
+- Quick drift check for imported sources: `uv run scripts/check-import-upstreams.py`
 - Quick checklist:
   1. `git fetch upstream`
   2. `git log --oneline main..upstream/main`
