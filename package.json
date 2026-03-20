@@ -1,10 +1,10 @@
 {
-  "name": "mitsupi",
+  "name": "agent-stuff",
   "version": "1.5.0",
-  "description": "Armin's pi coding agent commands, skills, extensions, and themes",
+  "description": "Pi coding agent commands, skills, extensions, and themes",
   "repository": {
     "type": "git",
-    "url": "https://github.com/mitsuhiko/agent-stuff.git"
+    "url": "https://github.com/yuanz271/agent-stuff.git"
   },
   "readme": "README.md",
   "type": "module",

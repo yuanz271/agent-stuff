@@ -2,7 +2,7 @@
 
 This repository contains skills and extensions that I use in some form with projects. Note that I usually fine-tune these for projects, so they might not work without modification for you.
 
-It is released on npm as `mitsupi` for use with the [Pi](https://buildwithpi.ai/) package loader.
+Its package metadata uses the name `agent-stuff` for use with the [Pi](https://buildwithpi.ai/) package loader.
 
 ## Agent policy files
 
