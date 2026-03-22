@@ -77,28 +77,6 @@ const FILE_TAG_REGEX = /<file\s+name=["']([^"']+)["']>/g;
 const FILE_URL_REGEX = /file:\/\/[^\s"'<>]+/g;
 const PATH_REGEX = /(?:^|[\s"'`([{<])((?:~|\/)[^\s"'`<>)}\]]+)/g;
 
-const matchesBoundAction = (
-	keybindings: { getEffectiveConfig?: () => Record<string, string | string[] | undefined> },
-	data: string,
-	actions: readonly string[],
-): boolean => {
-	const config = keybindings.getEffectiveConfig?.();
-	if (!config) return false;
-
-	for (const action of actions) {
-		const binding = config[action];
-		if (!binding) continue;
-		const keys = Array.isArray(binding) ? binding : [binding];
-		for (const key of keys) {
-			if (matchesKey(data, key as Parameters<typeof matchesKey>[1])) {
-				return true;
-			}
-		}
-	}
-
-	return false;
-};
-
 const MAX_EDIT_BYTES = 40 * 1024 * 1024;
 
 const extractFileReferencesFromText = (text: string): string[] => {
@@ -958,14 +936,15 @@ const showFileSelector = async (
 					}
 				}
 
-				const isSelectUp = matchesBoundAction(keybindings, data, ["tui.select.up", "selectUp"]);
-				const isSelectDown = matchesBoundAction(keybindings, data, ["tui.select.down", "selectDown"]);
-				const isSelectConfirm = matchesBoundAction(keybindings, data, ["tui.select.confirm", "selectConfirm"]);
-				const isSelectCancel = matchesBoundAction(keybindings, data, ["tui.select.cancel", "selectCancel"]);
-				if (isSelectUp || isSelectDown || isSelectConfirm || isSelectCancel) {
+				if (
+					keybindings.matches(data, "tui.select.up") ||
+					keybindings.matches(data, "tui.select.down") ||
+					keybindings.matches(data, "tui.select.confirm") ||
+					keybindings.matches(data, "tui.select.cancel")
+				) {
 					if (selectList) {
 						selectList.handleInput(data);
-					} else if (isSelectCancel) {
+					} else if (keybindings.matches(data, "tui.select.cancel")) {
 						done(null);
 					}
 					tui.requestRender();

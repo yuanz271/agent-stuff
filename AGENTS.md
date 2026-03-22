@@ -38,7 +38,7 @@ Default provenance: unless explicitly listed otherwise below, repository content
 Keep this list updated whenever importing or porting an extension/skill so source tracking stays explicit.
 
 - `default (all other repo content unless listed below)` → `https://github.com/mitsuhiko/agent-stuff` @ `dff57a95a670` (`origin/main`)
-- Selective sync note: `pi-extensions/files.ts` and `pi-extensions/review.ts` were adapted from later `https://github.com/mitsuhiko/agent-stuff` keybinding migration commits `03d5bab5d118` and `60db1af7c490`. Keep the default pin unchanged because the broader default-sourced tree was not re-synced, and `scripts/check-import-upstreams.py` expects a single parsed pin per source/branch.
+- Selective sync note: `pi-extensions/files.ts` and `pi-extensions/review.ts` were copied from later `https://github.com/mitsuhiko/agent-stuff` revision `f0f29f95a03a` (`origin/main`). Keep the default pin unchanged because the broader default-sourced tree was not re-synced, and `scripts/check-import-upstreams.py` expects a single parsed pin per source/branch.
 - `pi-extensions/websearch/*` → original work, not ported from upstream
 - `pi-extensions/pi-autoresearch/*` → `https://github.com/davebcn87/pi-autoresearch` @ `327ea6b7ed39` (`origin/main`)
 - `skills/autoresearch-create/SKILL.md` → `https://github.com/davebcn87/pi-autoresearch` @ `327ea6b7ed39` (`origin/main`)
