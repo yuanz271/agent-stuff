@@ -2,6 +2,20 @@
 
 This repository includes code copied/adapted from the project below.
 
+## agent-stuff selective keybinding sync
+
+- **Source**: https://github.com/mitsuhiko/agent-stuff
+- **Included paths in this repo**:
+  - `pi-extensions/files.ts`
+  - `pi-extensions/review.ts`
+- **Imported upstream commits**:
+  - `03d5bab5d118629ec49486f1137e574c793a7c79`
+  - `60db1af7c490972f6683e3f864561985a94242c6`
+- **Upstream license**: Apache License 2.0
+- **Upstream copyright note**: no explicit copyright line was identified in the upstream `LICENSE`; provenance is tracked via the upstream repository URL above.
+
+Apache License 2.0 — same terms as stated in upstream `LICENSE`.
+
 ## pi-autoresearch
 
 - **Source**: https://github.com/davebcn87/pi-autoresearch
