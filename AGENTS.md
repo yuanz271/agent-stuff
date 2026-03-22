@@ -43,6 +43,7 @@ Keep this list updated whenever importing or porting an extension/skill so sourc
 - `pi-extensions/pi-autoresearch/*` → `https://github.com/davebcn87/pi-autoresearch` @ `327ea6b7ed39` (`origin/main`)
 - `skills/autoresearch-create/SKILL.md` → `https://github.com/davebcn87/pi-autoresearch` @ `327ea6b7ed39` (`origin/main`)
 - `pi-extensions/damage-control/*` → `https://github.com/cagdotin/agents` @ `d8974ff068b4` (`origin/master`)
+- Note: for `damage-control`, treat the upstream pin as code provenance/parity only. The local bundled rules file `pi-extensions/damage-control/damage-control-rules.yaml` is intentionally customized and excluded from parity decisions.
 - `pi-extensions/session-stats/*` → `https://github.com/cagdotin/agents` @ `d8974ff068b4` (`origin/master`)
 - `pi-extensions/side-chat/*` → `https://github.com/nicobailon/pi-side-chat` @ `f1dba8bdb26e` (`origin/main`)
 - `pi-extensions/pi-tasks/*` → `https://github.com/tintinweb/pi-tasks` @ `ccddf93` (`origin/master`)
