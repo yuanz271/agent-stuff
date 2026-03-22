@@ -31,8 +31,8 @@ import { DynamicBorder, BorderedLoader } from "@mariozechner/pi-coding-agent";
 import {
 	Container,
 	fuzzyFilter,
-	getEditorKeybindings,
 	Input,
+	matchesKey,
 	type SelectItem,
 	SelectList,
 	Spacer,
@@ -55,6 +55,28 @@ const REVIEW_SETTINGS_TYPE = "review-settings";
 const REVIEW_LOOP_MAX_ITERATIONS = 10;
 const REVIEW_LOOP_START_TIMEOUT_MS = 15000;
 const REVIEW_LOOP_START_POLL_MS = 50;
+
+const matchesBoundAction = (
+	keybindings: { getEffectiveConfig?: () => Record<string, string | string[] | undefined> },
+	data: string,
+	actions: readonly string[],
+): boolean => {
+	const config = keybindings.getEffectiveConfig?.();
+	if (!config) return false;
+
+	for (const action of actions) {
+		const binding = config[action];
+		if (!binding) continue;
+		const keys = Array.isArray(binding) ? binding : [binding];
+		for (const key of keys) {
+			if (matchesKey(data, key as Parameters<typeof matchesKey>[1])) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+};
 
 type ReviewSessionState = {
 	active: boolean;
@@ -1032,7 +1054,7 @@ export default function reviewExtension(pi: ExtensionAPI) {
 			description: branch === defaultBranch ? "(default)" : "",
 		}));
 
-		const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+		const result = await ctx.ui.custom<string | null>((tui, theme, keybindings, done) => {
 			const container = new Container();
 			container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
 			container.addChild(new Text(theme.fg("accent", theme.bold("Select base branch"))));
@@ -1088,16 +1110,14 @@ export default function reviewExtension(pi: ExtensionAPI) {
 					container.invalidate();
 				},
 				handleInput(data: string) {
-					const kb = getEditorKeybindings();
-					if (
-						kb.matches(data, "selectUp") ||
-						kb.matches(data, "selectDown") ||
-						kb.matches(data, "selectConfirm") ||
-						kb.matches(data, "selectCancel")
-					) {
+					const isSelectUp = matchesBoundAction(keybindings, data, ["tui.select.up", "selectUp"]);
+					const isSelectDown = matchesBoundAction(keybindings, data, ["tui.select.down", "selectDown"]);
+					const isSelectConfirm = matchesBoundAction(keybindings, data, ["tui.select.confirm", "selectConfirm"]);
+					const isSelectCancel = matchesBoundAction(keybindings, data, ["tui.select.cancel", "selectCancel"]);
+					if (isSelectUp || isSelectDown || isSelectConfirm || isSelectCancel) {
 						if (selectList) {
 							selectList.handleInput(data);
-						} else if (kb.matches(data, "selectCancel")) {
+						} else if (isSelectCancel) {
 							done(null);
 						}
 						tui.requestRender();
@@ -1132,7 +1152,7 @@ export default function reviewExtension(pi: ExtensionAPI) {
 			description: "",
 		}));
 
-		const result = await ctx.ui.custom<{ sha: string; title: string } | null>((tui, theme, _kb, done) => {
+		const result = await ctx.ui.custom<{ sha: string; title: string } | null>((tui, theme, keybindings, done) => {
 			const container = new Container();
 			container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
 			container.addChild(new Text(theme.fg("accent", theme.bold("Select commit to review"))));
@@ -1195,16 +1215,14 @@ export default function reviewExtension(pi: ExtensionAPI) {
 					container.invalidate();
 				},
 				handleInput(data: string) {
-					const kb = getEditorKeybindings();
-					if (
-						kb.matches(data, "selectUp") ||
-						kb.matches(data, "selectDown") ||
-						kb.matches(data, "selectConfirm") ||
-						kb.matches(data, "selectCancel")
-					) {
+					const isSelectUp = matchesBoundAction(keybindings, data, ["tui.select.up", "selectUp"]);
+					const isSelectDown = matchesBoundAction(keybindings, data, ["tui.select.down", "selectDown"]);
+					const isSelectConfirm = matchesBoundAction(keybindings, data, ["tui.select.confirm", "selectConfirm"]);
+					const isSelectCancel = matchesBoundAction(keybindings, data, ["tui.select.cancel", "selectCancel"]);
+					if (isSelectUp || isSelectDown || isSelectConfirm || isSelectCancel) {
 						if (selectList) {
 							selectList.handleInput(data);
-						} else if (kb.matches(data, "selectCancel")) {
+						} else if (isSelectCancel) {
 							done(null);
 						}
 						tui.requestRender();

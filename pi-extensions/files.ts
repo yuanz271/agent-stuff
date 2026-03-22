@@ -24,7 +24,6 @@ import { DynamicBorder } from "@mariozechner/pi-coding-agent";
 import {
 	Container,
 	fuzzyFilter,
-	getEditorKeybindings,
 	Input,
 	matchesKey,
 	type SelectItem,
@@ -77,6 +76,28 @@ type SessionFileChange = {
 const FILE_TAG_REGEX = /<file\s+name=["']([^"']+)["']>/g;
 const FILE_URL_REGEX = /file:\/\/[^\s"'<>]+/g;
 const PATH_REGEX = /(?:^|[\s"'`([{<])((?:~|\/)[^\s"'`<>)}\]]+)/g;
+
+const matchesBoundAction = (
+	keybindings: { getEffectiveConfig?: () => Record<string, string | string[] | undefined> },
+	data: string,
+	actions: readonly string[],
+): boolean => {
+	const config = keybindings.getEffectiveConfig?.();
+	if (!config) return false;
+
+	for (const action of actions) {
+		const binding = config[action];
+		if (!binding) continue;
+		const keys = Array.isArray(binding) ? binding : [binding];
+		for (const key of keys) {
+			if (matchesKey(data, key as Parameters<typeof matchesKey>[1])) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+};
 
 const MAX_EDIT_BYTES = 40 * 1024 * 1024;
 
@@ -856,7 +877,7 @@ const showFileSelector = async (
 	});
 
 	let quickAction: "diff" | null = null;
-	const selection = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+	const selection = await ctx.ui.custom<string | null>((tui, theme, keybindings, done) => {
 		const container = new Container();
 		container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
 		container.addChild(new Text(theme.fg("accent", theme.bold(" Select file")), 0, 0));
@@ -937,16 +958,14 @@ const showFileSelector = async (
 					}
 				}
 
-				const kb = getEditorKeybindings();
-				if (
-					kb.matches(data, "selectUp") ||
-					kb.matches(data, "selectDown") ||
-					kb.matches(data, "selectConfirm") ||
-					kb.matches(data, "selectCancel")
-				) {
+				const isSelectUp = matchesBoundAction(keybindings, data, ["tui.select.up", "selectUp"]);
+				const isSelectDown = matchesBoundAction(keybindings, data, ["tui.select.down", "selectDown"]);
+				const isSelectConfirm = matchesBoundAction(keybindings, data, ["tui.select.confirm", "selectConfirm"]);
+				const isSelectCancel = matchesBoundAction(keybindings, data, ["tui.select.cancel", "selectCancel"]);
+				if (isSelectUp || isSelectDown || isSelectConfirm || isSelectCancel) {
 					if (selectList) {
 						selectList.handleInput(data);
-					} else if (kb.matches(data, "selectCancel")) {
+					} else if (isSelectCancel) {
 						done(null);
 					}
 					tui.requestRender();
