@@ -60,7 +60,11 @@ function getConfigFromEnv(): { config?: WebsearchConfig; missing: string[] } {
 }
 
 function buildVertexEndpoint(project: string, location: string, model: string): string {
-  return `https://${location}-aiplatform.googleapis.com/v1/projects/${project}/locations/${location}/publishers/google/models/${model}:generateContent`;
+  const normalizedLocation = location.trim().toLowerCase();
+  if (normalizedLocation === "global") {
+    return `https://aiplatform.googleapis.com/v1/projects/${project}/locations/global/publishers/google/models/${model}:generateContent`;
+  }
+  return `https://${normalizedLocation}-aiplatform.googleapis.com/v1/projects/${project}/locations/${normalizedLocation}/publishers/google/models/${model}:generateContent`;
 }
 
 function extractText(resp: VertexResponse): string {
