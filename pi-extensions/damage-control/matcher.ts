@@ -67,11 +67,147 @@ function glob_to_regex(glob_pattern: string): RegExp {
 	return new RegExp(regex);
 }
 
-function to_match_targets(target_path: string, cwd: string): { absolute: string; relative: string; basename: string } {
+function to_match_targets(target_path: string, cwd: string): {
+	absolute: string;
+	relative: string;
+	basename: string;
+	normalized_input: string;
+	segments: string[];
+} {
+	const normalized_input = normalize_path(path.posix.normalize(expand_home(target_path)));
 	const absolute = normalize_path(path.resolve(cwd, expand_home(target_path)));
 	const relative = normalize_path(path.relative(cwd, absolute) || ".");
-	const basename = path.posix.basename(absolute);
-	return { absolute, relative, basename };
+	const basename = path.posix.basename(normalized_input.replace(/\/$/, ""));
+	const trimmed = normalized_input.replace(/^\/+/, "").replace(/\/+$/, "");
+	const segments = trimmed && trimmed !== "." ? trimmed.split("/").filter(Boolean) : [];
+	return { absolute, relative, basename, normalized_input, segments };
+}
+
+function ends_with_segments(target_segments: string[], pattern_segments: string[]): boolean {
+	if (pattern_segments.length === 0 || pattern_segments.length > target_segments.length) return false;
+	const offset = target_segments.length - pattern_segments.length;
+	for (let index = 0; index < pattern_segments.length; index += 1) {
+		if (target_segments[offset + index] !== pattern_segments[index]) return false;
+	}
+	return true;
+}
+
+function contains_segment_sequence(target_segments: string[], pattern_segments: string[]): boolean {
+	if (pattern_segments.length === 0 || pattern_segments.length > target_segments.length) return false;
+	for (let start = 0; start <= target_segments.length - pattern_segments.length; start += 1) {
+		let matched = true;
+		for (let index = 0; index < pattern_segments.length; index += 1) {
+			if (target_segments[start + index] !== pattern_segments[index]) {
+				matched = false;
+				break;
+			}
+		}
+		if (matched) return true;
+	}
+	return false;
+}
+
+function shellish_tokenize(command: string): string[] {
+	const tokens: string[] = [];
+	let current = "";
+	let quote: '"' | "'" | null = null;
+	let escaped = false;
+
+	for (const char of command) {
+		if (escaped) {
+			current += char;
+			escaped = false;
+			continue;
+		}
+
+		if (quote === "'") {
+			if (char === "'") {
+				quote = null;
+			} else {
+				current += char;
+			}
+			continue;
+		}
+
+		if (quote === '"') {
+			if (char === '"') {
+				quote = null;
+			} else if (char === "\\") {
+				escaped = true;
+			} else {
+				current += char;
+			}
+			continue;
+		}
+
+		if (char === "\\") {
+			escaped = true;
+			continue;
+		}
+
+		if (char === "'" || char === '"') {
+			quote = char;
+			continue;
+		}
+
+		if (/\s/.test(char)) {
+			if (current) {
+				tokens.push(current);
+				current = "";
+			}
+			continue;
+		}
+
+		current += char;
+	}
+
+	if (escaped) current += "\\";
+	if (current) tokens.push(current);
+	return tokens;
+}
+
+function sanitize_candidate_token(value: string): string {
+	return value.replace(/^[([{]+/, "").replace(/[;,)\]}|&]+$/, "");
+}
+
+function extract_path_candidates_from_command(command: string): string[] {
+	const nested_tokens = shellish_tokenize(command).flatMap((token) =>
+		/\s/.test(token) ? shellish_tokenize(token) : [token],
+	);
+	const candidates = new Set<string>();
+	const redirection_only = /^\d*(>{1,2}|<{1,2})$/;
+	const redirection_with_target = /^\d*(>{1,2}|<{1,2})(.+)$/;
+	const assignment_with_value = /^(?:--[^=]+|[A-Za-z_][A-Za-z0-9_]*)=(.+)$/;
+
+	for (let index = 1; index < nested_tokens.length; index += 1) {
+		const token = nested_tokens[index];
+		if (!token) continue;
+
+		if (redirection_only.test(token)) {
+			const next = sanitize_candidate_token(nested_tokens[index + 1] ?? "");
+			if (next) candidates.add(next);
+			continue;
+		}
+
+		const redirect_match = token.match(redirection_with_target);
+		if (redirect_match) {
+			const target = sanitize_candidate_token(redirect_match[2] ?? "");
+			if (target) candidates.add(target);
+			continue;
+		}
+
+		const assignment_match = token.match(assignment_with_value);
+		if (assignment_match) {
+			const value = sanitize_candidate_token(assignment_match[1] ?? "");
+			if (value) candidates.add(value);
+		}
+
+		if (/^-{1,2}[^/].*$/.test(token) && !token.includes("=")) continue;
+		const candidate = sanitize_candidate_token(token);
+		if (candidate) candidates.add(candidate);
+	}
+
+	return [...candidates];
 }
 
 export function path_rule_matches_target(target_path: string, rule: PathRule, cwd: string): boolean {
@@ -83,7 +219,7 @@ export function path_rule_matches_target(target_path: string, rule: PathRule, cw
 
 	if (has_glob(expanded_pattern)) {
 		const regex = glob_to_regex(expanded_pattern);
-		if (regex.test(targets.absolute) || regex.test(targets.relative)) {
+		if (regex.test(targets.absolute) || regex.test(targets.relative) || regex.test(targets.normalized_input)) {
 			return true;
 		}
 		if (!expanded_pattern.includes("/") && regex.test(targets.basename)) {
@@ -94,8 +230,13 @@ export function path_rule_matches_target(target_path: string, rule: PathRule, cw
 
 	if (expanded_pattern.endsWith("/")) {
 		const base = expanded_pattern.slice(0, -1);
-		const absolute_dir = path.posix.normalize(path.isAbsolute(base) ? base : normalize_path(path.resolve(cwd, base)));
-		return targets.absolute === absolute_dir || targets.absolute.startsWith(`${absolute_dir}/`);
+		if (path.isAbsolute(base)) {
+			const absolute_dir = path.posix.normalize(base);
+			return targets.absolute === absolute_dir || targets.absolute.startsWith(`${absolute_dir}/`);
+		}
+
+		const pattern_segments = base.replace(/^\/+/, "").split("/").filter(Boolean);
+		return contains_segment_sequence(targets.segments, pattern_segments);
 	}
 
 	if (path.isAbsolute(expanded_pattern)) {
@@ -104,38 +245,17 @@ export function path_rule_matches_target(target_path: string, rule: PathRule, cw
 	}
 
 	if (expanded_pattern.includes("/")) {
-		return targets.relative === expanded_pattern || targets.relative.startsWith(`${expanded_pattern}/`);
+		const pattern_segments = expanded_pattern.replace(/^\/+/, "").split("/").filter(Boolean);
+		return ends_with_segments(targets.segments, pattern_segments);
 	}
 
-	return targets.basename === expanded_pattern || targets.relative === expanded_pattern;
+	return targets.basename === expanded_pattern || targets.normalized_input === expanded_pattern;
 }
 
 export function command_mentions_path_rule(command: string, rule: PathRule, cwd: string): boolean {
-	const normalized_command = normalize_path(command).toLowerCase();
-	const raw_pattern = rule.pattern.trim();
-	if (!raw_pattern) return false;
-
-	const expanded_pattern = normalize_path(expand_home(raw_pattern));
-	const probes = new Set<string>();
-	probes.add(expanded_pattern.toLowerCase());
-
-	if (expanded_pattern.endsWith("/")) {
-		probes.add(expanded_pattern.slice(0, -1).toLowerCase());
+	for (const candidate of extract_path_candidates_from_command(command)) {
+		if (path_rule_matches_target(candidate, rule, cwd)) return true;
 	}
-
-	const basename = path.posix.basename(expanded_pattern.replace(/\/$/, ""));
-	if (basename) probes.add(basename.toLowerCase());
-
-	if (!path.isAbsolute(expanded_pattern)) {
-		const resolved = normalize_path(path.resolve(cwd, expanded_pattern));
-		probes.add(resolved.toLowerCase());
-	}
-
-	for (const probe of probes) {
-		if (probe.length < 3) continue;
-		if (normalized_command.includes(probe)) return true;
-	}
-
 	return false;
 }
 
