@@ -41,76 +41,6 @@ bash_tool_patterns:
     reason: dd writing to block device is destructive
     action: block
 
-  - id: aws-delete-stack
-    pattern: '\baws\s+cloudformation\s+delete-stack\b'
-    reason: deletes cloudformation stack and managed resources
-    action: block
-
-  - id: aws-delete-db
-    pattern: '\baws\s+rds\s+delete-db-instance\b'
-    reason: deletes RDS database instance
-    action: block
-
-  - id: aws-delete-table
-    pattern: '\baws\s+dynamodb\s+delete-table\b'
-    reason: deletes dynamodb table
-    action: block
-
-  - id: gcloud-project-delete
-    pattern: '\bgcloud\s+projects\s+delete\b'
-    reason: deletes entire GCP project
-    action: block
-
-  - id: gcloud-cluster-delete
-    pattern: '\bgcloud\s+container\s+clusters\s+delete\b'
-    reason: deletes GKE cluster
-    action: block
-
-  - id: gcloud-storage-rm-recursive
-    pattern: '\bgcloud\s+storage\s+rm\s+.*-r'
-    reason: recursive object deletion in cloud storage
-    action: block
-
-  - id: firebase-project-delete
-    pattern: '\bfirebase\s+projects:delete\b'
-    reason: deletes firebase project
-    action: block
-
-  - id: vercel-remove
-    pattern: '\bvercel\s+(remove|rm)\b'
-    reason: removes vercel deployment/project resources
-    action: ask
-
-  - id: netlify-site-delete
-    pattern: '\bnetlify\s+sites:delete\b'
-    reason: deletes netlify site
-    action: block
-
-  - id: wrangler-delete
-    pattern: '\bwrangler\s+(delete|d1\s+delete|r2\s+bucket\s+delete)\b'
-    reason: destructive cloudflare resource deletion
-    action: block
-
-  - id: sql-drop-table
-    pattern: '\bDROP\s+TABLE\b'
-    reason: SQL DROP TABLE
-    action: block
-
-  - id: sql-drop-database
-    pattern: '\bDROP\s+DATABASE\b'
-    reason: SQL DROP DATABASE
-    action: block
-
-  - id: sql-delete-no-where
-    pattern: '\bDELETE\s+FROM\s+\w+\s*;'
-    reason: SQL DELETE without WHERE clause
-    action: block
-
-  - id: sql-delete-specific-id
-    pattern: '\bDELETE\s+FROM\s+\w+\s+WHERE\b.*\bid\s*='
-    reason: SQL DELETE with WHERE id clause
-    action: ask
-
 zero_access_paths:
   - .env
   - .env.local
@@ -119,25 +49,25 @@ zero_access_paths:
   - .env.staging
   - .env.test
   - .env.*.local
-  - '*.env'
+  - "*.env"
   - ~/.ssh/
   - ~/.gnupg/
   - ~/.aws/
   - ~/.config/gcloud/
   - ~/.kube/
   - ~/.docker/
-  - '*.pem'
-  - '*.key'
-  - '*.p12'
-  - '*.pfx'
-  - '*.tfstate'
+  - "*.pem"
+  - "*.key"
+  - "*.p12"
+  - "*.pfx"
+  - "*.tfstate"
   - .terraform/
   - .git-credentials
   - ~/.git-credentials
-  - '*serviceAccount*.json'
-  - '*-credentials.json'
+  - "*serviceAccount*.json"
+  - "*-credentials.json"
   - secrets.yaml
-  - '*-secret.yaml'
+  - "*-secret.yaml"
 
 read_only_paths:
   - /etc/
@@ -154,7 +84,7 @@ read_only_paths:
   - bun.lockb
   - Cargo.lock
   - go.sum
-  - '*.lock'
+  - "*.lock"
   - dist/
   - build/
   - .next/
@@ -178,5 +108,4 @@ no_delete_paths:
   - SECURITY.md
   - Dockerfile
   - Dockerfile.*
-  - docker-compose.yml
   - .dockerignore
