@@ -187,7 +187,11 @@ export default function (pi: ExtensionAPI) {
       "Search the public web using Vertex AI Gemini with Google Search grounding. Returns a concise answer plus source URLs from grounding metadata.",
     parameters: Type.Object({
       query: Type.String({ description: "Search query to run" }),
-      model: Type.Optional(Type.String({ description: `Vertex Gemini model id (default: ${DEFAULT_MODEL})` })),
+      model: Type.Optional(
+        Type.String({
+          description: `Vertex Gemini model id (default: ${DEFAULT_MODEL}; experimental override example: gemini-3-flash-preview)`,
+        }),
+      ),
       maxSources: Type.Optional(
         Type.Number({ minimum: 1, maximum: 20, description: "Maximum number of source URLs to return" }),
       ),
