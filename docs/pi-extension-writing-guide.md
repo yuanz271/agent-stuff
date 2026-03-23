@@ -372,15 +372,15 @@ pi.on("input", async (event) => {
 });
 ```
 
-### Plan Mode (read-only sandbox)
+### Read-only planning pattern
 
-The `plan-mode/` example demonstrates a comprehensive pattern:
-1. **Toggle via `/plan` command or `Ctrl+Alt+P` shortcut**
-2. **Restrict tools** to read-only set (`read`, `bash`, `grep`, `find`, `ls`)
+A read-only planning extension often follows this pattern:
+1. **Toggle planning mode** via a command, flag, or shortcut
+2. **Restrict tools** to a read-only set (`read`, `bash`, `grep`, `find`, `ls`)
 3. **Block destructive bash** commands via `tool_call` event with allowlist/blocklist
 4. **Inject context** via `before_agent_start` telling the LLM it's in read-only mode
-5. **Extract plan steps** from assistant output (numbered items under `Plan:` header)
-6. **Track execution** progress with `[DONE:n]` markers and a widget
+5. **Extract plan steps** from assistant output (for example numbered items under a `Plan:` header)
+6. **Track execution** progress with markers and a widget
 7. **Persist state** with `pi.appendEntry()` and reconstruct on `session_start`
 
 ---
@@ -484,7 +484,7 @@ Check `ctx.hasUI` before using interactive UI methods in non-interactive modes.
 | **Input** | `input-transform.ts`, `claude-rules.ts` |
 | **UI** | `status-line.ts`, `custom-footer.ts`, `widget-placement.ts`, `snake.ts`, `space-invaders.ts` |
 | **Sessions** | `custom-compaction.ts`, `git-checkpoint.ts`, `auto-commit-on-exit.ts` |
-| **Complex** | `plan-mode/` (full read-only sandbox), `preset.ts`, `ssh.ts`, `subagent/` |
+| **Complex** | `preset.ts`, `ssh.ts`, `subagent/` |
 | **Providers** | `custom-provider-anthropic/`, `custom-provider-gitlab-duo/` |
 
 All located in `packages/coding-agent/examples/extensions/` in the pi-mono repo.
