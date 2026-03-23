@@ -40,8 +40,6 @@ Keep this list updated whenever importing or porting an extension/skill so sourc
 - `default (all other repo content unless listed below)` → `https://github.com/mitsuhiko/agent-stuff` @ `dff57a95a670` (`origin/main`)
 - Selective sync note: `pi-extensions/files.ts` and `pi-extensions/review.ts` were copied from later `https://github.com/mitsuhiko/agent-stuff` revision `f0f29f95a03a` (`origin/main`). Keep the default pin unchanged because the broader default-sourced tree was not re-synced, and `scripts/check-import-upstreams.py` expects a single parsed pin per source/branch.
 - `pi-extensions/websearch/*` → original work, not ported from upstream
-- `pi-extensions/pi-autoresearch/*` → `https://github.com/davebcn87/pi-autoresearch` @ `327ea6b7ed39` (`origin/main`)
-- `skills/autoresearch-create/SKILL.md` → `https://github.com/davebcn87/pi-autoresearch` @ `327ea6b7ed39` (`origin/main`)
 - `pi-extensions/damage-control/*` → `https://github.com/cagdotin/agents` @ `d8974ff068b4` (`origin/master`)
 - Note: for `damage-control`, treat the upstream pin as provenance only. The local `pi-extensions/damage-control/matcher.ts` and bundled rules file `pi-extensions/damage-control/damage-control-rules.yaml` are intentionally customized and excluded from upstream parity decisions.
 - `pi-extensions/session-stats/*` → `https://github.com/cagdotin/agents` @ `d8974ff068b4` (`origin/master`)

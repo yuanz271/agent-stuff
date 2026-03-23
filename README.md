@@ -17,7 +17,6 @@ All skill files are in the [`skills`](skills) folder:
 * [`/github`](skills/github) - Interacting with GitHub via the `gh` CLI (issues, PRs, runs, and APIs)
 * [`/librarian`](skills/librarian) - Caching and refreshing remote git repositories in `~/.cache/checkouts`
 * [`/mermaid`](skills/mermaid) - Creating and validating Mermaid diagrams with the official Mermaid CLI
-* [`/autoresearch-create`](skills/autoresearch-create) - Sets up and runs an autonomous experiment loop for a chosen optimization target (goal/metric/scope/constraints).
 * [`/critique`](skills/critique) - Structured critique of writing or code with numbered critiques (C1, C2, ...), severity, quoted passages, and inline {C1} markers in an annotated copy
 * [`/simplify`](skills/simplify) - Portable prompt-only guidance for simplifying recently changed code while preserving behavior
 * [`/pdf-extract`](skills/pdf-extract) - High-fidelity PDF → Markdown via Vertex AI Gemini (equations, tables, multi-column layout)
@@ -33,7 +32,6 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 * [`answer.ts`](pi-extensions/answer.ts) - Interactive TUI for answering questions one by one.
 * [`control.ts`](pi-extensions/control.ts) - Session control helpers (list controllable sessions etc.).
 * [`damage-control`](pi-extensions/damage-control) - Default-on safety guardrails for tool calls with layered policy rules, runtime panel (`/damage-control`, `/dc`), and policy event logging.
-* [`pi-autoresearch`](pi-extensions/pi-autoresearch) - Domain-agnostic autonomous experiment loop tooling (`init_experiment`, `run_experiment`, `log_experiment`) with status widget, `/autoresearch` dashboard, session persistence, and optional backpressure checks.
 * [`plan-mode`](pi-extensions/plan-mode) - Read-only planning/execution mode with restricted tools, plan extraction, and progress tracking.
 * [`prompt-editor.ts`](pi-extensions/prompt-editor.ts) - In-editor prompt mode selector (default/fast/precise) with per-mode model & thinking persistence, global/project config, prompt history, and shortcuts (Ctrl+Shift+M, Ctrl+Space).
 * [`files.ts`](pi-extensions/files.ts) - Unified file browser that merges git status (dirty first) with session references, plus reveal/open/edit and diff actions.
@@ -48,7 +46,6 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 * [`pi-supervisor`](pi-extensions/pi-supervisor) - Outcome-focused supervisory overlay that monitors runs and injects steering via `/supervise`.
 * [`pi-schedule-prompt`](pi-extensions/pi-schedule-prompt) - Schedule one-shot or recurring future prompts with `schedule_prompt` and manage them via `/schedule-prompt`.
 * [`session-breakdown.ts`](pi-extensions/session-breakdown.ts) - TUI for 7/30/90-day session and cost analysis with usage graph.
-
 * [`side-chat`](pi-extensions/side-chat) - Fork the current conversation into a non-capturing overlay side chat (`Alt+/`, `/side`) while the main agent keeps working.
 * [`uv.ts`](pi-extensions/uv.ts) - Bash wrapper that routes Python tooling (`pip`, `poetry`, `python -m ...`) toward `uv` workflows via intercepted commands.
 

@@ -5,6 +5,7 @@ All notable changes to agent-stuff are documented here.
 ## Unreleased
 
 * Removed `plan-mode.ts` extension (enforced read-only sandbox) and replaced it with a prompt-only `/plan` skill (portable across agents).
+* Removed `pi-autoresearch` extension and `/autoresearch-create` skill.
 * Added `pdf` skill for PDF processing (text/table extraction, merge/split/rotate, form filling, OCR, encryption, and PDF creation) with `uv run` inline script metadata.
 * Added `prompt-editor.ts` extension for in-editor prompt mode selection with per-mode model and thinking persistence.
 * Removed `go-to-bed.ts` extension (late-night safety guard during quiet hours).
