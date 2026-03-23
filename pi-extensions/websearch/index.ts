@@ -28,7 +28,7 @@ type WebsearchConfig = {
   credentialsPath: string;
 };
 
-const DEFAULT_MODEL = "gemini-2.0-flash";
+const DEFAULT_MODEL = "gemini-2.5-flash";
 const DEFAULT_MAX_SOURCES = 8;
 const GOOGLE_OAUTH_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
 const DEFAULT_TOKEN_URI = "https://oauth2.googleapis.com/token";
