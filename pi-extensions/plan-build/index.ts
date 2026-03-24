@@ -606,6 +606,12 @@ export default function planBuildExtension(pi: ExtensionAPI) {
       handleControlCommand(args, ctx, "Usage: /plan-build [start|on|status|off|stop] (no args toggles mode)"),
   });
 
+  pi.registerCommand("plan", {
+    description: "Alias for /plan-build (bare command toggles mode)",
+    handler: async (args, ctx) =>
+      handleControlCommand(args, ctx, "Usage: /plan [start|on|status|off|stop] (no args toggles mode)"),
+  });
+
   pi.registerCommand("pb", {
     description: "Alias for /plan-build (bare command toggles mode)",
     handler: async (args, ctx) =>
@@ -647,7 +653,7 @@ export default function planBuildExtension(pi: ExtensionAPI) {
     if (event.toolName === TOOL_NAME || event.toolName === "pi_messenger") {
       return {
         block: true,
-        reason: `plan-build mode is on: planner-side builder control and messaging should go through explicit slash commands (/plan-build, /build), not model tool calls.`,
+        reason: `plan-build mode is on: planner-side builder control and messaging should go through explicit slash commands (/plan-build, /plan, /build), not model tool calls.`,
       };
     }
   });
