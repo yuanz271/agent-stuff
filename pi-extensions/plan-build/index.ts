@@ -520,6 +520,38 @@ function formatBuildQueuedMarkdown(builder: BuilderStatus, queuedPath: string, r
   return lines.join("\n");
 }
 
+function parseBuildInput(text: string): string | undefined {
+  if (text === "/build") return "";
+  if (text.startsWith("/build ")) return text.slice(7);
+  return undefined;
+}
+
+async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, args: string): Promise<void> {
+  if (!modeEnabled) {
+    ctx.hasUI && ctx.ui.notify("/build is only available when plan-build mode is on.", "error");
+    return;
+  }
+  if (!ctx.isIdle() || ctx.hasPendingMessages()) {
+    ctx.hasUI && ctx.ui.notify("Wait for the planner to finish its current turn before delegating with /build.", "warning");
+    return;
+  }
+
+  const handoff = buildHandoffText(ctx, args);
+  if (!handoff) {
+    ctx.hasUI && ctx.ui.notify("No recent planner context found. Ask the planner first or pass explicit instructions to /build.", "error");
+    return;
+  }
+
+  let builder = await getBuilderStatus(pi, ctx.cwd ?? process.cwd());
+  if (!builder.running) {
+    builder = await startBuilder(pi, ctx.cwd ?? process.cwd());
+    updateStatusLine(ctx, builder);
+  }
+
+  const queued = await queueBuilderMessage(handoff);
+  emitInfo(pi, formatBuildQueuedMarkdown(builder, queued.inboxPath, queued.registrationVisible), BUILD_HANDOFF_MESSAGE_TYPE);
+}
+
 export default function planBuildExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: TOOL_NAME,
@@ -587,38 +619,20 @@ export default function planBuildExtension(pi: ExtensionAPI) {
       handleControlCommand(args, ctx, "Usage: /pb [start|on|status|off|stop] (no args toggles mode)"),
   });
 
-  pi.registerCommand("build", {
-    description: `Delegate the latest planner context to ${BUILDER_AGENT_NAME}. Optional args are appended as extra build instructions.`,
-    handler: async (args, ctx) => {
-      if (!modeEnabled) {
-        ctx.hasUI && ctx.ui.notify("plan-build mode is off. Use /plan-build on first.", "error");
-        return;
-      }
-      if (!ctx.isIdle() || ctx.hasPendingMessages()) {
-        ctx.hasUI && ctx.ui.notify("Wait for the planner to finish its current turn before delegating with /build.", "warning");
-        return;
-      }
+  pi.on("input", async (event, ctx) => {
+    if (event.source === "extension") return { action: "continue" as const };
 
-      const handoff = buildHandoffText(ctx, args);
-      if (!handoff) {
-        ctx.hasUI && ctx.ui.notify("No recent planner context found. Ask the planner first or pass explicit instructions to /build.", "error");
-        return;
-      }
+    const buildArgs = parseBuildInput(event.text);
+    if (buildArgs === undefined) return { action: "continue" as const };
 
-      try {
-        let builder = await getBuilderStatus(pi, ctx.cwd ?? process.cwd());
-        if (!builder.running) {
-          builder = await startBuilder(pi, ctx.cwd ?? process.cwd());
-          updateStatusLine(ctx, builder);
-        }
+    try {
+      await handleBuildDelegation(pi, ctx, buildArgs);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.hasUI && ctx.ui.notify(`build delegation failed: ${message}`, "error");
+    }
 
-        const queued = await queueBuilderMessage(handoff);
-        emitInfo(pi, formatBuildQueuedMarkdown(builder, queued.inboxPath, queued.registrationVisible), BUILD_HANDOFF_MESSAGE_TYPE);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        ctx.hasUI && ctx.ui.notify(`build delegation failed: ${message}`, "error");
-      }
-    },
+    return { action: "handled" as const };
   });
 
   pi.on("tool_call", async (event) => {
