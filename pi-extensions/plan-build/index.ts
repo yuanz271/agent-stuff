@@ -1056,12 +1056,6 @@ export default function planBuildExtension(pi: ExtensionAPI) {
       }
     }
 
-    if (event.toolName === "pi_messenger") {
-      return {
-        block: true,
-        reason: `plan-build mode is on: paired planner↔builder communication uses plan-build's internal mailbox, not planner-side pi_messenger tool calls.`,
-      };
-    }
   });
 
   pi.on("context", async (event) => {
