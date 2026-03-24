@@ -7,29 +7,13 @@ import type { PlanBuildAction } from "./utils.js";
 const STATUS_KEY = "plan-build";
 const TOOL_NAME = "plan_build";
 
-function normalizeAction(raw: string): PlanBuildAction | null {
-  const value = raw.trim().toLowerCase();
-  if (value === "status") return "status";
-  if (value === "start" || value === "on") return "start";
-  if (value === "stop" || value === "off") return "stop";
-  return null;
-}
-
 function resolveExplicitCommandAction(raw: string): PlanBuildAction | null {
-  return raw.trim() === "" ? "status" : normalizeAction(raw);
-}
-
-async function resolvePlanCommandAction(
-  pi: ExtensionAPI,
-  ctx: ExtensionContext,
-  raw: string,
-): Promise<PlanBuildAction | null> {
-  const explicit = normalizeAction(raw);
-  if (explicit) return explicit;
-  if (raw.trim() !== "") return null;
-
-  const status = await getBuilderStatus(pi, ctx.cwd ?? process.cwd());
-  return status.running ? "stop" : "start";
+  const value = raw.trim().toLowerCase();
+  if (value === "") return "status";
+  if (value === "status") return "status";
+  if (value === "start") return "start";
+  if (value === "stop") return "stop";
+  return null;
 }
 
 function renderSummary(status: Awaited<ReturnType<typeof getBuilderStatus>>): string {
@@ -124,27 +108,16 @@ export default function planBuildExtension(pi: ExtensionAPI) {
     }
   }
 
-  pi.registerCommand("plan", {
-    description: `Toggle plan-build on/off for builder ${BUILDER_AGENT_NAME}, or pass start|stop|status`,
-    handler: async (args, ctx) =>
-      handleCommand(
-        args,
-        ctx,
-        "Usage: /plan [start|stop|status|on|off] (no args toggles)",
-        (value, commandCtx) => resolvePlanCommandAction(pi, commandCtx, value),
-      ),
-  });
-
   pi.registerCommand("plan-build", {
     description: `Manage the persistent builder session ${BUILDER_AGENT_NAME}: /plan-build [start|status|stop]`,
     handler: async (args, ctx) =>
-      handleCommand(args, ctx, "Usage: /plan-build [start|status|stop|on|off]", async (value) => resolveExplicitCommandAction(value)),
+      handleCommand(args, ctx, "Usage: /plan-build [start|status|stop]", async (value) => resolveExplicitCommandAction(value)),
   });
 
   pi.registerCommand("pb", {
     description: "Alias for /plan-build",
     handler: async (args, ctx) =>
-      handleCommand(args, ctx, "Usage: /pb [start|status|stop|on|off]", async (value) => resolveExplicitCommandAction(value)),
+      handleCommand(args, ctx, "Usage: /pb [start|status|stop]", async (value) => resolveExplicitCommandAction(value)),
   });
 
   pi.on("session_start", async (_event, ctx) => {
