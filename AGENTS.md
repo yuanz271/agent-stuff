@@ -44,6 +44,8 @@ Keep this list updated whenever importing or porting an extension/skill so sourc
 - Note: for `damage-control`, treat the upstream pin as provenance only. The local `pi-extensions/damage-control/matcher.ts` and bundled rules file `pi-extensions/damage-control/damage-control-rules.yaml` are intentionally customized and excluded from upstream parity decisions.
 - `pi-extensions/session-stats/*` → `https://github.com/cagdotin/agents` @ `d8974ff068b4` (`origin/master`)
 - `pi-extensions/side-chat/*` → `https://github.com/nicobailon/pi-side-chat` @ `f1dba8bdb26e` (`origin/main`)
+- `pi-extensions/pi-messenger/*` → `https://github.com/nicobailon/pi-messenger` @ `b75b394d5a2f` (`origin/main`)
+- `skills/pi-messenger-crew/SKILL.md` → `https://github.com/nicobailon/pi-messenger` @ `b75b394d5a2f` (`origin/main`)
 - `pi-extensions/pi-tasks/*` → `https://github.com/tintinweb/pi-tasks` @ `ccddf93` (`origin/master`)
 - `pi-extensions/pi-subagents/*` → `https://github.com/tintinweb/pi-subagents` @ `af012a9` (`origin/master`)
 - `pi-extensions/pi-supervisor/*` → `https://github.com/tintinweb/pi-supervisor` @ `a6d8a501bae9` (`origin/master`)

@@ -4,6 +4,7 @@ All notable changes to agent-stuff are documented here.
 
 ## Unreleased
 
+* Added `pi-messenger` extension and `/pi-messenger-crew` skill for inter-agent messaging, file reservations, and optional Crew task orchestration.
 * Removed `plan-mode` extension (read-only planning/execution sandbox).
 * Removed `pi-autoresearch` extension and `/autoresearch-create` skill.
 * Added `pdf` skill for PDF processing (text/table extraction, merge/split/rotate, form filling, OCR, encryption, and PDF creation) with `uv run` inline script metadata.

@@ -25,6 +25,15 @@ Apache License 2.0 — same terms as stated in upstream `LICENSE`.
 
 MIT License — same terms as stated in upstream `package.json` (`"license": "MIT"`).
 
+## pi-messenger
+
+- **Source**: https://github.com/nicobailon/pi-messenger
+- **Included paths in this repo**:
+  - `pi-extensions/pi-messenger/*`
+  - `skills/pi-messenger-crew/SKILL.md`
+- **Upstream author**: Nico Bailon
+- **Upstream license note**: upstream `package.json` states MIT, but no root `LICENSE` file was present in the imported revision. Verify upstream licensing terms before redistribution.
+
 ## damage-control extension
 
 - **Source**: https://github.com/cagdotin/agents
