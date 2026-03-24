@@ -34,7 +34,7 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 * [`control.ts`](pi-extensions/control.ts) - Session control helpers (list controllable sessions etc.).
 * [`damage-control`](pi-extensions/damage-control) - Default-on safety guardrails for tool calls with layered policy rules, runtime panel (`/damage-control`, `/dc`), and policy event logging.
 * [`pi-messenger`](pi-extensions/pi-messenger) - Inter-agent messaging mesh with direct messages, broadcasts, file reservations, activity feed, and optional Crew task orchestration.
-* [`plan-build`](pi-extensions/plan-build) - Planner/builder mode controller for a persistent tmux-backed builder session `builder`. Supports explicit `start`, `on`, `status`, `off`, and `stop`; bare `/plan-build` or `/plan` toggle planner mode on/off; and when mode is on, `/build` delegates the latest planner context to the builder. When mode is on, the main agent becomes read-only, switches to the planner model, and restores its previous model/thinking state on `off`.
+* [`plan-build`](pi-extensions/plan-build) - Planner/builder mode controller for a persistent tmux-backed builder session. Supports explicit `start`, `on`, `status`, `off`, and `stop`; bare `/plan-build` or `/plan` toggle planner mode on/off; and when mode is on, `/build` delegates the latest planner context to the builder. Planner/builder settings are layered as bundled defaults → global `~/.pi/agent/plan-build-settings.yaml` → project `.pi/plan-build-settings.yaml`.
 * [`prompt-editor.ts`](pi-extensions/prompt-editor.ts) - In-editor prompt mode selector (default/fast/precise) with per-mode model & thinking persistence, global/project config, prompt history, and shortcuts (Ctrl+Shift+M, Ctrl+Space).
 * [`files.ts`](pi-extensions/files.ts) - Unified file browser that merges git status (dirty first) with session references, plus reveal/open/edit and diff actions.
 * [`init.ts`](pi-extensions/init.ts) - Pi-specific `/init` bootstrap command that embeds its contributor-guide prompt and asks pi to generate the current repo's `AGENTS.md`.
@@ -49,6 +49,41 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 * [`session-breakdown.ts`](pi-extensions/session-breakdown.ts) - TUI for 7/30/90-day session and cost analysis with usage graph.
 * [`side-chat`](pi-extensions/side-chat) - Fork the current conversation into a non-capturing overlay side chat (`Alt+/`, `/side`) while the main agent keeps working.
 * [`uv.ts`](pi-extensions/uv.ts) - Bash wrapper that routes Python tooling (`pip`, `poetry`, `python -m ...`) toward `uv` workflows via intercepted commands.
+
+### `plan-build` settings
+
+`plan-build` loads settings in this order:
+
+1. bundled defaults (`pi-extensions/plan-build/plan-build-settings.yaml`)
+2. global user settings (`~/.pi/agent/plan-build-settings.yaml`)
+3. nearest project settings discovered from `cwd` upward (`.pi/plan-build-settings.yaml`, walking to git root)
+
+Later layers override earlier ones field-by-field.
+
+Example:
+
+```yaml
+planner:
+  model: anthropic/claude-opus-4-6
+  thinking: high
+  allowed_tools:
+    - read
+    - bash
+    - grep
+    - find
+    - ls
+    - websearch
+  prompt_append: |
+    Prefer small, reviewable implementation plans.
+
+builder:
+  agent_name: builder
+  model: openai/gpt-5.4:xhigh
+  system_prompt_append: |
+    Prefer the smallest relevant validation first.
+  startup_prompt_append: |
+    Report readiness briefly, then wait.
+```
 
 ## Docs
 

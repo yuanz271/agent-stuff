@@ -6,7 +6,14 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { BUILDER_AGENT_NAME, getBuilderStatus, startBuilder, stopBuilder } from "./utils.js";
+import {
+  getDefaultPlanBuildSettingsLoadResult,
+  loadPlanBuildSettings,
+  type PlanBuildSettings,
+  type PlanBuildSettingsLoadResult,
+  type PlanBuildSource,
+} from "./settings.js";
+import { getBuilderStatus, startBuilder, stopBuilder } from "./utils.js";
 import type { BuilderStatus } from "./utils.js";
 
 const STATUS_KEY = "plan-build";
@@ -15,11 +22,7 @@ const STATE_ENTRY_TYPE = "plan-build-state";
 const CONTEXT_MESSAGE_TYPE = "plan-build-context";
 const BUILD_HANDOFF_MESSAGE_TYPE = "plan-build-handoff";
 const PLANNER_AGENT_NAME = "planner";
-const PLAN_PROVIDER = "anthropic";
-const PLAN_MODEL_ID = "claude-opus-4-6";
-const PLAN_THINKING_LEVEL: ThinkingLevel = "high";
 const MAX_CONTEXT_MESSAGE_CHARS = 4_000;
-const PLANNER_ALLOWED_TOOLS = new Set(["read", "bash", "grep", "find", "ls", "websearch"]);
 const MUTATING_BASH_PATTERNS = [
   /\brm\b/i,
   /\brmdir\b/i,
@@ -126,8 +129,13 @@ type PlanBuildStatus = {
   previousActiveTools?: string[];
   plannerModel?: string;
   plannerThinkingLevel: ThinkingLevel;
+  configuredPlannerModel: string;
+  configuredPlannerThinkingLevel: ThinkingLevel;
   previousPlannerModel?: string;
   previousPlannerThinkingLevel?: ThinkingLevel;
+  settingsSources: PlanBuildSource[];
+  settingsWarnings: string[];
+  settingsInvalidFieldCount: number;
   builder: BuilderStatus;
 };
 
@@ -135,6 +143,7 @@ let modeEnabled = false;
 let previousActiveTools: string[] | undefined;
 let previousPlannerSelection: PlannerSelection | undefined;
 let lastObservedPlannerModel: { provider?: string; modelId?: string } = {};
+let currentSettings: PlanBuildSettingsLoadResult = getDefaultPlanBuildSettingsLoadResult();
 
 function normalizeControlAction(raw: string): PlanBuildControlAction | null {
   const value = raw.trim().toLowerCase();
@@ -204,15 +213,40 @@ function isSafePlannerBash(command: string): boolean {
   return safe && !destructive;
 }
 
+function builderAgentName(): string {
+  return currentSettings.settings.builder.agent_name;
+}
+
+function plannerConfig(): PlanBuildSettings["planner"] {
+  return currentSettings.settings.planner;
+}
+
+function getConfiguredPlannerSelection(settings: PlanBuildSettings = currentSettings.settings): PlannerSelection | undefined {
+  const ref = settings.planner.model.trim();
+  const separator = ref.indexOf("/");
+  if (separator <= 0 || separator >= ref.length - 1) return undefined;
+  return {
+    provider: ref.slice(0, separator),
+    modelId: ref.slice(separator + 1),
+    thinkingLevel: settings.planner.thinking,
+  };
+}
+
+async function refreshSettings(cwd: string): Promise<PlanBuildSettingsLoadResult> {
+  currentSettings = await loadPlanBuildSettings(cwd, import.meta.url);
+  return currentSettings;
+}
+
 function validToolNames(pi: ExtensionAPI): Set<string> {
   return new Set(pi.getAllTools().map((tool) => tool.name));
 }
 
 function filterPlannerTools(pi: ExtensionAPI, sourceTools: string[]): string[] {
   const valid = validToolNames(pi);
-  const filtered = sourceTools.filter((name, index) => sourceTools.indexOf(name) === index && valid.has(name) && PLANNER_ALLOWED_TOOLS.has(name));
+  const allowed = new Set(plannerConfig().allowed_tools);
+  const filtered = sourceTools.filter((name, index) => sourceTools.indexOf(name) === index && valid.has(name) && allowed.has(name));
   if (filtered.length > 0) return filtered;
-  return Array.from(valid).filter((name) => PLANNER_ALLOWED_TOOLS.has(name));
+  return Array.from(valid).filter((name) => allowed.has(name));
 }
 
 function normalizeToolList(pi: ExtensionAPI, sourceTools: string[] | undefined): string[] {
@@ -316,6 +350,8 @@ function applyPlannerMode(pi: ExtensionAPI): void {
 }
 
 async function restoreModeState(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+  await refreshSettings(ctx.cwd ?? process.cwd());
+
   const restored = restorePersistedState(ctx);
   modeEnabled = restored?.enabled ?? false;
   previousActiveTools = modeEnabled ? restored?.previousActiveTools ?? pi.getActiveTools() : undefined;
@@ -323,23 +359,19 @@ async function restoreModeState(pi: ExtensionAPI, ctx: ExtensionContext): Promis
 
   if (modeEnabled) {
     applyPlannerMode(pi);
-    const warning = await applyPlannerSelection(pi, ctx, {
-      provider: PLAN_PROVIDER,
-      modelId: PLAN_MODEL_ID,
-      thinkingLevel: PLAN_THINKING_LEVEL,
-    });
+    const warning = await applyPlannerSelection(pi, ctx, getConfiguredPlannerSelection());
     if (warning && ctx.hasUI) {
       ctx.ui.notify(`plan-build: ${warning}`, "warning");
     }
   }
 
-  const builder = await getBuilderStatus(pi, ctx.cwd ?? process.cwd()).catch(() => undefined);
+  const builder = await getBuilderStatus(pi, ctx.cwd ?? process.cwd(), currentSettings.settings).catch(() => undefined);
   if (builder) updateStatusLine(ctx, builder);
 }
 
 function renderSummary(builder: BuilderStatus): string | undefined {
   if (!modeEnabled && !builder.running) return undefined;
-  const builderPart = builder.running ? `${BUILDER_AGENT_NAME}:on (${builder.tmuxSession})` : `${BUILDER_AGENT_NAME}:off`;
+  const builderPart = builder.running ? `${builder.agentName}:on (${builder.tmuxSession})` : `${builder.agentName}:off`;
   if (!modeEnabled) return builderPart;
   return `planner:on | ${builderPart}`;
 }
@@ -356,15 +388,15 @@ function updateStatusLine(ctx: ExtensionContext, builder: BuilderStatus): void {
   if (modeEnabled) {
     const plannerPart = theme.fg("warning", "planner:on");
     const builderPart = builder.running
-      ? theme.fg("accent", `${BUILDER_AGENT_NAME}:on (${builder.tmuxSession})`)
-      : theme.fg("muted", `${BUILDER_AGENT_NAME}:off`);
+      ? theme.fg("accent", `${builder.agentName}:on (${builder.tmuxSession})`)
+      : theme.fg("muted", `${builder.agentName}:off`);
     ctx.ui.setStatus(STATUS_KEY, `${plannerPart} | ${builderPart}`);
     return;
   }
 
   const builderPart = builder.running
-    ? theme.fg("accent", `${BUILDER_AGENT_NAME}:on (${builder.tmuxSession})`)
-    : theme.fg("muted", `${BUILDER_AGENT_NAME}:off`);
+    ? theme.fg("accent", `${builder.agentName}:on (${builder.tmuxSession})`)
+    : theme.fg("muted", `${builder.agentName}:off`);
   ctx.ui.setStatus(STATUS_KEY, builderPart);
 }
 
@@ -385,8 +417,13 @@ function buildStatus(action: PlanBuildControlAction, message: string, builder: B
     previousActiveTools,
     plannerModel,
     plannerThinkingLevel: pi.getThinkingLevel(),
+    configuredPlannerModel: currentSettings.settings.planner.model,
+    configuredPlannerThinkingLevel: currentSettings.settings.planner.thinking,
     previousPlannerModel,
     previousPlannerThinkingLevel: previousPlannerSelection?.thinkingLevel,
+    settingsSources: currentSettings.stats.loaded_sources,
+    settingsWarnings: currentSettings.warnings,
+    settingsInvalidFieldCount: currentSettings.stats.invalid_field_count,
     builder,
   };
 }
@@ -400,6 +437,8 @@ function formatStatusMarkdown(status: PlanBuildStatus): string {
     `- planner behavior: ${status.plannerReadOnly ? "planner (read-only)" : "normal"}`,
     `- planner model: ${status.plannerModel ?? "unknown"}`,
     `- planner thinking: ${status.plannerThinkingLevel}`,
+    `- configured plan model: ${status.configuredPlannerModel}`,
+    `- configured plan thinking: ${status.configuredPlannerThinkingLevel}`,
     `- active tools: ${status.activeTools.length > 0 ? status.activeTools.join(", ") : "(none)"}`,
   ];
 
@@ -411,6 +450,11 @@ function formatStatusMarkdown(status: PlanBuildStatus): string {
   }
 
   lines.push(
+    "",
+    "**settings**",
+    "",
+    `- loaded sources: ${status.settingsSources.length > 0 ? status.settingsSources.map((source) => `${source.kind}:${source.path}`).join(", ") : "code defaults only"}`,
+    `- invalid fields ignored: ${status.settingsInvalidFieldCount}`,
     "",
     "**builder**",
     "",
@@ -425,10 +469,13 @@ function formatStatusMarkdown(status: PlanBuildStatus): string {
 
   if (status.builder.startedAt) lines.push(`- started: ${status.builder.startedAt}`);
   if (status.builder.lastStoppedAt) lines.push(`- last stopped: ${status.builder.lastStoppedAt}`);
-  if (status.builder.alreadyRunning) lines.push(`- note: existing ${BUILDER_AGENT_NAME} session reused`);
+  if (status.builder.alreadyRunning) lines.push(`- note: existing ${status.builder.agentName} session reused`);
 
-  if (status.builder.warnings.length > 0) {
+  if (status.settingsWarnings.length > 0 || status.builder.warnings.length > 0) {
     lines.push("", "**warnings**", "");
+    for (const warning of status.settingsWarnings) {
+      lines.push(`- settings: ${warning}`);
+    }
     for (const warning of status.builder.warnings) {
       lines.push(`- ${warning}`);
     }
@@ -452,16 +499,17 @@ function emitInfo(pi: ExtensionAPI, markdown: string, customType = BUILD_HANDOFF
   );
 }
 
-async function startOnly(pi: ExtensionAPI, ctx: ExtensionContext): Promise<PlanBuildStatus> {
-  const builder = await startBuilder(pi, ctx.cwd ?? process.cwd());
+async function startOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: PlanBuildSettings): Promise<PlanBuildStatus> {
+  const builder = await startBuilder(pi, ctx.cwd ?? process.cwd(), settings);
   updateStatusLine(ctx, builder);
   return buildStatus("start", builder.message, builder, pi);
 }
 
-async function enableMode(pi: ExtensionAPI, ctx: ExtensionContext): Promise<PlanBuildStatus> {
+async function enableMode(pi: ExtensionAPI, ctx: ExtensionContext, settings: PlanBuildSettings): Promise<PlanBuildStatus> {
   const capturedTools = modeEnabled ? previousActiveTools : pi.getActiveTools();
   const capturedSelection = modeEnabled ? previousPlannerSelection : getCurrentPlannerSelection(pi, ctx);
-  const builder = await startBuilder(pi, ctx.cwd ?? process.cwd());
+  const builder = await startBuilder(pi, ctx.cwd ?? process.cwd(), settings);
+  const configuredSelection = getConfiguredPlannerSelection(settings);
 
   modeEnabled = true;
   previousActiveTools = normalizeToolList(pi, capturedTools);
@@ -470,19 +518,16 @@ async function enableMode(pi: ExtensionAPI, ctx: ExtensionContext): Promise<Plan
   }
   previousPlannerSelection = normalizePlannerSelection(capturedSelection);
 
-  const switchWarning = await applyPlannerSelection(pi, ctx, {
-    provider: PLAN_PROVIDER,
-    modelId: PLAN_MODEL_ID,
-    thinkingLevel: PLAN_THINKING_LEVEL,
-  });
+  const switchWarning = await applyPlannerSelection(pi, ctx, configuredSelection);
 
   applyPlannerMode(pi);
   persistModeState(pi);
   updateStatusLine(ctx, builder);
 
+  const configuredModelLabel = formatPlannerModel(configuredSelection) ?? settings.planner.model;
   const switchMessage = switchWarning
     ? `Planner remained on ${formatPlannerModel(getCurrentPlannerSelection(pi, ctx)) ?? "the current model"} (${switchWarning})`
-    : `Planner switched to ${PLAN_PROVIDER}/${PLAN_MODEL_ID} (${PLAN_THINKING_LEVEL})`;
+    : `Planner switched to ${configuredModelLabel} (${settings.planner.thinking})`;
 
   return buildStatus(
     "on",
@@ -492,8 +537,8 @@ async function enableMode(pi: ExtensionAPI, ctx: ExtensionContext): Promise<Plan
   );
 }
 
-async function disableMode(pi: ExtensionAPI, ctx: ExtensionContext): Promise<PlanBuildStatus> {
-  const builder = await getBuilderStatus(pi, ctx.cwd ?? process.cwd());
+async function disableMode(pi: ExtensionAPI, ctx: ExtensionContext, settings: PlanBuildSettings): Promise<PlanBuildStatus> {
+  const builder = await getBuilderStatus(pi, ctx.cwd ?? process.cwd(), settings);
   const toolsToRestore = previousActiveTools;
   const plannerToRestore = previousPlannerSelection;
 
@@ -516,42 +561,44 @@ async function disableMode(pi: ExtensionAPI, ctx: ExtensionContext): Promise<Pla
 
   return buildStatus(
     "off",
-    `Plan-build mode disabled. Planner returned to normal mode. ${restoreMessage}. ${builder.running ? `Builder ${BUILDER_AGENT_NAME} is still running.` : `Builder ${BUILDER_AGENT_NAME} is not running.`}`,
+    `Plan-build mode disabled. Planner returned to normal mode. ${restoreMessage}. ${builder.running ? `Builder ${builder.agentName} is still running.` : `Builder ${builder.agentName} is not running.`}`,
     builder,
     pi,
   );
 }
 
-async function statusOnly(pi: ExtensionAPI, ctx: ExtensionContext): Promise<PlanBuildStatus> {
-  const builder = await getBuilderStatus(pi, ctx.cwd ?? process.cwd());
+async function statusOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: PlanBuildSettings): Promise<PlanBuildStatus> {
+  const builder = await getBuilderStatus(pi, ctx.cwd ?? process.cwd(), settings);
   updateStatusLine(ctx, builder);
   return buildStatus(
     "status",
-    `Plan-build mode is ${modeEnabled ? "on" : "off"}. Planner model is ${formatPlannerModel(getCurrentPlannerSelection(pi, ctx)) ?? "unknown"}. Builder is ${builder.running ? "running" : "not running"}.`,
+    `Plan-build mode is ${modeEnabled ? "on" : "off"}. Planner model is ${formatPlannerModel(getCurrentPlannerSelection(pi, ctx)) ?? "unknown"}. Builder ${builder.agentName} is ${builder.running ? "running" : "not running"}.`,
     builder,
     pi,
   );
 }
 
-async function stopOnly(pi: ExtensionAPI, ctx: ExtensionContext): Promise<PlanBuildStatus> {
-  const builder = await stopBuilder(pi, ctx.cwd ?? process.cwd());
+async function stopOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: PlanBuildSettings): Promise<PlanBuildStatus> {
+  const builder = await stopBuilder(pi, ctx.cwd ?? process.cwd(), settings);
   updateStatusLine(ctx, builder);
   const suffix = modeEnabled ? " Plan-build mode remains on." : "";
-  return buildStatus("stop", `Builder ${BUILDER_AGENT_NAME} forcibly terminated.${suffix}`, builder, pi);
+  return buildStatus("stop", `Builder ${builder.agentName} forcibly terminated.${suffix}`, builder, pi);
 }
 
 async function runControlAction(pi: ExtensionAPI, ctx: ExtensionContext, action: PlanBuildControlAction): Promise<PlanBuildStatus> {
+  const { settings } = await refreshSettings(ctx.cwd ?? process.cwd());
+
   switch (action) {
     case "start":
-      return startOnly(pi, ctx);
+      return startOnly(pi, ctx, settings);
     case "on":
-      return enableMode(pi, ctx);
+      return enableMode(pi, ctx, settings);
     case "status":
-      return statusOnly(pi, ctx);
+      return statusOnly(pi, ctx, settings);
     case "off":
-      return disableMode(pi, ctx);
+      return disableMode(pi, ctx, settings);
     case "stop":
-      return stopOnly(pi, ctx);
+      return stopOnly(pi, ctx, settings);
   }
 }
 
@@ -595,10 +642,13 @@ function buildHandoffText(ctx: ExtensionContext, extraInstructions: string): str
   return lines.join("\n").trim();
 }
 
-async function queueBuilderMessage(text: string): Promise<{ inboxPath: string; registrationVisible: boolean }> {
+async function queueBuilderMessage(
+  text: string,
+  targetAgentName: string,
+): Promise<{ inboxPath: string; registrationVisible: boolean }> {
   const baseDir = process.env.PI_MESSENGER_DIR || join(homedir(), ".pi", "agent", "messenger");
-  const targetInbox = join(baseDir, "inbox", BUILDER_AGENT_NAME);
-  const registrationPath = join(baseDir, "registry", `${BUILDER_AGENT_NAME}.json`);
+  const targetInbox = join(baseDir, "inbox", targetAgentName);
+  const registrationPath = join(baseDir, "registry", `${targetAgentName}.json`);
   await fs.mkdir(targetInbox, { recursive: true });
 
   const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
@@ -609,7 +659,7 @@ async function queueBuilderMessage(text: string): Promise<{ inboxPath: string; r
       {
         id: randomUUID(),
         from: PLANNER_AGENT_NAME,
-        to: BUILDER_AGENT_NAME,
+        to: targetAgentName,
         text,
         timestamp: new Date().toISOString(),
         replyTo: null,
@@ -636,13 +686,14 @@ function formatBuildQueuedMarkdown(builder: BuilderStatus, queuedPath: string, r
     `**build delegated**`,
     "",
     `- planner mode: ${modeEnabled ? "on" : "off"}`,
+    `- builder name: ${builder.agentName}`,
     `- builder running: ${builder.running ? "yes" : "no"}`,
     `- builder session: ${builder.tmuxSession}`,
     `- queued inbox file: ${queuedPath}`,
   ];
 
   if (!registrationVisible) {
-    lines.push(`- note: builder messenger registration is not visible yet; the message is queued and will be processed once ${BUILDER_AGENT_NAME} joins messenger.`);
+    lines.push(`- note: builder messenger registration is not visible yet; the message is queued and will be processed once ${builder.agentName} joins messenger.`);
   }
 
   return lines.join("\n");
@@ -657,19 +708,20 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
     return;
   }
 
+  const { settings } = await refreshSettings(ctx.cwd ?? process.cwd());
   const handoff = buildHandoffText(ctx, args);
   if (!handoff) {
     ctx.hasUI && ctx.ui.notify("No recent planner context found. Ask the planner first or pass explicit instructions to /build.", "error");
     return;
   }
 
-  let builder = await getBuilderStatus(pi, ctx.cwd ?? process.cwd());
+  let builder = await getBuilderStatus(pi, ctx.cwd ?? process.cwd(), settings);
   if (!builder.running) {
-    builder = await startBuilder(pi, ctx.cwd ?? process.cwd());
+    builder = await startBuilder(pi, ctx.cwd ?? process.cwd(), settings);
     updateStatusLine(ctx, builder);
   }
 
-  const queued = await queueBuilderMessage(handoff);
+  const queued = await queueBuilderMessage(handoff, builder.agentName);
   emitInfo(pi, formatBuildQueuedMarkdown(builder, queued.inboxPath, queued.registrationVisible), BUILD_HANDOFF_MESSAGE_TYPE);
 }
 
@@ -678,12 +730,12 @@ export default function planBuildExtension(pi: ExtensionAPI) {
     name: TOOL_NAME,
     label: "Plan Build",
     description:
-      `Manage planner/build mode and the persistent builder session ${BUILDER_AGENT_NAME}. ` +
-      `Actions: start, on, status, off, stop. ` +
-      `start spawns the builder without changing planner mode; on enables read-only planner mode, switches the planner to the plan model, and starts the builder if needed; off restores normal planner behavior and restores the previous planner model/thinking; stop forcibly terminates the builder session.`,
+      "Manage planner/build mode and the persistent builder session configured by plan-build-settings.yaml. " +
+      "Actions: start, on, status, off, stop. " +
+      "start spawns the builder without changing planner mode; on enables read-only planner mode, switches the planner to the configured plan model, and starts the builder if needed; off restores normal planner behavior and restores the previous planner model/thinking; stop forcibly terminates the builder session.",
     parameters: Type.Object({
       action: StringEnum(["start", "on", "status", "off", "stop"] as const, {
-        description: `Plan-build control action for planner mode and builder ${BUILDER_AGENT_NAME}`,
+        description: "Plan-build control action for planner mode and the configured builder session",
       }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -729,7 +781,7 @@ export default function planBuildExtension(pi: ExtensionAPI) {
   }
 
   pi.registerCommand("plan-build", {
-    description: `Control plan-build mode and builder ${BUILDER_AGENT_NAME}: /plan-build [start|on|status|off|stop] (bare command toggles mode; on switches planner model, off restores it)`,
+    description: "Control plan-build mode and the configured builder session: /plan-build [start|on|status|off|stop] (bare command toggles mode; on switches planner model, off restores it)",
     handler: async (args, ctx) =>
       handleControlCommand(args, ctx, "Usage: /plan-build [start|on|status|off|stop] (no args toggles mode)"),
   });
@@ -741,7 +793,7 @@ export default function planBuildExtension(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("build", {
-    description: `Delegate the latest planner context to ${BUILDER_AGENT_NAME}. Does nothing when plan-build mode is off.`,
+    description: "Delegate the latest planner context to the configured builder session. Does nothing when plan-build mode is off.",
     handler: async (args, ctx) => {
       try {
         await handleBuildDelegation(pi, ctx, args);
@@ -758,7 +810,7 @@ export default function planBuildExtension(pi: ExtensionAPI) {
     if (event.toolName === "write" || event.toolName === "edit") {
       return {
         block: true,
-        reason: `plan-build mode is on: the planner is read-only. Use /build to delegate execution to ${BUILDER_AGENT_NAME}.`,
+        reason: `plan-build mode is on: the planner is read-only. Use /build to delegate execution to ${builderAgentName()}.`,
       };
     }
 
@@ -767,7 +819,7 @@ export default function planBuildExtension(pi: ExtensionAPI) {
       if (!isSafePlannerBash(command)) {
         return {
           block: true,
-          reason: `plan-build mode is on: mutating bash is blocked for the planner. Use /build to delegate execution to ${BUILDER_AGENT_NAME}.\nCommand: ${command}`,
+          reason: `plan-build mode is on: mutating bash is blocked for the planner. Use /build to delegate execution to ${builderAgentName()}.\nCommand: ${command}`,
         };
       }
     }
@@ -793,10 +845,28 @@ export default function planBuildExtension(pi: ExtensionAPI) {
   pi.on("before_agent_start", async () => {
     if (!modeEnabled) return;
 
+    const lines = [
+      "[PLAN-BUILD MODE ACTIVE]",
+      "You are the planner half of a planner→builder workflow.",
+      "",
+      "Planner rules:",
+      "- Stay read-only. Do not modify files directly.",
+      "- Do not use mutating bash commands.",
+      "- Do not communicate with the builder through tools on your own.",
+      "- Focus on understanding the codebase, producing plans, reviewing results, and preparing precise build instructions.",
+      "- When the user wants execution, they will run /build to delegate the current plan to the persistent builder session.",
+      "- Prefer concise builder handoff packets with: goal, relevant files, implementation steps, and validation.",
+    ];
+
+    const plannerPromptAppend = plannerConfig().prompt_append;
+    if (plannerPromptAppend) {
+      lines.push("", plannerPromptAppend);
+    }
+
     return {
       message: {
         customType: CONTEXT_MESSAGE_TYPE,
-        content: `[PLAN-BUILD MODE ACTIVE]\nYou are the planner half of a planner→builder workflow.\n\nPlanner rules:\n- Stay read-only. Do not modify files directly.\n- Do not use mutating bash commands.\n- Do not communicate with the builder through tools on your own.\n- Focus on understanding the codebase, producing plans, reviewing results, and preparing precise build instructions.\n- When the user wants execution, they will run /build to delegate the current plan to the persistent builder session.\n- Prefer concise builder handoff packets with: goal, relevant files, implementation steps, and validation.`,
+        content: lines.join("\n"),
         display: false,
       },
     };
