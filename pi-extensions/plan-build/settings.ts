@@ -409,6 +409,9 @@ function normalizeBuilderSettings(
 }
 
 function mergePlanBuildSettings(base: PlanBuildSettings, partial: PartialPlanBuildSettings): PlanBuildSettings {
+  // hasOwnProperty distinguishes "field absent" (keep base value) from
+  // "field explicitly set to undefined" (clear the value).  This matters
+  // for optional text fields that a project layer may want to remove.
   const plannerHasPromptAppend = !!partial.planner && Object.prototype.hasOwnProperty.call(partial.planner, "prompt_append");
   const builderHasSystemPromptAppend = !!partial.builder && Object.prototype.hasOwnProperty.call(partial.builder, "system_prompt_append");
   const builderHasStartupPromptAppend = !!partial.builder && Object.prototype.hasOwnProperty.call(partial.builder, "startup_prompt_append");

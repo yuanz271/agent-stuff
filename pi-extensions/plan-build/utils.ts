@@ -268,10 +268,12 @@ async function captureBacklog(pi: ExtensionAPI, cwd: string, state: BuilderState
   return readTailFromFile(state.logFile);
 }
 
-async function collectWarnings(_paths: Paths, _settings: PlanBuildSettings, _plannerSession: PlannerSessionBinding): Promise<string[]> {
-  return [];
-}
-
+/**
+ * Infer the command and arguments needed to re-invoke the current Pi process.
+ * Heuristic: checks process.execPath against known runtimes (node, bun).
+ * May need a settings override (e.g. builder.pi_command) if Pi is invoked
+ * through an unusual runtime or wrapper not covered here.
+ */
 function getPiInvocation(): { command: string; argsPrefix: string[] } {
   const currentEntry = process.argv[1];
   const execName = basename(process.execPath).toLowerCase();
@@ -396,23 +398,21 @@ function withStateOverrides(
   state: BuilderState | null,
   patch: Partial<BuilderState>,
 ): BuilderState {
+  // Start from config-derived defaults, then selectively preserve temporal/
+  // runtime fields from the existing persisted state, then apply the patch.
   return {
     ...baseState(paths, settings, plannerSession),
-    ...(state ?? {}),
+    // Preserve only temporal and runtime fields from persisted state:
+    ...(state
+      ? {
+          startedAt: state.startedAt,
+          lastStoppedAt: state.lastStoppedAt,
+          tmuxSessionId: state.tmuxSessionId,
+          tmuxWindowId: state.tmuxWindowId,
+          tmuxPaneId: state.tmuxPaneId,
+        }
+      : {}),
     ...patch,
-    version: STATE_VERSION,
-    projectRoot: paths.projectRoot,
-    plannerSessionId: plannerSession.sessionId,
-    plannerSessionFile: plannerSession.sessionFile,
-    tmuxSession: paths.tmuxSession,
-    sessionFile: paths.sessionFile,
-    logFile: paths.logFile,
-    launchScript: paths.launchScript,
-    systemPromptFile: paths.systemPromptFile,
-    startupPromptFile: paths.startupPromptFile,
-    agentName: getBuilderAgentName(settings, plannerSession),
-    model: getBuilderModel(settings),
-    thinking: getBuilderThinking(settings),
   };
 }
 
@@ -426,7 +426,7 @@ async function resolveState(
   const paths = buildPaths(projectRoot, settings, plannerSession);
   const existing = await loadState(paths.stateFile);
   const state = withStateOverrides(paths, settings, plannerSession, existing, {});
-  const warnings = await collectWarnings(paths, settings, plannerSession);
+  const warnings: string[] = [];
   return { paths, state, warnings };
 }
 
@@ -574,44 +574,4 @@ export async function stopBuilder(
   });
   await saveState(paths.stateFile, nextState);
   return buildStatus(pi, cwd, "stop", nextState, warnings);
-}
-
-export function formatStatusMarkdown(status: BuilderStatus): string {
-  const lines = [
-    `**plan-build ${status.action}**`,
-    "",
-    `- message: ${status.message}`,
-    `- running: ${status.running ? "yes" : "no"}`,
-    `- builder name: ${status.agentName}`,
-    `- model: ${status.model}`,
-    `- thinking: ${status.thinking}`,
-    `- planner session id: ${status.plannerSessionId}`,
-    `- tmux session: ${status.tmuxSession}`,
-    `- session file: ${status.sessionFile}`,
-    `- log file: ${status.logFile}`,
-    `- launch script: ${status.launchScript}`,
-  ];
-
-  if (status.plannerSessionFile) lines.push(`- planner session file: ${status.plannerSessionFile}`);
-  if (status.startedAt) lines.push(`- started: ${status.startedAt}`);
-  if (status.lastStoppedAt) lines.push(`- last stopped: ${status.lastStoppedAt}`);
-  if (status.alreadyRunning) lines.push(`- note: existing ${status.agentName} session reused`);
-
-  lines.push("", "**planner → builder workflow**", "");
-  lines.push(`- Start or enable the paired builder from the planner with \`/plan-build start\` or \`/plan-build on\`.`);
-  lines.push(`- Delegate plan execution from the planner with \`/build\`.`);
-  lines.push(`- Send concise direct paired messages with \`plan_build({ action: "message", message: "..." })\` when needed.`);
-
-  if (status.warnings.length > 0) {
-    lines.push("", "**warnings**", "");
-    for (const warning of status.warnings) {
-      lines.push(`- ${warning}`);
-    }
-  }
-
-  if (status.backlog.length > 0) {
-    lines.push("", "**recent builder output**", "", "```text", ...status.backlog, "```");
-  }
-
-  return lines.join("\n");
 }

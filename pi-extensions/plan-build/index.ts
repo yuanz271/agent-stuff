@@ -21,6 +21,7 @@ const CONTEXT_MESSAGE_TYPE = "plan-build-context";
 const BUILD_HANDOFF_MESSAGE_TYPE = "plan-build-handoff";
 const PAIR_MESSAGE_TYPE = "plan-build-pair-message";
 const MAX_CONTEXT_MESSAGE_CHARS = 4_000;
+const MAX_HANDOFF_CHARS = 32_000;
 const MUTATING_BASH_PATTERNS = [
   /\brm\b/i,
   /\brmdir\b/i,
@@ -44,6 +45,9 @@ const MUTATING_BASH_PATTERNS = [
   /\buv\s+(add|remove|sync|pip\s+install)\b/i,
   /\bgit\s+(add|commit|push|pull|merge|rebase|reset|checkout|stash|cherry-pick|revert|tag)\b/i,
   /\bsudo\b/i,
+  /\bbash\b/i,
+  /\bsh\b/i,
+  /\bzsh\b/i,
 ];
 const SAFE_BASH_PREFIXES = [
   /^\s*cat\b/,
@@ -85,12 +89,8 @@ const SAFE_BASH_PREFIXES = [
   /^\s*yarn\s+(list|info|why|audit)\b/i,
   /^\s*node\s+--version\b/i,
   /^\s*python\s+--version\b/i,
-  /^\s*uv\s+run\b/i,
-  /^\s*curl\b/i,
-  /^\s*wget\s+-O\s*-\b/i,
   /^\s*jq\b/,
   /^\s*sed\s+-n\b/i,
-  /^\s*awk\b/,
   /^\s*rg\b/,
   /^\s*fd\b/,
   /^\s*bat\b/,
@@ -909,7 +909,8 @@ function buildHandoffText(ctx: ExtensionContext, extraInstructions: string): str
     "- if blocked on the task itself, report the minimal blocker and the next action needed",
   );
 
-  return lines.join("\n").trim();
+  const joined = lines.join("\n").trim();
+  return joined.length <= MAX_HANDOFF_CHARS ? joined : joined.slice(0, MAX_HANDOFF_CHARS - 1) + "…";
 }
 
 function formatBuildQueuedMarkdown(builder: BuilderStatus, queuedPath: string): string {
@@ -1071,7 +1072,6 @@ export default function planBuildExtension(pi: ExtensionAPI) {
         };
       }
     }
-
   });
 
   pi.on("context", async (event) => {
