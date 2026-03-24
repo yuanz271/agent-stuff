@@ -149,17 +149,33 @@ type PlanBuildStatus = {
   builder: BuilderStatus;
 };
 
-let modeEnabled = false;
-let previousActiveTools: string[] | undefined;
-let previousPlannerSelection: PlannerSelection | undefined;
-let lastObservedPlannerModel: { provider?: string; modelId?: string } = {};
-let currentSettings: PlanBuildSettingsLoadResult | undefined;
-let pairInboxWatcher: FSWatcher | null = null;
-let pairInboxPath: string | undefined;
-let pairInboxDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-let pairMessageProcessing = false;
-let pairMessageNeedsRecheck = false;
-let latestPairContext: ExtensionContext | undefined;
+interface PlanBuildRuntime {
+  modeEnabled: boolean;
+  previousActiveTools: string[] | undefined;
+  previousPlannerSelection: PlannerSelection | undefined;
+  lastObservedPlannerModel: { provider?: string; modelId?: string };
+  currentSettings: PlanBuildSettingsLoadResult | undefined;
+  pairInboxWatcher: FSWatcher | null;
+  pairInboxPath: string | undefined;
+  pairInboxDebounceTimer: ReturnType<typeof setTimeout> | null;
+  pairMessageProcessing: boolean;
+  pairMessageNeedsRecheck: boolean;
+  latestPairContext: ExtensionContext | undefined;
+}
+
+const rt: PlanBuildRuntime = {
+  modeEnabled: false,
+  previousActiveTools: undefined,
+  previousPlannerSelection: undefined,
+  lastObservedPlannerModel: {},
+  currentSettings: undefined,
+  pairInboxWatcher: null,
+  pairInboxPath: undefined,
+  pairInboxDebounceTimer: null,
+  pairMessageProcessing: false,
+  pairMessageNeedsRecheck: false,
+  latestPairContext: undefined,
+};
 
 function normalizeControlAction(raw: string): PlanBuildControlAction | null {
   const value = raw.trim().toLowerCase();
@@ -230,14 +246,14 @@ function isSafePlannerBash(command: string): boolean {
 }
 
 function requireCurrentSettings(): PlanBuildSettingsLoadResult {
-  if (!currentSettings) {
+  if (!rt.currentSettings) {
     throw new Error("plan-build settings are not loaded");
   }
-  return currentSettings;
+  return rt.currentSettings;
 }
 
 function builderSessionReference(): string {
-  return currentSettings?.settings.builder.agent_name ?? "the configured builder session";
+  return rt.currentSettings?.settings.builder.agent_name ?? "the configured builder session";
 }
 
 function plannerConfig(): PlanBuildSettings["planner"] {
@@ -256,8 +272,8 @@ function getConfiguredPlannerSelection(settings: PlanBuildSettings = requireCurr
 }
 
 async function refreshSettings(cwd: string): Promise<PlanBuildSettingsLoadResult> {
-  currentSettings = await loadPlanBuildSettings(cwd, import.meta.url);
-  return currentSettings;
+  rt.currentSettings = await loadPlanBuildSettings(cwd, import.meta.url);
+  return rt.currentSettings;
 }
 
 function currentPairRole(): PairRole {
@@ -316,8 +332,8 @@ function formatPlannerModel(selection: PlannerSelection | undefined): string | u
 
 function getCurrentPlannerSelection(pi: ExtensionAPI, ctx: ExtensionContext): PlannerSelection {
   return {
-    provider: lastObservedPlannerModel.provider ?? ctx.model?.provider,
-    modelId: lastObservedPlannerModel.modelId ?? ctx.model?.id,
+    provider: rt.lastObservedPlannerModel.provider ?? ctx.model?.provider,
+    modelId: rt.lastObservedPlannerModel.modelId ?? ctx.model?.id,
     thinkingLevel: pi.getThinkingLevel(),
   };
 }
@@ -341,7 +357,7 @@ async function applyPlannerSelection(
       if (!ok) {
         warning = `No API key available for ${normalized.provider}/${normalized.modelId}.`;
       } else {
-        lastObservedPlannerModel = { provider: normalized.provider, modelId: normalized.modelId };
+        rt.lastObservedPlannerModel = { provider: normalized.provider, modelId: normalized.modelId };
       }
     }
   }
@@ -355,9 +371,9 @@ async function applyPlannerSelection(
 
 function persistModeState(pi: ExtensionAPI): void {
   pi.appendEntry<PersistedPlanBuildState>(STATE_ENTRY_TYPE, {
-    enabled: modeEnabled,
-    previousActiveTools,
-    previousPlannerSelection,
+    enabled: rt.modeEnabled,
+    previousActiveTools: rt.previousActiveTools,
+    previousPlannerSelection: rt.previousPlannerSelection,
     updatedAt: new Date().toISOString(),
   });
 }
@@ -387,22 +403,22 @@ function restoreNormalTools(pi: ExtensionAPI, savedTools: string[] | undefined):
 }
 
 function applyPlannerMode(pi: ExtensionAPI): void {
-  if (!modeEnabled) return;
-  if (!previousActiveTools || previousActiveTools.length === 0) {
-    previousActiveTools = pi.getActiveTools();
+  if (!rt.modeEnabled) return;
+  if (!rt.previousActiveTools || rt.previousActiveTools.length === 0) {
+    rt.previousActiveTools = pi.getActiveTools();
   }
-  pi.setActiveTools(filterPlannerTools(pi, previousActiveTools));
+  pi.setActiveTools(filterPlannerTools(pi, rt.previousActiveTools));
 }
 
 async function restoreModeState(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
   await refreshSettings(ctx.cwd ?? process.cwd());
 
   const restored = restorePersistedState(ctx);
-  modeEnabled = restored?.enabled ?? false;
-  previousActiveTools = modeEnabled ? restored?.previousActiveTools ?? pi.getActiveTools() : undefined;
-  previousPlannerSelection = modeEnabled ? restored?.previousPlannerSelection : undefined;
+  rt.modeEnabled = restored?.enabled ?? false;
+  rt.previousActiveTools = rt.modeEnabled ? restored?.previousActiveTools ?? pi.getActiveTools() : undefined;
+  rt.previousPlannerSelection = rt.modeEnabled ? restored?.previousPlannerSelection : undefined;
 
-  if (modeEnabled) {
+  if (rt.modeEnabled) {
     applyPlannerMode(pi);
     const warning = await applyPlannerSelection(pi, ctx, getConfiguredPlannerSelection());
     if (warning && ctx.hasUI) {
@@ -420,9 +436,9 @@ async function restoreModeState(pi: ExtensionAPI, ctx: ExtensionContext): Promis
 }
 
 function renderSummary(builder: BuilderStatus): string | undefined {
-  if (!modeEnabled && !builder.running) return undefined;
+  if (!rt.modeEnabled && !builder.running) return undefined;
   const builderPart = builder.running ? `${builder.agentName}:on (${builder.tmuxSession})` : `${builder.agentName}:off`;
-  if (!modeEnabled) return builderPart;
+  if (!rt.modeEnabled) return builderPart;
   return `planner:on | ${builderPart}`;
 }
 
@@ -435,7 +451,7 @@ function updateStatusLine(ctx: ExtensionContext, builder: BuilderStatus): void {
   }
 
   const theme = ctx.ui.theme;
-  if (modeEnabled) {
+  if (rt.modeEnabled) {
     const plannerPart = theme.fg("warning", "planner:on");
     const builderPart = builder.running
       ? theme.fg("accent", `${builder.agentName}:on (${builder.tmuxSession})`)
@@ -452,26 +468,26 @@ function updateStatusLine(ctx: ExtensionContext, builder: BuilderStatus): void {
 
 function buildStatus(action: PlanBuildControlAction, message: string, builder: BuilderStatus, pi: ExtensionAPI): PlanBuildStatus {
   const plannerModel = formatPlannerModel({
-    provider: lastObservedPlannerModel.provider,
-    modelId: lastObservedPlannerModel.modelId,
+    provider: rt.lastObservedPlannerModel.provider,
+    modelId: rt.lastObservedPlannerModel.modelId,
   });
-  const previousPlannerModel = formatPlannerModel(previousPlannerSelection);
+  const previousPlannerModel = formatPlannerModel(rt.previousPlannerSelection);
   const loadedSettings = requireCurrentSettings();
 
   return {
     ok: true,
     action,
-    modeEnabled,
-    plannerReadOnly: modeEnabled,
+    modeEnabled: rt.modeEnabled,
+    plannerReadOnly: rt.modeEnabled,
     message,
     activeTools: pi.getActiveTools(),
-    previousActiveTools,
+    previousActiveTools: rt.previousActiveTools,
     plannerModel,
     plannerThinkingLevel: pi.getThinkingLevel(),
     configuredPlannerModel: loadedSettings.settings.planner.model,
     configuredPlannerThinkingLevel: loadedSettings.settings.planner.thinking,
     previousPlannerModel,
-    previousPlannerThinkingLevel: previousPlannerSelection?.thinkingLevel,
+    previousPlannerThinkingLevel: rt.previousPlannerSelection?.thinkingLevel,
     settingsSources: loadedSettings.stats.loaded_sources,
     settingsWarnings: loadedSettings.warnings,
     settingsInvalidFieldCount: loadedSettings.stats.invalid_field_count,
@@ -560,17 +576,17 @@ async function startOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: Plan
 }
 
 async function enableMode(pi: ExtensionAPI, ctx: ExtensionContext, settings: PlanBuildSettings): Promise<PlanBuildStatus> {
-  const capturedTools = modeEnabled ? previousActiveTools : pi.getActiveTools();
-  const capturedSelection = modeEnabled ? previousPlannerSelection : getCurrentPlannerSelection(pi, ctx);
+  const capturedTools = rt.modeEnabled ? rt.previousActiveTools : pi.getActiveTools();
+  const capturedSelection = rt.modeEnabled ? rt.previousPlannerSelection : getCurrentPlannerSelection(pi, ctx);
   const builder = await startBuilder(pi, ctx.cwd ?? process.cwd(), settings, getPlannerSessionBinding(ctx));
   const configuredSelection = getConfiguredPlannerSelection(settings);
 
-  modeEnabled = true;
-  previousActiveTools = normalizeToolList(pi, capturedTools);
-  if (previousActiveTools.length === 0) {
-    previousActiveTools = pi.getActiveTools();
+  rt.modeEnabled = true;
+  rt.previousActiveTools = normalizeToolList(pi, capturedTools);
+  if (rt.previousActiveTools.length === 0) {
+    rt.previousActiveTools = pi.getActiveTools();
   }
-  previousPlannerSelection = normalizePlannerSelection(capturedSelection);
+  rt.previousPlannerSelection = normalizePlannerSelection(capturedSelection);
 
   const switchWarning = await applyPlannerSelection(pi, ctx, configuredSelection);
 
@@ -596,16 +612,16 @@ async function restorePlannerMode(
   ctx: ExtensionContext,
   builder: BuilderStatus,
 ): Promise<string> {
-  const toolsToRestore = previousActiveTools;
-  const plannerToRestore = previousPlannerSelection;
+  const toolsToRestore = rt.previousActiveTools;
+  const plannerToRestore = rt.previousPlannerSelection;
 
-  modeEnabled = false;
+  rt.modeEnabled = false;
   restoreNormalTools(pi, toolsToRestore);
 
   const restoreWarning = await applyPlannerSelection(pi, ctx, plannerToRestore);
 
-  previousActiveTools = undefined;
-  previousPlannerSelection = undefined;
+  rt.previousActiveTools = undefined;
+  rt.previousPlannerSelection = undefined;
   persistModeState(pi);
   updateStatusLine(ctx, builder);
 
@@ -634,7 +650,7 @@ async function statusOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: Pla
   updateStatusLine(ctx, builder);
   return buildStatus(
     "status",
-    `Plan-build mode is ${modeEnabled ? "on" : "off"}. Planner model is ${formatPlannerModel(getCurrentPlannerSelection(pi, ctx)) ?? "unknown"}. Builder ${builder.agentName} is ${builder.running ? "running" : "not running"}.`,
+    `Plan-build mode is ${rt.modeEnabled ? "on" : "off"}. Planner model is ${formatPlannerModel(getCurrentPlannerSelection(pi, ctx)) ?? "unknown"}. Builder ${builder.agentName} is ${builder.running ? "running" : "not running"}.`,
     builder,
     pi,
   );
@@ -643,7 +659,7 @@ async function statusOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: Pla
 async function stopOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: PlanBuildSettings): Promise<PlanBuildStatus> {
   const builder = await stopBuilder(pi, ctx.cwd ?? process.cwd(), settings, getPlannerSessionBinding(ctx));
 
-  if (modeEnabled) {
+  if (rt.modeEnabled) {
     const restoreMessage = await restorePlannerMode(pi, ctx, builder);
     return buildStatus(
       "stop",
@@ -678,7 +694,7 @@ async function resolveCommandAction(raw: string): Promise<PlanBuildControlAction
   const explicit = normalizeControlAction(raw);
   if (explicit) return explicit;
   if (raw.trim() !== "") return null;
-  return modeEnabled ? "off" : "on";
+  return rt.modeEnabled ? "off" : "on";
 }
 
 async function resolvePairMessageContext(pi: ExtensionAPI, ctx: ExtensionContext): Promise<{
@@ -732,13 +748,13 @@ function deliverPairMessage(pi: ExtensionAPI, message: PairChannelMessage): void
 }
 
 async function processPendingPairMessages(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
-  latestPairContext = ctx;
-  if (pairMessageProcessing) {
-    pairMessageNeedsRecheck = true;
+  rt.latestPairContext = ctx;
+  if (rt.pairMessageProcessing) {
+    rt.pairMessageNeedsRecheck = true;
     return;
   }
 
-  pairMessageProcessing = true;
+  rt.pairMessageProcessing = true;
   try {
     const { inboxPath, plannerSession, role } = await resolvePairMessageContext(pi, ctx);
     await fs.mkdir(inboxPath, { recursive: true });
@@ -759,53 +775,53 @@ async function processPendingPairMessages(pi: ExtensionAPI, ctx: ExtensionContex
       }
     }
   } finally {
-    pairMessageProcessing = false;
-    if (pairMessageNeedsRecheck && latestPairContext) {
-      pairMessageNeedsRecheck = false;
-      void processPendingPairMessages(pi, latestPairContext);
+    rt.pairMessageProcessing = false;
+    if (rt.pairMessageNeedsRecheck && rt.latestPairContext) {
+      rt.pairMessageNeedsRecheck = false;
+      void processPendingPairMessages(pi, rt.latestPairContext);
     }
   }
 }
 
 function stopPairInboxWatcher(): void {
-  if (pairInboxDebounceTimer) {
-    clearTimeout(pairInboxDebounceTimer);
-    pairInboxDebounceTimer = null;
+  if (rt.pairInboxDebounceTimer) {
+    clearTimeout(rt.pairInboxDebounceTimer);
+    rt.pairInboxDebounceTimer = null;
   }
-  if (pairInboxWatcher) {
-    pairInboxWatcher.close();
-    pairInboxWatcher = null;
+  if (rt.pairInboxWatcher) {
+    rt.pairInboxWatcher.close();
+    rt.pairInboxWatcher = null;
   }
-  pairInboxPath = undefined;
+  rt.pairInboxPath = undefined;
 }
 
 async function startPairInboxWatcher(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
-  latestPairContext = ctx;
+  rt.latestPairContext = ctx;
   const { inboxPath } = await resolvePairMessageContext(pi, ctx);
   await fs.mkdir(inboxPath, { recursive: true });
 
-  if (pairInboxWatcher && pairInboxPath === inboxPath) {
+  if (rt.pairInboxWatcher && rt.pairInboxPath === inboxPath) {
     await processPendingPairMessages(pi, ctx);
     return;
   }
 
   stopPairInboxWatcher();
-  pairInboxPath = inboxPath;
+  rt.pairInboxPath = inboxPath;
   await processPendingPairMessages(pi, ctx);
 
-  pairInboxWatcher = watch(inboxPath, () => {
-    if (pairInboxDebounceTimer) {
-      clearTimeout(pairInboxDebounceTimer);
+  rt.pairInboxWatcher = watch(inboxPath, () => {
+    if (rt.pairInboxDebounceTimer) {
+      clearTimeout(rt.pairInboxDebounceTimer);
     }
-    pairInboxDebounceTimer = setTimeout(() => {
-      pairInboxDebounceTimer = null;
-      if (latestPairContext) {
-        void processPendingPairMessages(pi, latestPairContext);
+    rt.pairInboxDebounceTimer = setTimeout(() => {
+      rt.pairInboxDebounceTimer = null;
+      if (rt.latestPairContext) {
+        void processPendingPairMessages(pi, rt.latestPairContext);
       }
     }, 50);
   });
 
-  pairInboxWatcher.on("error", () => {
+  rt.pairInboxWatcher.on("error", () => {
     stopPairInboxWatcher();
   });
 }
@@ -900,7 +916,7 @@ function formatBuildQueuedMarkdown(builder: BuilderStatus, queuedPath: string): 
   const lines = [
     `**build delegated**`,
     "",
-    `- planner mode: ${modeEnabled ? "on" : "off"}`,
+    `- planner mode: ${rt.modeEnabled ? "on" : "off"}`,
     `- planner session id: ${builder.plannerSessionId}`,
     `- builder name: ${builder.agentName}`,
     `- builder running: ${builder.running ? "yes" : "no"}`,
@@ -913,7 +929,7 @@ function formatBuildQueuedMarkdown(builder: BuilderStatus, queuedPath: string): 
 }
 
 async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, args: string): Promise<void> {
-  if (!modeEnabled) {
+  if (!rt.modeEnabled) {
     return;
   }
   if (!ctx.isIdle() || ctx.hasPendingMessages()) {
@@ -1027,7 +1043,7 @@ export default function planBuildExtension(pi: ExtensionAPI) {
   });
 
   pi.on("tool_call", async (event) => {
-    if (!modeEnabled) return;
+    if (!rt.modeEnabled) return;
 
     if (event.toolName === "write" || event.toolName === "edit") {
       return {
@@ -1059,7 +1075,7 @@ export default function planBuildExtension(pi: ExtensionAPI) {
   });
 
   pi.on("context", async (event) => {
-    if (modeEnabled) return;
+    if (rt.modeEnabled) return;
     return {
       messages: event.messages.filter((message) => {
         if (message.role !== "custom") return true;
@@ -1069,7 +1085,7 @@ export default function planBuildExtension(pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", async () => {
-    if (!modeEnabled) return;
+    if (!rt.modeEnabled) return;
 
     const lines = [
       "[PLAN-BUILD MODE ACTIVE]",
@@ -1100,7 +1116,7 @@ export default function planBuildExtension(pi: ExtensionAPI) {
   });
 
   const restore = async (_event: unknown, ctx: ExtensionContext) => {
-    lastObservedPlannerModel = { provider: ctx.model?.provider, modelId: ctx.model?.id };
+    rt.lastObservedPlannerModel = { provider: ctx.model?.provider, modelId: ctx.model?.id };
     await restoreModeState(pi, ctx).catch(() => {});
     await startPairInboxWatcher(pi, ctx).catch(() => {});
   };
@@ -1109,6 +1125,6 @@ export default function planBuildExtension(pi: ExtensionAPI) {
   pi.on("session_switch", restore);
   pi.on("session_tree", restore);
   pi.on("model_select", async (event) => {
-    lastObservedPlannerModel = { provider: event.model.provider, modelId: event.model.id };
+    rt.lastObservedPlannerModel = { provider: event.model.provider, modelId: event.model.id };
   });
 }
