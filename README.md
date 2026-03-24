@@ -60,6 +60,8 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 
 Later layers override earlier ones field-by-field.
 
+For builder settings, prefer separate `model` and `thinking` fields. Legacy combined shorthand like `model: openai/gpt-5.4:xhigh` is still accepted and normalized for backward compatibility.
+
 Example:
 
 ```yaml
@@ -77,7 +79,8 @@ planner:
 
 builder:
   agent_name: builder
-  model: openai/gpt-5.4:xhigh
+  model: openai/gpt-5.4
+  thinking: xhigh
   system_prompt_append: |
     Prefer the smallest relevant validation first.
   startup_prompt_append: |

@@ -1,3 +1,4 @@
+import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -29,6 +30,7 @@ export type BuilderState = {
   startupPromptFile: string;
   agentName: string;
   model: string;
+  thinking: ThinkingLevel;
   startedAt?: string;
   lastStoppedAt?: string;
 };
@@ -51,6 +53,7 @@ export type BuilderStatus = {
   startupPromptFile: string;
   agentName: string;
   model: string;
+  thinking: ThinkingLevel;
   startedAt?: string;
   lastStoppedAt?: string;
   warnings: string[];
@@ -100,6 +103,10 @@ function getBuilderModel(settings: PlanBuildSettings): string {
   return settings.builder.model;
 }
 
+function getBuilderThinking(settings: PlanBuildSettings): ThinkingLevel {
+  return settings.builder.thinking;
+}
+
 function tmuxSessionName(projectRoot: string, builderAgentName: string): string {
   const projectBase = basename(projectRoot)
     .toLowerCase()
@@ -146,6 +153,7 @@ function baseState(paths: Paths, settings: PlanBuildSettings): BuilderState {
     startupPromptFile: paths.startupPromptFile,
     agentName: getBuilderAgentName(settings),
     model: getBuilderModel(settings),
+    thinking: getBuilderThinking(settings),
   };
 }
 
@@ -331,6 +339,8 @@ async function writeRuntimeFiles(paths: Paths, settings: PlanBuildSettings): Pro
     paths.sessionFile,
     "--model",
     getBuilderModel(settings),
+    "--thinking",
+    getBuilderThinking(settings),
     "--append-system-prompt",
     paths.systemPromptFile,
     startupPrompt,
@@ -382,6 +392,7 @@ function withStateOverrides(
     startupPromptFile: paths.startupPromptFile,
     agentName: getBuilderAgentName(settings),
     model: getBuilderModel(settings),
+    thinking: getBuilderThinking(settings),
   };
 }
 
@@ -437,6 +448,7 @@ async function buildStatus(
     startupPromptFile: state.startupPromptFile,
     agentName: state.agentName,
     model: state.model,
+    thinking: state.thinking,
     startedAt: state.startedAt,
     lastStoppedAt: state.lastStoppedAt,
     warnings,
@@ -534,6 +546,7 @@ export function formatStatusMarkdown(status: BuilderStatus): string {
     `- running: ${status.running ? "yes" : "no"}`,
     `- builder name: ${status.agentName}`,
     `- model: ${status.model}`,
+    `- thinking: ${status.thinking}`,
     `- tmux session: ${status.tmuxSession}`,
     `- session file: ${status.sessionFile}`,
     `- log file: ${status.logFile}`,

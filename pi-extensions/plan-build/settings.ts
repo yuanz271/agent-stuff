@@ -28,6 +28,7 @@ export interface PlannerSettings {
 export interface BuilderSettings {
   agent_name: string;
   model: string;
+  thinking: ThinkingLevel;
   system_prompt_append?: string;
   startup_prompt_append?: string;
 }
@@ -60,7 +61,7 @@ type PartialPlanBuildSettings = {
 
 const TOP_LEVEL_KEYS = new Set(["version", "planner", "builder"]);
 const PLANNER_KEYS = new Set(["model", "thinking", "allowed_tools", "prompt_append"]);
-const BUILDER_KEYS = new Set(["agent_name", "model", "system_prompt_append", "startup_prompt_append"]);
+const BUILDER_KEYS = new Set(["agent_name", "model", "thinking", "system_prompt_append", "startup_prompt_append"]);
 
 const raw_settings_schema = z
   .object({
@@ -83,6 +84,7 @@ const raw_builder_schema = z
   .object({
     agent_name: z.unknown().optional(),
     model: z.unknown().optional(),
+    thinking: z.unknown().optional(),
     system_prompt_append: z.unknown().optional(),
     startup_prompt_append: z.unknown().optional(),
   })
@@ -99,7 +101,8 @@ export const DEFAULT_PLAN_BUILD_SETTINGS: PlanBuildSettings = {
   },
   builder: {
     agent_name: "builder",
-    model: "openai/gpt-5.4:xhigh",
+    model: "openai/gpt-5.4",
+    thinking: "xhigh",
   },
 };
 
@@ -124,6 +127,7 @@ export function getDefaultPlanBuildSettings(): PlanBuildSettings {
     builder: {
       agent_name: DEFAULT_PLAN_BUILD_SETTINGS.builder.agent_name,
       model: DEFAULT_PLAN_BUILD_SETTINGS.builder.model,
+      thinking: DEFAULT_PLAN_BUILD_SETTINGS.builder.thinking,
       ...(DEFAULT_PLAN_BUILD_SETTINGS.builder.system_prompt_append
         ? { system_prompt_append: DEFAULT_PLAN_BUILD_SETTINGS.builder.system_prompt_append }
         : {}),
@@ -371,6 +375,7 @@ function normalizeBuilderSettings(
   const warnings: string[] = [];
   let invalid_field_count = 0;
   const settings: PartialBuilderSettings = {};
+  let shorthandThinking: ThinkingLevel | undefined;
 
   for (const key of Object.keys(builder)) {
     if (!BUILDER_KEYS.has(key)) {
@@ -392,8 +397,32 @@ function normalizeBuilderSettings(
       invalid_field_count += 1;
       warnings.push(`${source.kind}: 'builder.model' must be a non-empty string`);
     } else {
-      settings.model = builder.model.trim();
+      const normalizedModel = splitModelThinkingShorthand(builder.model.trim());
+      if (!isProviderModelRef(normalizedModel.model)) {
+        invalid_field_count += 1;
+        warnings.push(`${source.kind}: 'builder.model' must look like 'provider/modelId'`);
+      } else {
+        settings.model = normalizedModel.model;
+        shorthandThinking = normalizedModel.thinking;
+      }
     }
+  }
+
+  if (builder.thinking !== undefined) {
+    const thinking = thinking_level_schema.safeParse(builder.thinking);
+    if (!thinking.success) {
+      invalid_field_count += 1;
+      warnings.push(`${source.kind}: 'builder.thinking' must be one of ${THINKING_LEVELS.join(", ")}`);
+    } else {
+      settings.thinking = thinking.data;
+      if (shorthandThinking && shorthandThinking !== thinking.data) {
+        warnings.push(
+          `${source.kind}: builder.model includes legacy thinking suffix '${shorthandThinking}', but explicit builder.thinking '${thinking.data}' takes precedence`,
+        );
+      }
+    }
+  } else if (shorthandThinking) {
+    settings.thinking = shorthandThinking;
   }
 
   if (builder.system_prompt_append !== undefined) {
@@ -439,6 +468,7 @@ function mergePlanBuildSettings(base: PlanBuildSettings, partial: PartialPlanBui
     builder: {
       agent_name: partial.builder?.agent_name ?? base.builder.agent_name,
       model: partial.builder?.model ?? base.builder.model,
+      thinking: partial.builder?.thinking ?? base.builder.thinking,
       system_prompt_append: builderHasSystemPromptAppend ? partial.builder?.system_prompt_append : base.builder.system_prompt_append,
       startup_prompt_append: builderHasStartupPromptAppend ? partial.builder?.startup_prompt_append : base.builder.startup_prompt_append,
     },
@@ -449,6 +479,25 @@ function normalizeOptionalText(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim();
   return normalized || undefined;
+}
+
+function splitModelThinkingShorthand(value: string): { model: string; thinking?: ThinkingLevel } {
+  const lastColon = value.lastIndexOf(":");
+  if (lastColon <= value.indexOf("/")) {
+    return { model: value };
+  }
+
+  const candidateModel = value.slice(0, lastColon);
+  const candidateThinking = value.slice(lastColon + 1);
+  const parsedThinking = thinking_level_schema.safeParse(candidateThinking);
+  if (!parsedThinking.success || !isProviderModelRef(candidateModel)) {
+    return { model: value };
+  }
+
+  return {
+    model: candidateModel,
+    thinking: parsedThinking.data,
+  };
 }
 
 function isProviderModelRef(value: string): boolean {

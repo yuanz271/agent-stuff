@@ -461,6 +461,7 @@ function formatStatusMarkdown(status: PlanBuildStatus): string {
     `- running: ${status.builder.running ? "yes" : "no"}`,
     `- name: ${status.builder.agentName}`,
     `- model: ${status.builder.model}`,
+    `- thinking: ${status.builder.thinking}`,
     `- tmux session: ${status.builder.tmuxSession}`,
     `- session file: ${status.builder.sessionFile}`,
     `- log file: ${status.builder.logFile}`,
