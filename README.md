@@ -34,7 +34,7 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 * [`control.ts`](pi-extensions/control.ts) - Session control helpers (list controllable sessions etc.).
 * [`damage-control`](pi-extensions/damage-control) - Default-on safety guardrails for tool calls with layered policy rules, runtime panel (`/damage-control`, `/dc`), and policy event logging.
 * [`pi-messenger`](pi-extensions/pi-messenger) - Inter-agent messaging mesh with direct messages, broadcasts, file reservations, activity feed, and optional Crew task orchestration.
-* [`plan-mode`](pi-extensions/plan-mode) - Manage a persistent tmux-backed builder session `builder` with fixed model/session invariants for planner→builder workflows. Exposes the `plan_mode` tool and `/plan-mode` / `/pm` commands.
+* [`plan-mode`](pi-extensions/plan-mode) - Manage a persistent tmux-backed builder session `builder` with fixed model/session invariants for planner→builder workflows. Exposes the `plan_mode` tool, `/plan` toggle command, and `/plan-mode` / `/pm` explicit lifecycle commands.
 * [`prompt-editor.ts`](pi-extensions/prompt-editor.ts) - In-editor prompt mode selector (default/fast/precise) with per-mode model & thinking persistence, global/project config, prompt history, and shortcuts (Ctrl+Shift+M, Ctrl+Space).
 * [`files.ts`](pi-extensions/files.ts) - Unified file browser that merges git status (dirty first) with session references, plus reveal/open/edit and diff actions.
 * [`init.ts`](pi-extensions/init.ts) - Pi-specific `/init` bootstrap command that embeds its contributor-guide prompt and asks pi to generate the current repo's `AGENTS.md`.

@@ -9,9 +9,23 @@ const TOOL_NAME = "plan_mode";
 
 function normalizeAction(raw: string): PlanModeAction | null {
   const value = raw.trim().toLowerCase();
-  if (value === "" || value === "status") return "status";
-  if (value === "start" || value === "stop") return value;
+  if (value === "status") return "status";
+  if (value === "start" || value === "on") return "start";
+  if (value === "stop" || value === "off") return "stop";
   return null;
+}
+
+function resolveExplicitCommandAction(raw: string): PlanModeAction | null {
+  return raw.trim() === "" ? "status" : normalizeAction(raw);
+}
+
+async function resolvePlanCommandAction(pi: ExtensionAPI, ctx: ExtensionContext, raw: string): Promise<PlanModeAction | null> {
+  const explicit = normalizeAction(raw);
+  if (explicit) return explicit;
+  if (raw.trim() !== "") return null;
+
+  const status = await getBuilderStatus(pi, ctx.cwd ?? process.cwd());
+  return status.running ? "stop" : "start";
 }
 
 function renderSummary(status: Awaited<ReturnType<typeof getBuilderStatus>>): string {
@@ -76,8 +90,16 @@ export default function planModeExtension(pi: ExtensionAPI) {
     },
   });
 
-  async function handleCommand(args: string, ctx: ExtensionContext, usage: string) {
-    const action = normalizeAction(args);
+  async function handleCommand(args: string, ctx: ExtensionContext, usage: string, resolveAction: (args: string, ctx: ExtensionContext) => Promise<PlanModeAction | null>) {
+    let action: PlanModeAction | null = null;
+    try {
+      action = await resolveAction(args, ctx);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.hasUI && ctx.ui.notify(`plan-mode failed: ${message}`, "error");
+      return;
+    }
+
     if (!action) {
       ctx.hasUI && ctx.ui.notify(usage, "error");
       return;
@@ -93,14 +115,27 @@ export default function planModeExtension(pi: ExtensionAPI) {
     }
   }
 
+  pi.registerCommand("plan", {
+    description: `Toggle plan mode on/off for builder ${BUILDER_AGENT_NAME}, or pass start|stop|status`,
+    handler: async (args, ctx) =>
+      handleCommand(
+        args,
+        ctx,
+        "Usage: /plan [start|stop|status|on|off] (no args toggles)",
+        (value, commandCtx) => resolvePlanCommandAction(pi, commandCtx, value),
+      ),
+  });
+
   pi.registerCommand("plan-mode", {
     description: `Manage the persistent builder session ${BUILDER_AGENT_NAME}: /plan-mode [start|status|stop]`,
-    handler: async (args, ctx) => handleCommand(args, ctx, "Usage: /plan-mode [start|status|stop]"),
+    handler: async (args, ctx) =>
+      handleCommand(args, ctx, "Usage: /plan-mode [start|status|stop|on|off]", async (value) => resolveExplicitCommandAction(value)),
   });
 
   pi.registerCommand("pm", {
     description: "Alias for /plan-mode",
-    handler: async (args, ctx) => handleCommand(args, ctx, "Usage: /pm [start|status|stop]"),
+    handler: async (args, ctx) =>
+      handleCommand(args, ctx, "Usage: /pm [start|status|stop|on|off]", async (value) => resolveExplicitCommandAction(value)),
   });
 
   pi.on("session_start", async (_event, ctx) => {
