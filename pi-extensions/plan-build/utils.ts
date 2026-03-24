@@ -2,7 +2,6 @@ import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import type { PlanBuildSettings } from "./settings.js";
 
@@ -69,6 +68,13 @@ export type BuilderStatus = {
   backlog: string[];
 };
 
+export type PairChannelPaths = {
+  projectRoot: string;
+  runtimeDir: string;
+  plannerInbox: string;
+  builderInbox: string;
+};
+
 type Paths = {
   projectRoot: string;
   runtimeDir: string;
@@ -79,7 +85,6 @@ type Paths = {
   startupPromptFile: string;
   sessionFile: string;
   tmuxSession: string;
-  messengerRegistryFile: string;
 };
 
 type ExecResult = {
@@ -108,7 +113,7 @@ function getConfiguredBuilderAgentName(settings: PlanBuildSettings): string {
   return settings.builder.agent_name;
 }
 
-function plannerSessionTag(plannerSession: PlannerSessionBinding): string {
+export function plannerSessionTag(plannerSession: PlannerSessionBinding): string {
   return createHash("sha1").update(plannerSession.sessionId).digest("hex").slice(0, 10);
 }
 
@@ -142,7 +147,6 @@ function tmuxSessionName(projectRoot: string, builderAgentName: string): string 
 function buildPaths(projectRoot: string, settings: PlanBuildSettings, plannerSession: PlannerSessionBinding): Paths {
   const sessionTag = plannerSessionTag(plannerSession);
   const runtimeDir = join(projectRoot, ".pi", "plan-build", sessionTag);
-  const messengerDir = process.env.PI_MESSENGER_DIR || join(homedir(), ".pi", "agent", "messenger");
   const builderAgentName = getBuilderAgentName(settings, plannerSession);
 
   return {
@@ -155,7 +159,6 @@ function buildPaths(projectRoot: string, settings: PlanBuildSettings, plannerSes
     startupPromptFile: join(runtimeDir, "builder-startup.md"),
     sessionFile: join(projectRoot, ".pi", "sessions", `${builderAgentName}.jsonl`),
     tmuxSession: tmuxSessionName(projectRoot, builderAgentName),
-    messengerRegistryFile: join(messengerDir, "registry", `${builderAgentName}.json`),
   };
 }
 
@@ -186,7 +189,7 @@ async function exec(pi: ExtensionAPI, command: string, args: string[], cwd?: str
   };
 }
 
-async function resolveProjectRoot(pi: ExtensionAPI, cwd: string): Promise<string> {
+export async function resolveProjectRoot(pi: ExtensionAPI, cwd: string): Promise<string> {
   const git = await exec(pi, "git", ["rev-parse", "--show-toplevel"], cwd);
   const candidate = git.code === 0 && git.stdout.trim() ? git.stdout.trim() : cwd;
   try {
@@ -194,6 +197,21 @@ async function resolveProjectRoot(pi: ExtensionAPI, cwd: string): Promise<string
   } catch {
     return resolve(candidate);
   }
+}
+
+export async function resolvePairChannelPaths(
+  pi: ExtensionAPI,
+  cwd: string,
+  plannerSession: PlannerSessionBinding,
+): Promise<PairChannelPaths> {
+  const projectRoot = await resolveProjectRoot(pi, cwd);
+  const runtimeDir = join(projectRoot, ".pi", "plan-build", plannerSessionTag(plannerSession));
+  return {
+    projectRoot,
+    runtimeDir,
+    plannerInbox: join(runtimeDir, "planner-inbox"),
+    builderInbox: join(runtimeDir, "builder-inbox"),
+  };
 }
 
 async function ensureTmuxAvailable(pi: ExtensionAPI, cwd: string): Promise<void> {
@@ -250,36 +268,8 @@ async function captureBacklog(pi: ExtensionAPI, cwd: string, state: BuilderState
   return readTailFromFile(state.logFile);
 }
 
-async function collectWarnings(paths: Paths, settings: PlanBuildSettings, plannerSession: PlannerSessionBinding): Promise<string[]> {
-  const warnings: string[] = [];
-  const builderAgentName = getBuilderAgentName(settings, plannerSession);
-
-  try {
-    const raw = await fs.readFile(paths.messengerRegistryFile, "utf8");
-    const registry = JSON.parse(raw) as { pid?: number; cwd?: string };
-    const regCwd = typeof registry.cwd === "string" ? registry.cwd : undefined;
-    const regPid = typeof registry.pid === "number" ? registry.pid : undefined;
-
-    if (regCwd && resolve(regCwd) !== resolve(paths.projectRoot) && regPid && isProcessAlive(regPid)) {
-      warnings.push(
-        `pi_messenger name \"${builderAgentName}\" already appears active in another project (${regCwd}, PID ${regPid}). Startup can still succeed, but messenger join in ${builderAgentName} may fail until that registration is gone.`,
-      );
-    }
-  } catch {
-    // no messenger registration or unreadable file
-  }
-
-  return warnings;
-}
-
-function isProcessAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+async function collectWarnings(_paths: Paths, _settings: PlanBuildSettings, _plannerSession: PlannerSessionBinding): Promise<string[]> {
+  return [];
 }
 
 function getPiInvocation(): { command: string; argsPrefix: string[] } {
@@ -316,8 +306,8 @@ function buildSystemPrompt(settings: PlanBuildSettings, plannerSession: PlannerS
     "Role:",
     "- You are the write-enabled builder counterpart to the planner session.",
     "- Preserve continuity across turns; this session is meant to accumulate implementation context over time.",
-    "- Use pi_messenger as the primary planner↔builder coordination channel when the planner sender is actually reachable.",
-    "- If a handoff arrives from a sender that is not currently joined to pi_messenger, do not treat reply failure as a blocker; continue the task and use normal session output for progress.",
+    "- Use plan_build({ action: \"message\", message: \"...\" }) for concise direct messages to the paired planner when needed.",
+    "- Do not send acknowledgements or chatter. Only message the planner when it materially changes execution, asks a concrete question, or reports a blocker/result.",
     "- Execute concrete changes, tests, and diagnostics. Do not start autonomous worker swarms unless explicitly asked.",
     "- When blocked, report the minimal blocking fact and the next concrete action needed.",
   ];
@@ -336,10 +326,9 @@ function buildStartupPrompt(settings: PlanBuildSettings, plannerSession: Planner
     `This builder is reserved for planner session ${plannerSession.sessionId}.`,
     "",
     "Startup checklist:",
-    "1. If the pi_messenger tool is available, call pi_messenger({ action: \"join\" }).",
-    `2. If join succeeds, call pi_messenger({ action: "set_status", message: "${builderAgentName} ready" }).`,
-    `3. Reply with a short readiness note that explicitly says you are paired with planner session ${plannerSession.sessionId}, whether messenger join succeeded, and that you are ready for build tasks.`,
-    "4. Then wait for further instructions.",
+    `1. Reply with a short readiness note that explicitly says you are paired with planner session ${plannerSession.sessionId} and ready for direct paired plan-build messages.`,
+    '2. If you need to contact the planner later, use plan_build({ action: "message", message: "..." }).',
+    "3. Then wait for further instructions.",
     "",
     "Do not modify files during this startup handshake.",
   ];
@@ -549,7 +538,7 @@ export async function startBuilder(
     nextState,
     [
       ...warnings,
-      `Startup is asynchronous. Once ${nextState.agentName} reports ready, send work via pi_messenger({ action: "send", to: "${nextState.agentName}", message: "..." }).`,
+      "Startup is asynchronous. Once the builder reports ready, use /build or plan_build({ action: \"message\", message: \"...\" }) from the paired planner session to send work.",
     ],
   );
 }
@@ -609,10 +598,9 @@ export function formatStatusMarkdown(status: BuilderStatus): string {
   if (status.alreadyRunning) lines.push(`- note: existing ${status.agentName} session reused`);
 
   lines.push("", "**planner → builder workflow**", "");
-  lines.push(`- Start planner/builder messaging in the planner with \`pi_messenger({ action: "join" })\` if needed.`);
-  lines.push(
-    `- Send work to ${status.agentName} with \`pi_messenger({ action: "send", to: "${status.agentName}", message: "..." })\`.`,
-  );
+  lines.push(`- Start or enable the paired builder from the planner with \`/plan-build start\` or \`/plan-build on\`.`);
+  lines.push(`- Delegate plan execution from the planner with \`/build\`.`);
+  lines.push(`- Send concise direct paired messages with \`plan_build({ action: "message", message: "..." })\` when needed.`);
 
   if (status.warnings.length > 0) {
     lines.push("", "**warnings**", "");

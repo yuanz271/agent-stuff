@@ -3,16 +3,15 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 import { StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
 import { randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { promises as fs, watch, type FSWatcher } from "node:fs";
+import { join } from "node:path";
 import {
   loadPlanBuildSettings,
   type PlanBuildSettings,
   type PlanBuildSettingsLoadResult,
   type PlanBuildSource,
 } from "./settings.js";
-import { getBuilderStatus, startBuilder, stopBuilder } from "./utils.js";
+import { getBuilderStatus, resolvePairChannelPaths, startBuilder, stopBuilder } from "./utils.js";
 import type { BuilderStatus, PlannerSessionBinding } from "./utils.js";
 
 const STATUS_KEY = "plan-build";
@@ -20,7 +19,7 @@ const TOOL_NAME = "plan_build";
 const STATE_ENTRY_TYPE = "plan-build-state";
 const CONTEXT_MESSAGE_TYPE = "plan-build-context";
 const BUILD_HANDOFF_MESSAGE_TYPE = "plan-build-handoff";
-const PLANNER_HANDOFF_SENDER_PREFIX = "plan-build";
+const PAIR_MESSAGE_TYPE = "plan-build-pair-message";
 const MAX_CONTEXT_MESSAGE_CHARS = 4_000;
 const MUTATING_BASH_PATTERNS = [
   /\brm\b/i,
@@ -118,9 +117,16 @@ type ExtractedMessage = {
   timestamp: number;
 };
 
-type PlannerMessengerSender = {
-  name: string;
-  registered: boolean;
+type PairRole = "planner" | "builder";
+
+type PairChannelMessage = {
+  id: string;
+  from: PairRole;
+  to: PairRole;
+  plannerSessionId: string;
+  timestamp: string;
+  kind: "handoff" | "message";
+  text: string;
 };
 
 type PlanBuildStatus = {
@@ -148,6 +154,12 @@ let previousActiveTools: string[] | undefined;
 let previousPlannerSelection: PlannerSelection | undefined;
 let lastObservedPlannerModel: { provider?: string; modelId?: string } = {};
 let currentSettings: PlanBuildSettingsLoadResult | undefined;
+let pairInboxWatcher: FSWatcher | null = null;
+let pairInboxPath: string | undefined;
+let pairInboxDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let pairMessageProcessing = false;
+let pairMessageNeedsRecheck = false;
+let latestPairContext: ExtensionContext | undefined;
 
 function normalizeControlAction(raw: string): PlanBuildControlAction | null {
   const value = raw.trim().toLowerCase();
@@ -248,7 +260,19 @@ async function refreshSettings(cwd: string): Promise<PlanBuildSettingsLoadResult
   return currentSettings;
 }
 
+function currentPairRole(): PairRole {
+  return process.env.PI_PLAN_MODE_ROLE === "builder" ? "builder" : "planner";
+}
+
+function pairedRole(role: PairRole): PairRole {
+  return role === "planner" ? "builder" : "planner";
+}
+
 function getPlannerSessionBinding(ctx: ExtensionContext): PlannerSessionBinding {
+  const builderPlannerSessionId = process.env.PI_PLAN_BUILD_PLANNER_SESSION_ID?.trim();
+  if (currentPairRole() === "builder" && builderPlannerSessionId) {
+    return { sessionId: builderPlannerSessionId };
+  }
   return {
     sessionId: ctx.sessionManager.getSessionId(),
     sessionFile: ctx.sessionManager.getSessionFile(),
@@ -262,6 +286,9 @@ function validToolNames(pi: ExtensionAPI): Set<string> {
 function filterPlannerTools(pi: ExtensionAPI, sourceTools: string[]): string[] {
   const valid = validToolNames(pi);
   const allowed = new Set(plannerConfig().allowed_tools);
+  if (valid.has(TOOL_NAME)) {
+    allowed.add(TOOL_NAME);
+  }
   const filtered = sourceTools.filter((name, index) => sourceTools.indexOf(name) === index && valid.has(name) && allowed.has(name));
   if (filtered.length > 0) return filtered;
   return Array.from(valid).filter((name) => allowed.has(name));
@@ -636,65 +663,187 @@ async function resolveCommandAction(raw: string): Promise<PlanBuildControlAction
   return modeEnabled ? "off" : "on";
 }
 
-function fallbackPlannerSenderName(ctx: ExtensionContext): string {
-  const shortSessionId = ctx.sessionManager.getSessionId().replace(/[^a-zA-Z0-9_-]+/g, "").slice(0, 8) || "planner";
-  return `${PLANNER_HANDOFF_SENDER_PREFIX}-${shortSessionId}`;
+async function resolvePairMessageContext(pi: ExtensionAPI, ctx: ExtensionContext): Promise<{
+  role: PairRole;
+  plannerSession: PlannerSessionBinding;
+  inboxPath: string;
+  targetInboxPath: string;
+}> {
+  const role = currentPairRole();
+  const plannerSession = getPlannerSessionBinding(ctx);
+  const paths = await resolvePairChannelPaths(pi, ctx.cwd ?? process.cwd(), plannerSession);
+  return {
+    role,
+    plannerSession,
+    inboxPath: role === "planner" ? paths.plannerInbox : paths.builderInbox,
+    targetInboxPath: role === "planner" ? paths.builderInbox : paths.plannerInbox,
+  };
 }
 
-async function resolvePlannerMessengerSender(ctx: ExtensionContext): Promise<PlannerMessengerSender> {
-  const fallback: PlannerMessengerSender = {
-    name: fallbackPlannerSenderName(ctx),
-    registered: false,
-  };
-  const registryDir = join(process.env.PI_MESSENGER_DIR || join(homedir(), ".pi", "agent", "messenger"), "registry");
+function isPairChannelMessage(value: unknown): value is PairChannelMessage {
+  if (typeof value !== "object" || value === null) return false;
+  const message = value as Record<string, unknown>;
+  return (
+    typeof message.id === "string" &&
+    (message.from === "planner" || message.from === "builder") &&
+    (message.to === "planner" || message.to === "builder") &&
+    typeof message.plannerSessionId === "string" &&
+    typeof message.timestamp === "string" &&
+    (message.kind === "handoff" || message.kind === "message") &&
+    typeof message.text === "string"
+  );
+}
 
-  let files: string[];
-  try {
-    files = await fs.readdir(registryDir);
-  } catch {
-    return fallback;
+function formatIncomingPairMessage(message: PairChannelMessage): string {
+  const heading = message.kind === "handoff"
+    ? `**plan-build handoff from ${message.from}**`
+    : `**plan-build message from ${message.from}**`;
+  return [heading, "", `- planner session id: ${message.plannerSessionId}`, "", message.text].join("\n");
+}
+
+function deliverPairMessage(pi: ExtensionAPI, message: PairChannelMessage): void {
+  pi.sendMessage(
+    {
+      customType: PAIR_MESSAGE_TYPE,
+      content: formatIncomingPairMessage(message),
+      display: true,
+      details: message,
+    },
+    { triggerTurn: true, deliverAs: "steer" },
+  );
+}
+
+async function processPendingPairMessages(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+  latestPairContext = ctx;
+  if (pairMessageProcessing) {
+    pairMessageNeedsRecheck = true;
+    return;
   }
 
-  const currentSessionId = ctx.sessionManager.getSessionId();
-  const currentPid = process.pid;
-  const currentCwd = resolve(ctx.cwd ?? process.cwd());
-  let pidMatch: string | undefined;
+  pairMessageProcessing = true;
+  try {
+    const { inboxPath, plannerSession, role } = await resolvePairMessageContext(pi, ctx);
+    await fs.mkdir(inboxPath, { recursive: true });
+    const files = (await fs.readdir(inboxPath)).filter((file) => file.endsWith(".json")).sort();
 
-  for (const file of files) {
-    if (!file.endsWith(".json")) continue;
-
-    try {
-      const parsed = JSON.parse(await fs.readFile(join(registryDir, file), "utf8")) as {
-        name?: unknown;
-        pid?: unknown;
-        sessionId?: unknown;
-        cwd?: unknown;
-      };
-      if (typeof parsed.name !== "string" || !parsed.name.trim()) continue;
-
-      const sameSession = parsed.sessionId === currentSessionId;
-      const samePid = parsed.pid === currentPid;
-      const sameCwd = typeof parsed.cwd === "string" && resolve(parsed.cwd) === currentCwd;
-
-      if (sameSession && samePid) {
-        return { name: parsed.name, registered: true };
+    for (const file of files) {
+      const messagePath = join(inboxPath, file);
+      try {
+        const parsed = JSON.parse(await fs.readFile(messagePath, "utf8"));
+        if (!isPairChannelMessage(parsed)) continue;
+        if (parsed.to !== role) continue;
+        if (parsed.plannerSessionId !== plannerSession.sessionId) continue;
+        deliverPairMessage(pi, parsed);
+      } catch {
+        // discard malformed pair-channel messages after one read attempt
+      } finally {
+        await fs.unlink(messagePath).catch(() => {});
       }
-      if (sameSession || (samePid && sameCwd)) {
-        pidMatch ??= parsed.name;
-      }
-    } catch {
-      // ignore unreadable messenger registration entries
+    }
+  } finally {
+    pairMessageProcessing = false;
+    if (pairMessageNeedsRecheck && latestPairContext) {
+      pairMessageNeedsRecheck = false;
+      void processPendingPairMessages(pi, latestPairContext);
     }
   }
-
-  if (pidMatch) {
-    return { name: pidMatch, registered: true };
-  }
-
-  return fallback;
 }
 
-function buildHandoffText(ctx: ExtensionContext, extraInstructions: string, plannerSender: PlannerMessengerSender): string | null {
+function stopPairInboxWatcher(): void {
+  if (pairInboxDebounceTimer) {
+    clearTimeout(pairInboxDebounceTimer);
+    pairInboxDebounceTimer = null;
+  }
+  if (pairInboxWatcher) {
+    pairInboxWatcher.close();
+    pairInboxWatcher = null;
+  }
+  pairInboxPath = undefined;
+}
+
+async function startPairInboxWatcher(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+  latestPairContext = ctx;
+  const { inboxPath } = await resolvePairMessageContext(pi, ctx);
+  await fs.mkdir(inboxPath, { recursive: true });
+
+  if (pairInboxWatcher && pairInboxPath === inboxPath) {
+    await processPendingPairMessages(pi, ctx);
+    return;
+  }
+
+  stopPairInboxWatcher();
+  pairInboxPath = inboxPath;
+  await processPendingPairMessages(pi, ctx);
+
+  pairInboxWatcher = watch(inboxPath, () => {
+    if (pairInboxDebounceTimer) {
+      clearTimeout(pairInboxDebounceTimer);
+    }
+    pairInboxDebounceTimer = setTimeout(() => {
+      pairInboxDebounceTimer = null;
+      if (latestPairContext) {
+        void processPendingPairMessages(pi, latestPairContext);
+      }
+    }, 50);
+  });
+
+  pairInboxWatcher.on("error", () => {
+    stopPairInboxWatcher();
+  });
+}
+
+async function queuePairedMessage(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  text: string,
+  kind: PairChannelMessage["kind"],
+): Promise<{ queuedPath: string; plannerSessionId: string; to: PairRole }> {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    throw new Error("message text is required");
+  }
+
+  const { plannerSession, role, targetInboxPath } = await resolvePairMessageContext(pi, ctx);
+  await fs.mkdir(targetInboxPath, { recursive: true });
+
+  const message: PairChannelMessage = {
+    id: randomUUID(),
+    from: role,
+    to: pairedRole(role),
+    plannerSessionId: plannerSession.sessionId,
+    timestamp: new Date().toISOString(),
+    kind,
+    text: trimmed,
+  };
+
+  const queuedPath = join(targetInboxPath, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`);
+  await fs.writeFile(queuedPath, JSON.stringify(message, null, 2), "utf8");
+
+  return {
+    queuedPath,
+    plannerSessionId: plannerSession.sessionId,
+    to: message.to,
+  };
+}
+
+async function sendPairMessageAction(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  rawMessage: string | undefined,
+): Promise<{ ok: true; action: "message"; role: PairRole; to: PairRole; plannerSessionId: string; queuedPath: string }> {
+  const role = currentPairRole();
+  const queued = await queuePairedMessage(pi, ctx, rawMessage ?? "", "message");
+  return {
+    ok: true,
+    action: "message",
+    role,
+    to: queued.to,
+    plannerSessionId: queued.plannerSessionId,
+    queuedPath: queued.queuedPath,
+  };
+}
+
+function buildHandoffText(ctx: ExtensionContext, extraInstructions: string): string | null {
   const recent = getMessagesSinceLastUser(ctx);
   const trimmedExtra = extraInstructions.trim();
   if (recent.length === 0 && !trimmedExtra) return null;
@@ -702,9 +851,7 @@ function buildHandoffText(ctx: ExtensionContext, extraInstructions: string, plan
   const lines = [
     `Planner handoff from session ${ctx.sessionManager.getSessionId()} in ${ctx.cwd ?? process.cwd()}.`,
     `Implement the agreed plan in the builder dedicated to this planner session. The planner remains read-only.`,
-    plannerSender.registered
-      ? `Planner messenger sender: ${plannerSender.name}.`
-      : `Planner messenger sender: ${plannerSender.name} (handoff-only; the planner is not currently joined to pi_messenger).`,
+    'Direct paired communication is available through plan_build({ action: "message", message: "..." }).',
     "",
   ];
 
@@ -724,81 +871,25 @@ function buildHandoffText(ctx: ExtensionContext, extraInstructions: string, plan
     "Execution expectations:",
     "- implement the requested change in the builder session",
     "- run the smallest relevant validation",
-    plannerSender.registered
-      ? `- when useful, send concise progress or blocker updates to ${plannerSender.name} via pi_messenger`
-      : "- do not treat inability to reply via pi_messenger as a blocker; proceed with implementation and use normal session output for progress",
+    '- use plan_build({ action: "message", message: "..." }) only for material updates, concrete questions, or blockers',
     "- if blocked on the task itself, report the minimal blocker and the next action needed",
   );
 
   return lines.join("\n").trim();
 }
 
-async function queueBuilderMessage(
-  text: string,
-  targetAgentName: string,
-  plannerSenderName: string,
-): Promise<{ inboxPath: string; registrationVisible: boolean }> {
-  const baseDir = process.env.PI_MESSENGER_DIR || join(homedir(), ".pi", "agent", "messenger");
-  const targetInbox = join(baseDir, "inbox", targetAgentName);
-  const registrationPath = join(baseDir, "registry", `${targetAgentName}.json`);
-  await fs.mkdir(targetInbox, { recursive: true });
-
-  const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
-  const inboxPath = join(targetInbox, fileName);
-  await fs.writeFile(
-    inboxPath,
-    JSON.stringify(
-      {
-        id: randomUUID(),
-        from: plannerSenderName,
-        to: targetAgentName,
-        text,
-        timestamp: new Date().toISOString(),
-        replyTo: null,
-      },
-      null,
-      2,
-    ),
-    "utf8",
-  );
-
-  let registrationVisible = false;
-  try {
-    await fs.access(registrationPath);
-    registrationVisible = true;
-  } catch {
-    registrationVisible = false;
-  }
-
-  return { inboxPath, registrationVisible };
-}
-
-function formatBuildQueuedMarkdown(
-  builder: BuilderStatus,
-  queuedPath: string,
-  registrationVisible: boolean,
-  plannerSender: PlannerMessengerSender,
-): string {
+function formatBuildQueuedMarkdown(builder: BuilderStatus, queuedPath: string): string {
   const lines = [
     `**build delegated**`,
     "",
     `- planner mode: ${modeEnabled ? "on" : "off"}`,
     `- planner session id: ${builder.plannerSessionId}`,
-    `- planner messenger sender: ${plannerSender.name}${plannerSender.registered ? " (registered)" : " (handoff-only; planner not joined to pi_messenger)"}`,
     `- builder name: ${builder.agentName}`,
     `- builder running: ${builder.running ? "yes" : "no"}`,
     `- builder session: ${builder.tmuxSession}`,
-    `- queued inbox file: ${queuedPath}`,
+    `- queued pair-message file: ${queuedPath}`,
+    `- paired transport: internal plan-build mailbox`,
   ];
-
-  if (!plannerSender.registered) {
-    lines.push("- note: planner is not joined to pi_messenger, so builder replies through pi_messenger are currently unavailable; the builder should continue without treating that as a blocker.");
-    lines.push("- note: if you want bidirectional planner↔builder messaging, join the planner to pi_messenger before running /build.");
-  }
-
-  if (!registrationVisible) {
-    lines.push(`- note: builder messenger registration is not visible yet; the message is queued and will be processed once ${builder.agentName} joins messenger.`);
-  }
 
   return lines.join("\n");
 }
@@ -813,8 +904,7 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
   }
 
   const { settings } = await refreshSettings(ctx.cwd ?? process.cwd());
-  const plannerSender = await resolvePlannerMessengerSender(ctx);
-  const handoff = buildHandoffText(ctx, args, plannerSender);
+  const handoff = buildHandoffText(ctx, args);
   if (!handoff) {
     ctx.hasUI && ctx.ui.notify("No recent planner context found. Ask the planner first or pass explicit instructions to /build.", "error");
     return;
@@ -827,8 +917,8 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
     updateStatusLine(ctx, builder);
   }
 
-  const queued = await queueBuilderMessage(handoff, builder.agentName, plannerSender.name);
-  emitInfo(pi, formatBuildQueuedMarkdown(builder, queued.inboxPath, queued.registrationVisible, plannerSender), BUILD_HANDOFF_MESSAGE_TYPE);
+  const queued = await queuePairedMessage(pi, ctx, handoff, "handoff");
+  emitInfo(pi, formatBuildQueuedMarkdown(builder, queued.queuedPath), BUILD_HANDOFF_MESSAGE_TYPE);
 }
 
 export default function planBuildExtension(pi: ExtensionAPI) {
@@ -837,15 +927,23 @@ export default function planBuildExtension(pi: ExtensionAPI) {
     label: "Plan Build",
     description:
       "Manage planner/build mode and the planner-session-scoped builder configured by plan-build-settings.yaml. " +
-      "Actions: start, on, status, off, stop. " +
-      "start spawns the current planner session's builder without changing planner mode; on enables read-only planner mode, switches the planner to the configured plan model, and starts the builder if needed; off restores normal planner behavior and restores the previous planner model/thinking; stop forcibly terminates the current planner session's builder.",
+      "Actions: start, on, status, off, stop, message. " +
+      "start spawns the current planner session's builder without changing planner mode; on enables read-only planner mode, switches the planner to the configured plan model, and starts the builder if needed; off restores normal planner behavior and restores the previous planner model/thinking; stop forcibly terminates the current planner session's builder; message sends a direct paired planner↔builder note through plan-build's internal mailbox.",
     parameters: Type.Object({
-      action: StringEnum(["start", "on", "status", "off", "stop"] as const, {
-        description: "Plan-build control action for planner mode and the current planner session's builder",
+      action: StringEnum(["start", "on", "status", "off", "stop", "message"] as const, {
+        description: "Plan-build control action for planner/build mode or direct paired messaging",
       }),
+      message: Type.Optional(Type.String({ description: "Required for action='message'. Direct message text for the paired planner or builder." })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
+        if (params.action === "message") {
+          const result = await sendPairMessageAction(pi, ctx, params.message);
+          return {
+            content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+            details: result,
+          };
+        }
         const status = await runControlAction(pi, ctx, params.action);
         return {
           content: [{ type: "text", text: JSON.stringify(status, null, 2) }],
@@ -930,10 +1028,20 @@ export default function planBuildExtension(pi: ExtensionAPI) {
       }
     }
 
-    if (event.toolName === TOOL_NAME || event.toolName === "pi_messenger") {
+    if (event.toolName === TOOL_NAME) {
+      const action = typeof event.input.action === "string" ? event.input.action : "";
+      if (action !== "message") {
+        return {
+          block: true,
+          reason: `plan-build mode is on: planner-side builder lifecycle control should go through explicit slash commands (/plan-build, /plan, /build). The only allowed planner tool call is plan_build({ action: "message", ... }) for concise paired messages.`,
+        };
+      }
+    }
+
+    if (event.toolName === "pi_messenger") {
       return {
         block: true,
-        reason: `plan-build mode is on: planner-side builder control and messaging should go through explicit slash commands (/plan-build, /plan, /build), not model tool calls.`,
+        reason: `plan-build mode is on: paired planner↔builder communication uses plan-build's internal mailbox, not planner-side pi_messenger tool calls.`,
       };
     }
   });
@@ -958,9 +1066,10 @@ export default function planBuildExtension(pi: ExtensionAPI) {
       "Planner rules:",
       "- Stay read-only. Do not modify files directly.",
       "- Do not use mutating bash commands.",
-      "- Do not communicate with the builder through tools on your own.",
       "- Focus on understanding the codebase, producing plans, reviewing results, and preparing precise build instructions.",
       "- When the user wants execution, they will run /build to delegate the current plan to the builder dedicated to this planner session.",
+      '- You may send concise direct messages to the paired builder with plan_build({ action: "message", message: "..." }). Use this for clarifications or course corrections, not chatter.',
+      "- The paired builder may also message you directly. Answer only when it materially helps execution.",
       "- Prefer concise builder handoff packets with: goal, relevant files, implementation steps, and validation.",
     ];
 
@@ -981,6 +1090,7 @@ export default function planBuildExtension(pi: ExtensionAPI) {
   const restore = async (_event: unknown, ctx: ExtensionContext) => {
     lastObservedPlannerModel = { provider: ctx.model?.provider, modelId: ctx.model?.id };
     await restoreModeState(pi, ctx).catch(() => {});
+    await startPairInboxWatcher(pi, ctx).catch(() => {});
   };
 
   pi.on("session_start", restore);
