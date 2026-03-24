@@ -1,3 +1,4 @@
+import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
@@ -6,7 +7,7 @@ import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { BUILDER_AGENT_NAME, getBuilderStatus, startBuilder, stopBuilder } from "./utils.js";
-import type { BuilderStatus, PlanBuildAction as BuilderLifecycleAction } from "./utils.js";
+import type { BuilderStatus } from "./utils.js";
 
 const STATUS_KEY = "plan-build";
 const TOOL_NAME = "plan_build";
@@ -14,6 +15,9 @@ const STATE_ENTRY_TYPE = "plan-build-state";
 const CONTEXT_MESSAGE_TYPE = "plan-build-context";
 const BUILD_HANDOFF_MESSAGE_TYPE = "plan-build-handoff";
 const PLANNER_AGENT_NAME = "planner";
+const PLAN_PROVIDER = "anthropic";
+const PLAN_MODEL_ID = "claude-opus-4-6";
+const PLAN_THINKING_LEVEL: ThinkingLevel = "high";
 const MAX_CONTEXT_MESSAGE_CHARS = 4_000;
 const PLANNER_ALLOWED_TOOLS = new Set(["read", "bash", "grep", "find", "ls", "websearch"]);
 const MUTATING_BASH_PATTERNS = [
@@ -93,9 +97,16 @@ const SAFE_BASH_PREFIXES = [
 
 type PlanBuildControlAction = "start" | "on" | "status" | "off" | "stop";
 
+type PlannerSelection = {
+  provider?: string;
+  modelId?: string;
+  thinkingLevel?: ThinkingLevel;
+};
+
 type PersistedPlanBuildState = {
   enabled: boolean;
   previousActiveTools?: string[];
+  previousPlannerSelection?: PlannerSelection;
   updatedAt: string;
 };
 
@@ -113,11 +124,17 @@ type PlanBuildStatus = {
   message: string;
   activeTools: string[];
   previousActiveTools?: string[];
+  plannerModel?: string;
+  plannerThinkingLevel: ThinkingLevel;
+  previousPlannerModel?: string;
+  previousPlannerThinkingLevel?: ThinkingLevel;
   builder: BuilderStatus;
 };
 
 let modeEnabled = false;
 let previousActiveTools: string[] | undefined;
+let previousPlannerSelection: PlannerSelection | undefined;
+let lastObservedPlannerModel: { provider?: string; modelId?: string } = {};
 
 function normalizeControlAction(raw: string): PlanBuildControlAction | null {
   const value = raw.trim().toLowerCase();
@@ -204,10 +221,64 @@ function normalizeToolList(pi: ExtensionAPI, sourceTools: string[] | undefined):
   return sourceTools.filter((name, index) => sourceTools.indexOf(name) === index && valid.has(name));
 }
 
+function normalizePlannerSelection(selection: PlannerSelection | undefined): PlannerSelection | undefined {
+  if (!selection) return undefined;
+  const provider = typeof selection.provider === "string" && selection.provider.trim() ? selection.provider.trim() : undefined;
+  const modelId = typeof selection.modelId === "string" && selection.modelId.trim() ? selection.modelId.trim() : undefined;
+  const thinkingLevel = selection.thinkingLevel;
+  if (!provider && !modelId && !thinkingLevel) return undefined;
+  return { provider, modelId, thinkingLevel };
+}
+
+function formatPlannerModel(selection: PlannerSelection | undefined): string | undefined {
+  if (!selection?.provider || !selection.modelId) return undefined;
+  return `${selection.provider}/${selection.modelId}`;
+}
+
+function getCurrentPlannerSelection(pi: ExtensionAPI, ctx: ExtensionContext): PlannerSelection {
+  return {
+    provider: lastObservedPlannerModel.provider ?? ctx.model?.provider,
+    modelId: lastObservedPlannerModel.modelId ?? ctx.model?.id,
+    thinkingLevel: pi.getThinkingLevel(),
+  };
+}
+
+async function applyPlannerSelection(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  selection: PlannerSelection | undefined,
+): Promise<string | undefined> {
+  const normalized = normalizePlannerSelection(selection);
+  if (!normalized) return undefined;
+
+  let warning: string | undefined;
+
+  if (normalized.provider && normalized.modelId) {
+    const model = ctx.modelRegistry.find(normalized.provider, normalized.modelId);
+    if (!model) {
+      warning = `Model ${normalized.provider}/${normalized.modelId} is not available in the local registry.`;
+    } else {
+      const ok = await pi.setModel(model);
+      if (!ok) {
+        warning = `No API key available for ${normalized.provider}/${normalized.modelId}.`;
+      } else {
+        lastObservedPlannerModel = { provider: normalized.provider, modelId: normalized.modelId };
+      }
+    }
+  }
+
+  if (normalized.thinkingLevel) {
+    pi.setThinkingLevel(normalized.thinkingLevel);
+  }
+
+  return warning;
+}
+
 function persistModeState(pi: ExtensionAPI): void {
   pi.appendEntry<PersistedPlanBuildState>(STATE_ENTRY_TYPE, {
     enabled: modeEnabled,
     previousActiveTools,
+    previousPlannerSelection,
     updatedAt: new Date().toISOString(),
   });
 }
@@ -222,6 +293,7 @@ function restorePersistedState(ctx: ExtensionContext): PersistedPlanBuildState |
     return {
       enabled: data.enabled,
       previousActiveTools: Array.isArray(data.previousActiveTools) ? data.previousActiveTools.filter((name) => typeof name === "string") : undefined,
+      previousPlannerSelection: normalizePlannerSelection(data.previousPlannerSelection),
       updatedAt: typeof data.updatedAt === "string" ? data.updatedAt : new Date().toISOString(),
     };
   }
@@ -247,9 +319,18 @@ async function restoreModeState(pi: ExtensionAPI, ctx: ExtensionContext): Promis
   const restored = restorePersistedState(ctx);
   modeEnabled = restored?.enabled ?? false;
   previousActiveTools = modeEnabled ? restored?.previousActiveTools ?? pi.getActiveTools() : undefined;
+  previousPlannerSelection = modeEnabled ? restored?.previousPlannerSelection : undefined;
 
   if (modeEnabled) {
     applyPlannerMode(pi);
+    const warning = await applyPlannerSelection(pi, ctx, {
+      provider: PLAN_PROVIDER,
+      modelId: PLAN_MODEL_ID,
+      thinkingLevel: PLAN_THINKING_LEVEL,
+    });
+    if (warning && ctx.hasUI) {
+      ctx.ui.notify(`plan-build: ${warning}`, "warning");
+    }
   }
 
   const builder = await getBuilderStatus(pi, ctx.cwd ?? process.cwd()).catch(() => undefined);
@@ -288,6 +369,12 @@ function updateStatusLine(ctx: ExtensionContext, builder: BuilderStatus): void {
 }
 
 function buildStatus(action: PlanBuildControlAction, message: string, builder: BuilderStatus, pi: ExtensionAPI): PlanBuildStatus {
+  const plannerModel = formatPlannerModel({
+    provider: lastObservedPlannerModel.provider,
+    modelId: lastObservedPlannerModel.modelId,
+  });
+  const previousPlannerModel = formatPlannerModel(previousPlannerSelection);
+
   return {
     ok: true,
     action,
@@ -296,6 +383,10 @@ function buildStatus(action: PlanBuildControlAction, message: string, builder: B
     message,
     activeTools: pi.getActiveTools(),
     previousActiveTools,
+    plannerModel,
+    plannerThinkingLevel: pi.getThinkingLevel(),
+    previousPlannerModel,
+    previousPlannerThinkingLevel: previousPlannerSelection?.thinkingLevel,
     builder,
   };
 }
@@ -307,7 +398,19 @@ function formatStatusMarkdown(status: PlanBuildStatus): string {
     `- message: ${status.message}`,
     `- planner mode: ${status.modeEnabled ? "on" : "off"}`,
     `- planner behavior: ${status.plannerReadOnly ? "planner (read-only)" : "normal"}`,
+    `- planner model: ${status.plannerModel ?? "unknown"}`,
+    `- planner thinking: ${status.plannerThinkingLevel}`,
     `- active tools: ${status.activeTools.length > 0 ? status.activeTools.join(", ") : "(none)"}`,
+  ];
+
+  if (status.previousPlannerModel) {
+    lines.push(`- restore model on off: ${status.previousPlannerModel}`);
+  }
+  if (status.previousPlannerThinkingLevel) {
+    lines.push(`- restore thinking on off: ${status.previousPlannerThinkingLevel}`);
+  }
+
+  lines.push(
     "",
     "**builder**",
     "",
@@ -318,7 +421,7 @@ function formatStatusMarkdown(status: PlanBuildStatus): string {
     `- session file: ${status.builder.sessionFile}`,
     `- log file: ${status.builder.logFile}`,
     `- launch script: ${status.builder.launchScript}`,
-  ];
+  );
 
   if (status.builder.startedAt) lines.push(`- started: ${status.builder.startedAt}`);
   if (status.builder.lastStoppedAt) lines.push(`- last stopped: ${status.builder.lastStoppedAt}`);
@@ -357,6 +460,7 @@ async function startOnly(pi: ExtensionAPI, ctx: ExtensionContext): Promise<PlanB
 
 async function enableMode(pi: ExtensionAPI, ctx: ExtensionContext): Promise<PlanBuildStatus> {
   const capturedTools = modeEnabled ? previousActiveTools : pi.getActiveTools();
+  const capturedSelection = modeEnabled ? previousPlannerSelection : getCurrentPlannerSelection(pi, ctx);
   const builder = await startBuilder(pi, ctx.cwd ?? process.cwd());
 
   modeEnabled = true;
@@ -364,13 +468,25 @@ async function enableMode(pi: ExtensionAPI, ctx: ExtensionContext): Promise<Plan
   if (previousActiveTools.length === 0) {
     previousActiveTools = pi.getActiveTools();
   }
+  previousPlannerSelection = normalizePlannerSelection(capturedSelection);
+
+  const switchWarning = await applyPlannerSelection(pi, ctx, {
+    provider: PLAN_PROVIDER,
+    modelId: PLAN_MODEL_ID,
+    thinkingLevel: PLAN_THINKING_LEVEL,
+  });
+
   applyPlannerMode(pi);
   persistModeState(pi);
   updateStatusLine(ctx, builder);
 
+  const switchMessage = switchWarning
+    ? `Planner remained on ${formatPlannerModel(getCurrentPlannerSelection(pi, ctx)) ?? "the current model"} (${switchWarning})`
+    : `Planner switched to ${PLAN_PROVIDER}/${PLAN_MODEL_ID} (${PLAN_THINKING_LEVEL})`;
+
   return buildStatus(
     "on",
-    `Plan-build mode enabled. Planner is now read-only. ${builder.message}`,
+    `Plan-build mode enabled. Planner is now read-only. ${switchMessage}. ${builder.message}`,
     builder,
     pi,
   );
@@ -379,16 +495,28 @@ async function enableMode(pi: ExtensionAPI, ctx: ExtensionContext): Promise<Plan
 async function disableMode(pi: ExtensionAPI, ctx: ExtensionContext): Promise<PlanBuildStatus> {
   const builder = await getBuilderStatus(pi, ctx.cwd ?? process.cwd());
   const toolsToRestore = previousActiveTools;
+  const plannerToRestore = previousPlannerSelection;
 
   modeEnabled = false;
   restoreNormalTools(pi, toolsToRestore);
+
+  const restoreWarning = await applyPlannerSelection(pi, ctx, plannerToRestore);
+
   previousActiveTools = undefined;
+  previousPlannerSelection = undefined;
   persistModeState(pi);
   updateStatusLine(ctx, builder);
 
+  const restoreTarget = formatPlannerModel(plannerToRestore);
+  const restoreMessage = restoreWarning
+    ? `Planner model restore was skipped (${restoreWarning})`
+    : restoreTarget
+      ? `Planner restored to ${restoreTarget}${plannerToRestore?.thinkingLevel ? ` (${plannerToRestore.thinkingLevel})` : ""}`
+      : "Planner returned to its prior model state";
+
   return buildStatus(
     "off",
-    `Plan-build mode disabled. Planner returned to normal mode. ${builder.running ? `Builder ${BUILDER_AGENT_NAME} is still running.` : `Builder ${BUILDER_AGENT_NAME} is not running.`}`,
+    `Plan-build mode disabled. Planner returned to normal mode. ${restoreMessage}. ${builder.running ? `Builder ${BUILDER_AGENT_NAME} is still running.` : `Builder ${BUILDER_AGENT_NAME} is not running.`}`,
     builder,
     pi,
   );
@@ -399,7 +527,7 @@ async function statusOnly(pi: ExtensionAPI, ctx: ExtensionContext): Promise<Plan
   updateStatusLine(ctx, builder);
   return buildStatus(
     "status",
-    `Plan-build mode is ${modeEnabled ? "on" : "off"}. Builder is ${builder.running ? "running" : "not running"}.`,
+    `Plan-build mode is ${modeEnabled ? "on" : "off"}. Planner model is ${formatPlannerModel(getCurrentPlannerSelection(pi, ctx)) ?? "unknown"}. Builder is ${builder.running ? "running" : "not running"}.`,
     builder,
     pi,
   );
@@ -552,7 +680,7 @@ export default function planBuildExtension(pi: ExtensionAPI) {
     description:
       `Manage planner/build mode and the persistent builder session ${BUILDER_AGENT_NAME}. ` +
       `Actions: start, on, status, off, stop. ` +
-      `start spawns the builder without changing planner mode; on enables read-only planner mode and starts the builder if needed; off restores normal planner behavior; stop forcibly terminates the builder session.`,
+      `start spawns the builder without changing planner mode; on enables read-only planner mode, switches the planner to the plan model, and starts the builder if needed; off restores normal planner behavior and restores the previous planner model/thinking; stop forcibly terminates the builder session.`,
     parameters: Type.Object({
       action: StringEnum(["start", "on", "status", "off", "stop"] as const, {
         description: `Plan-build control action for planner mode and builder ${BUILDER_AGENT_NAME}`,
@@ -601,13 +729,13 @@ export default function planBuildExtension(pi: ExtensionAPI) {
   }
 
   pi.registerCommand("plan-build", {
-    description: `Control plan-build mode and builder ${BUILDER_AGENT_NAME}: /plan-build [start|on|status|off|stop] (bare command toggles mode)`,
+    description: `Control plan-build mode and builder ${BUILDER_AGENT_NAME}: /plan-build [start|on|status|off|stop] (bare command toggles mode; on switches planner model, off restores it)`,
     handler: async (args, ctx) =>
       handleControlCommand(args, ctx, "Usage: /plan-build [start|on|status|off|stop] (no args toggles mode)"),
   });
 
   pi.registerCommand("plan", {
-    description: "Alias for /plan-build (bare command toggles mode)",
+    description: "Alias for /plan-build (bare command toggles mode; on switches planner model, off restores it)",
     handler: async (args, ctx) =>
       handleControlCommand(args, ctx, "Usage: /plan [start|on|status|off|stop] (no args toggles mode)"),
   });
@@ -675,10 +803,14 @@ export default function planBuildExtension(pi: ExtensionAPI) {
   });
 
   const restore = async (_event: unknown, ctx: ExtensionContext) => {
+    lastObservedPlannerModel = { provider: ctx.model?.provider, modelId: ctx.model?.id };
     await restoreModeState(pi, ctx).catch(() => {});
   };
 
   pi.on("session_start", restore);
   pi.on("session_switch", restore);
   pi.on("session_tree", restore);
+  pi.on("model_select", async (event) => {
+    lastObservedPlannerModel = { provider: event.model.provider, modelId: event.model.id };
+  });
 }

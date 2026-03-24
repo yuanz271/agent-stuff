@@ -6,7 +6,7 @@ All notable changes to agent-stuff are documented here.
 
 * Added `pi-messenger` extension and `/pi-messenger-crew` skill for inter-agent messaging, file reservations, and optional Crew task orchestration.
 * Removed `pi-subagents` extension.
-* Added `plan-build` as a planner/builder mode controller with explicit `start` / `on` / `status` / `off` / `stop`, read-only planner mode, and `/build` delegation to a persistent tmux-backed builder session.
+* Added `plan-build` as a planner/builder mode controller with explicit `start` / `on` / `status` / `off` / `stop`, read-only planner mode, planner-model switching with restore on `off`, and `/build` delegation to a persistent tmux-backed builder session.
 * Removed `pi-autoresearch` extension and `/autoresearch-create` skill.
 * Added `pdf` skill for PDF processing (text/table extraction, merge/split/rotate, form filling, OCR, encryption, and PDF creation) with `uv run` inline script metadata.
 * Added `prompt-editor.ts` extension for in-editor prompt mode selection with per-mode model and thinking persistence.
