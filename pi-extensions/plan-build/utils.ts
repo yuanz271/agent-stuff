@@ -185,7 +185,8 @@ async function exec(pi: ExtensionAPI, command: string, args: string[], cwd?: str
   return {
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",
-    code: result.code ?? 0,
+    // Treat undefined exit code (timeout, internal error) as failure.
+    code: result.code ?? 1,
   };
 }
 
@@ -227,12 +228,16 @@ async function tmuxSessionExists(pi: ExtensionAPI, session: string, cwd: string)
 }
 
 async function loadState(stateFile: string): Promise<BuilderState | null> {
+  let raw: string;
   try {
-    const raw = await fs.readFile(stateFile, "utf8");
-    return JSON.parse(raw) as BuilderState;
+    raw = await fs.readFile(stateFile, "utf8");
   } catch {
+    // File not found or unreadable — no persisted state.
     return null;
   }
+  // Let JSON.parse throw on corrupt data so callers see the failure
+  // instead of silently losing temporal metadata and tmux pane IDs.
+  return JSON.parse(raw) as BuilderState;
 }
 
 async function saveState(stateFile: string, state: BuilderState): Promise<void> {
@@ -526,8 +531,12 @@ export async function startBuilder(
     lastStoppedAt: undefined,
   });
 
+  const pipeWarnings: string[] = [];
   if (nextState.tmuxPaneId) {
-    await exec(pi, "tmux", ["pipe-pane", "-t", nextState.tmuxPaneId, "-o", `cat >> ${shellQuote(paths.logFile)}`], cwd);
+    const pipeResult = await exec(pi, "tmux", ["pipe-pane", "-t", nextState.tmuxPaneId, "-o", `cat >> ${shellQuote(paths.logFile)}`], cwd);
+    if (pipeResult.code !== 0) {
+      pipeWarnings.push(`tmux pipe-pane failed (exit ${pipeResult.code}): builder log capture may be missing.`);
+    }
   }
 
   await saveState(paths.stateFile, nextState);
@@ -538,6 +547,7 @@ export async function startBuilder(
     nextState,
     [
       ...warnings,
+      ...pipeWarnings,
       "Startup is asynchronous. Once the builder reports ready, use /build or plan_build({ action: \"message\", message: \"...\" }) from the paired planner session to send work.",
     ],
   );

@@ -762,17 +762,25 @@ async function processPendingPairMessages(pi: ExtensionAPI, ctx: ExtensionContex
 
     for (const file of files) {
       const messagePath = join(inboxPath, file);
+      let parsed: unknown;
       try {
-        const parsed = JSON.parse(await fs.readFile(messagePath, "utf8"));
-        if (!isPairChannelMessage(parsed)) continue;
-        if (parsed.to !== role) continue;
-        if (parsed.plannerSessionId !== plannerSession.sessionId) continue;
-        deliverPairMessage(pi, parsed);
+        parsed = JSON.parse(await fs.readFile(messagePath, "utf8"));
       } catch {
-        // discard malformed pair-channel messages after one read attempt
-      } finally {
+        // Malformed or unreadable — discard after one read attempt.
         await fs.unlink(messagePath).catch(() => {});
+        continue;
       }
+      if (!isPairChannelMessage(parsed)) {
+        await fs.unlink(messagePath).catch(() => {});
+        continue;
+      }
+      if (parsed.to !== role || parsed.plannerSessionId !== plannerSession.sessionId) {
+        await fs.unlink(messagePath).catch(() => {});
+        continue;
+      }
+      // Delivery errors propagate so a valid message is never silently lost.
+      deliverPairMessage(pi, parsed);
+      await fs.unlink(messagePath).catch(() => {});
     }
   } finally {
     rt.pairMessageProcessing = false;
@@ -1117,8 +1125,12 @@ export default function planBuildExtension(pi: ExtensionAPI) {
 
   const restore = async (_event: unknown, ctx: ExtensionContext) => {
     rt.lastObservedPlannerModel = { provider: ctx.model?.provider, modelId: ctx.model?.id };
-    await restoreModeState(pi, ctx).catch(() => {});
-    await startPairInboxWatcher(pi, ctx).catch(() => {});
+    await restoreModeState(pi, ctx).catch((err) => {
+      console.warn("[plan-build] restoreModeState failed:", err);
+    });
+    await startPairInboxWatcher(pi, ctx).catch((err) => {
+      console.warn("[plan-build] startPairInboxWatcher failed:", err);
+    });
   };
 
   pi.on("session_start", restore);
