@@ -219,8 +219,8 @@ function requireCurrentSettings(): PlanBuildSettingsLoadResult {
   return currentSettings;
 }
 
-function builderAgentName(): string {
-  return currentSettings?.settings.builder.agent_name ?? "builder";
+function builderSessionReference(): string {
+  return currentSettings?.settings.builder.agent_name ?? "the configured builder session";
 }
 
 function plannerConfig(): PlanBuildSettings["planner"] {
@@ -818,7 +818,7 @@ export default function planBuildExtension(pi: ExtensionAPI) {
     if (event.toolName === "write" || event.toolName === "edit") {
       return {
         block: true,
-        reason: `plan-build mode is on: the planner is read-only. Use /build to delegate execution to ${builderAgentName()}.`,
+        reason: `plan-build mode is on: the planner is read-only. Use /build to delegate execution to ${builderSessionReference()}.`,
       };
     }
 
@@ -827,7 +827,7 @@ export default function planBuildExtension(pi: ExtensionAPI) {
       if (!isSafePlannerBash(command)) {
         return {
           block: true,
-          reason: `plan-build mode is on: mutating bash is blocked for the planner. Use /build to delegate execution to ${builderAgentName()}.\nCommand: ${command}`,
+          reason: `plan-build mode is on: mutating bash is blocked for the planner. Use /build to delegate execution to ${builderSessionReference()}.\nCommand: ${command}`,
         };
       }
     }
