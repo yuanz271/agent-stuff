@@ -13,7 +13,7 @@ import {
   type PlanBuildSource,
 } from "./settings.js";
 import { getBuilderStatus, startBuilder, stopBuilder } from "./utils.js";
-import type { BuilderStatus } from "./utils.js";
+import type { BuilderStatus, PlannerSessionBinding } from "./utils.js";
 
 const STATUS_KEY = "plan-build";
 const TOOL_NAME = "plan_build";
@@ -243,6 +243,13 @@ async function refreshSettings(cwd: string): Promise<PlanBuildSettingsLoadResult
   return currentSettings;
 }
 
+function getPlannerSessionBinding(ctx: ExtensionContext): PlannerSessionBinding {
+  return {
+    sessionId: ctx.sessionManager.getSessionId(),
+    sessionFile: ctx.sessionManager.getSessionFile(),
+  };
+}
+
 function validToolNames(pi: ExtensionAPI): Set<string> {
   return new Set(pi.getAllTools().map((tool) => tool.name));
 }
@@ -371,7 +378,12 @@ async function restoreModeState(pi: ExtensionAPI, ctx: ExtensionContext): Promis
     }
   }
 
-  const builder = await getBuilderStatus(pi, ctx.cwd ?? process.cwd(), requireCurrentSettings().settings).catch(() => undefined);
+  const builder = await getBuilderStatus(
+    pi,
+    ctx.cwd ?? process.cwd(),
+    requireCurrentSettings().settings,
+    getPlannerSessionBinding(ctx),
+  ).catch(() => undefined);
   if (builder) updateStatusLine(ctx, builder);
 }
 
@@ -460,7 +472,7 @@ function formatStatusMarkdown(status: PlanBuildStatus): string {
     "",
     "**settings**",
     "",
-    `- loaded sources: ${status.settingsSources.length > 0 ? status.settingsSources.map((source) => `${source.kind}:${source.path}`).join(", ") : "code defaults only"}`,
+    `- loaded sources: ${status.settingsSources.map((source) => `${source.kind}:${source.path}`).join(", ")}`,
     `- invalid fields ignored: ${status.settingsInvalidFieldCount}`,
     "",
     "**builder**",
@@ -469,12 +481,14 @@ function formatStatusMarkdown(status: PlanBuildStatus): string {
     `- name: ${status.builder.agentName}`,
     `- model: ${status.builder.model}`,
     `- thinking: ${status.builder.thinking}`,
+    `- planner session id: ${status.builder.plannerSessionId}`,
     `- tmux session: ${status.builder.tmuxSession}`,
     `- session file: ${status.builder.sessionFile}`,
     `- log file: ${status.builder.logFile}`,
     `- launch script: ${status.builder.launchScript}`,
   );
 
+  if (status.builder.plannerSessionFile) lines.push(`- planner session file: ${status.builder.plannerSessionFile}`);
   if (status.builder.startedAt) lines.push(`- started: ${status.builder.startedAt}`);
   if (status.builder.lastStoppedAt) lines.push(`- last stopped: ${status.builder.lastStoppedAt}`);
   if (status.builder.alreadyRunning) lines.push(`- note: existing ${status.builder.agentName} session reused`);
@@ -508,7 +522,7 @@ function emitInfo(pi: ExtensionAPI, markdown: string, customType = BUILD_HANDOFF
 }
 
 async function startOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: PlanBuildSettings): Promise<PlanBuildStatus> {
-  const builder = await startBuilder(pi, ctx.cwd ?? process.cwd(), settings);
+  const builder = await startBuilder(pi, ctx.cwd ?? process.cwd(), settings, getPlannerSessionBinding(ctx));
   updateStatusLine(ctx, builder);
   return buildStatus("start", builder.message, builder, pi);
 }
@@ -516,7 +530,7 @@ async function startOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: Plan
 async function enableMode(pi: ExtensionAPI, ctx: ExtensionContext, settings: PlanBuildSettings): Promise<PlanBuildStatus> {
   const capturedTools = modeEnabled ? previousActiveTools : pi.getActiveTools();
   const capturedSelection = modeEnabled ? previousPlannerSelection : getCurrentPlannerSelection(pi, ctx);
-  const builder = await startBuilder(pi, ctx.cwd ?? process.cwd(), settings);
+  const builder = await startBuilder(pi, ctx.cwd ?? process.cwd(), settings, getPlannerSessionBinding(ctx));
   const configuredSelection = getConfiguredPlannerSelection(settings);
 
   modeEnabled = true;
@@ -546,7 +560,7 @@ async function enableMode(pi: ExtensionAPI, ctx: ExtensionContext, settings: Pla
 }
 
 async function disableMode(pi: ExtensionAPI, ctx: ExtensionContext, settings: PlanBuildSettings): Promise<PlanBuildStatus> {
-  const builder = await getBuilderStatus(pi, ctx.cwd ?? process.cwd(), settings);
+  const builder = await getBuilderStatus(pi, ctx.cwd ?? process.cwd(), settings, getPlannerSessionBinding(ctx));
   const toolsToRestore = previousActiveTools;
   const plannerToRestore = previousPlannerSelection;
 
@@ -576,7 +590,7 @@ async function disableMode(pi: ExtensionAPI, ctx: ExtensionContext, settings: Pl
 }
 
 async function statusOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: PlanBuildSettings): Promise<PlanBuildStatus> {
-  const builder = await getBuilderStatus(pi, ctx.cwd ?? process.cwd(), settings);
+  const builder = await getBuilderStatus(pi, ctx.cwd ?? process.cwd(), settings, getPlannerSessionBinding(ctx));
   updateStatusLine(ctx, builder);
   return buildStatus(
     "status",
@@ -587,7 +601,7 @@ async function statusOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: Pla
 }
 
 async function stopOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: PlanBuildSettings): Promise<PlanBuildStatus> {
-  const builder = await stopBuilder(pi, ctx.cwd ?? process.cwd(), settings);
+  const builder = await stopBuilder(pi, ctx.cwd ?? process.cwd(), settings, getPlannerSessionBinding(ctx));
   updateStatusLine(ctx, builder);
   const suffix = modeEnabled ? " Plan-build mode remains on." : "";
   return buildStatus("stop", `Builder ${builder.agentName} forcibly terminated.${suffix}`, builder, pi);
@@ -624,7 +638,7 @@ function buildHandoffText(ctx: ExtensionContext, extraInstructions: string): str
 
   const lines = [
     `Planner handoff from session ${ctx.sessionManager.getSessionId()} in ${ctx.cwd ?? process.cwd()}.`,
-    `Implement the agreed plan in the persistent builder session. The planner remains read-only.`,
+    `Implement the agreed plan in the builder dedicated to this planner session. The planner remains read-only.`,
     "",
   ];
 
@@ -694,6 +708,7 @@ function formatBuildQueuedMarkdown(builder: BuilderStatus, queuedPath: string, r
     `**build delegated**`,
     "",
     `- planner mode: ${modeEnabled ? "on" : "off"}`,
+    `- planner session id: ${builder.plannerSessionId}`,
     `- builder name: ${builder.agentName}`,
     `- builder running: ${builder.running ? "yes" : "no"}`,
     `- builder session: ${builder.tmuxSession}`,
@@ -723,9 +738,10 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
     return;
   }
 
-  let builder = await getBuilderStatus(pi, ctx.cwd ?? process.cwd(), settings);
+  const plannerSession = getPlannerSessionBinding(ctx);
+  let builder = await getBuilderStatus(pi, ctx.cwd ?? process.cwd(), settings, plannerSession);
   if (!builder.running) {
-    builder = await startBuilder(pi, ctx.cwd ?? process.cwd(), settings);
+    builder = await startBuilder(pi, ctx.cwd ?? process.cwd(), settings, plannerSession);
     updateStatusLine(ctx, builder);
   }
 
@@ -738,12 +754,12 @@ export default function planBuildExtension(pi: ExtensionAPI) {
     name: TOOL_NAME,
     label: "Plan Build",
     description:
-      "Manage planner/build mode and the persistent builder session configured by plan-build-settings.yaml. " +
+      "Manage planner/build mode and the planner-session-scoped builder configured by plan-build-settings.yaml. " +
       "Actions: start, on, status, off, stop. " +
-      "start spawns the builder without changing planner mode; on enables read-only planner mode, switches the planner to the configured plan model, and starts the builder if needed; off restores normal planner behavior and restores the previous planner model/thinking; stop forcibly terminates the builder session.",
+      "start spawns the current planner session's builder without changing planner mode; on enables read-only planner mode, switches the planner to the configured plan model, and starts the builder if needed; off restores normal planner behavior and restores the previous planner model/thinking; stop forcibly terminates the current planner session's builder.",
     parameters: Type.Object({
       action: StringEnum(["start", "on", "status", "off", "stop"] as const, {
-        description: "Plan-build control action for planner mode and the configured builder session",
+        description: "Plan-build control action for planner mode and the current planner session's builder",
       }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -789,7 +805,7 @@ export default function planBuildExtension(pi: ExtensionAPI) {
   }
 
   pi.registerCommand("plan-build", {
-    description: "Control plan-build mode and the configured builder session: /plan-build [start|on|status|off|stop] (bare command toggles mode; on switches planner model, off restores it)",
+    description: "Control plan-build mode and the current planner session's builder: /plan-build [start|on|status|off|stop] (bare command toggles mode; on switches planner model, off restores it)",
     handler: async (args, ctx) =>
       handleControlCommand(args, ctx, "Usage: /plan-build [start|on|status|off|stop] (no args toggles mode)"),
   });
@@ -801,7 +817,7 @@ export default function planBuildExtension(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("build", {
-    description: "Delegate the latest planner context to the configured builder session. Does nothing when plan-build mode is off.",
+    description: "Delegate the latest planner context to the current planner session's builder. Does nothing when plan-build mode is off.",
     handler: async (args, ctx) => {
       try {
         await handleBuildDelegation(pi, ctx, args);
@@ -862,7 +878,7 @@ export default function planBuildExtension(pi: ExtensionAPI) {
       "- Do not use mutating bash commands.",
       "- Do not communicate with the builder through tools on your own.",
       "- Focus on understanding the codebase, producing plans, reviewing results, and preparing precise build instructions.",
-      "- When the user wants execution, they will run /build to delegate the current plan to the persistent builder session.",
+      "- When the user wants execution, they will run /build to delegate the current plan to the builder dedicated to this planner session.",
       "- Prefer concise builder handoff packets with: goal, relevant files, implementation steps, and validation.",
     ];
 
