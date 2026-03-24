@@ -337,7 +337,7 @@ function buildStartupPrompt(settings: PlanBuildSettings, plannerSession: Planner
     "Startup checklist:",
     "1. If the pi_messenger tool is available, call pi_messenger({ action: \"join\" }).",
     `2. If join succeeds, call pi_messenger({ action: "set_status", message: "${builderAgentName} ready" }).`,
-    "3. Reply with a short readiness note that states whether messenger join succeeded and that you are ready for build tasks.",
+    `3. Reply with a short readiness note that explicitly says you are paired with planner session ${plannerSession.sessionId}, whether messenger join succeeded, and that you are ready for build tasks.`,
     "4. Then wait for further instructions.",
     "",
     "Do not modify files during this startup handshake.",
@@ -355,6 +355,10 @@ async function writeRuntimeFiles(paths: Paths, settings: PlanBuildSettings, plan
   const builderAgentName = getBuilderAgentName(settings, plannerSession);
   const systemPrompt = buildSystemPrompt(settings, plannerSession);
   const startupPrompt = buildStartupPrompt(settings, plannerSession);
+  const startupBannerLines = [
+    `[plan-build] ${builderAgentName} paired with planner session ${plannerSession.sessionId}`,
+    ...(plannerSession.sessionFile ? [`[plan-build] planner session file ${plannerSession.sessionFile}`] : []),
+  ];
   const fullArgs = [
     ...invocation.argsPrefix,
     "--session",
@@ -371,6 +375,7 @@ async function writeRuntimeFiles(paths: Paths, settings: PlanBuildSettings, plan
     "#!/usr/bin/env bash",
     "set -euo pipefail",
     `cd ${shellQuote(paths.projectRoot)}`,
+    ...startupBannerLines.map((line) => `printf '%s\\n' ${shellQuote(line)}`),
     `exec env PI_AGENT_NAME=${shellQuote(builderAgentName)} PI_PLAN_MODE_ROLE=${shellQuote("builder")} PI_PLAN_BUILD_PLANNER_SESSION_ID=${shellQuote(plannerSession.sessionId)} ${shellQuote(invocation.command)} ${fullArgs
       .map(shellQuote)
       .join(" ")}`,
