@@ -47,7 +47,6 @@ Keep this list updated whenever importing or porting an extension/skill so sourc
 - `pi-extensions/pi-messenger/*` → `https://github.com/nicobailon/pi-messenger` @ `b75b394d5a2f` (`origin/main`)
 - `skills/pi-messenger-crew/SKILL.md` → `https://github.com/nicobailon/pi-messenger` @ `b75b394d5a2f` (`origin/main`)
 - `pi-extensions/pi-tasks/*` → `https://github.com/tintinweb/pi-tasks` @ `ccddf93` (`origin/master`)
-- `pi-extensions/pi-subagents/*` → `https://github.com/tintinweb/pi-subagents` @ `af012a9` (`origin/master`)
 - `pi-extensions/pi-supervisor/*` → `https://github.com/tintinweb/pi-supervisor` @ `a6d8a501bae9` (`origin/master`)
 - `pi-extensions/pi-schedule-prompt/*` → `https://github.com/tintinweb/pi-schedule-prompt` @ `ef7ab49f2988` (`origin/master`)
 

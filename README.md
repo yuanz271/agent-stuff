@@ -43,7 +43,6 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 * [`websearch`](pi-extensions/websearch) - Vertex AI Gemini grounded web search tool (`websearch`) that returns a concise summary and source URLs from grounding metadata. Defaults to `gemini-2.5-flash`; `gemini-3-flash-preview` is a currently validated experimental override on the global endpoint.
 * [`session-stats`](pi-extensions/session-stats) - In-session observability panel: per-tool call counts, file timeline, turns, loops, model history. `/session-stats` command or `Ctrl+Alt+T`.
 * [`pi-tasks`](pi-extensions/pi-tasks) - Claude Code-style task tracking extension with task tools, widget, dependency graph, and optional subagent task execution (`/tasks` command).
-* [`pi-subagents`](pi-extensions/pi-subagents) - Claude Code-style autonomous sub-agent orchestration with `Agent`, `get_subagent_result`, and `steer_subagent` tools plus `/agents` UI.
 * [`pi-supervisor`](pi-extensions/pi-supervisor) - Outcome-focused supervisory overlay that monitors runs and injects steering via `/supervise`.
 * [`pi-schedule-prompt`](pi-extensions/pi-schedule-prompt) - Schedule one-shot or recurring future prompts with `schedule_prompt` and manage them via `/schedule-prompt`.
 * [`session-breakdown.ts`](pi-extensions/session-breakdown.ts) - TUI for 7/30/90-day session and cost analysis with usage graph.
