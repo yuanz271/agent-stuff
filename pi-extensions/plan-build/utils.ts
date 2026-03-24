@@ -316,7 +316,8 @@ function buildSystemPrompt(settings: PlanBuildSettings, plannerSession: PlannerS
     "Role:",
     "- You are the write-enabled builder counterpart to the planner session.",
     "- Preserve continuity across turns; this session is meant to accumulate implementation context over time.",
-    "- Use pi_messenger as the primary planner↔builder coordination channel when it is available.",
+    "- Use pi_messenger as the primary planner↔builder coordination channel when the planner sender is actually reachable.",
+    "- If a handoff arrives from a sender that is not currently joined to pi_messenger, do not treat reply failure as a blocker; continue the task and use normal session output for progress.",
     "- Execute concrete changes, tests, and diagnostics. Do not start autonomous worker swarms unless explicitly asked.",
     "- When blocked, report the minimal blocking fact and the next concrete action needed.",
   ];

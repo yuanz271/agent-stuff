@@ -5,7 +5,7 @@ import { Type } from "@sinclair/typebox";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   loadPlanBuildSettings,
   type PlanBuildSettings,
@@ -20,7 +20,7 @@ const TOOL_NAME = "plan_build";
 const STATE_ENTRY_TYPE = "plan-build-state";
 const CONTEXT_MESSAGE_TYPE = "plan-build-context";
 const BUILD_HANDOFF_MESSAGE_TYPE = "plan-build-handoff";
-const PLANNER_AGENT_NAME = "planner";
+const PLANNER_HANDOFF_SENDER_PREFIX = "plan-build";
 const MAX_CONTEXT_MESSAGE_CHARS = 4_000;
 const MUTATING_BASH_PATTERNS = [
   /\brm\b/i,
@@ -116,6 +116,11 @@ type ExtractedMessage = {
   role: "user" | "assistant";
   content: string;
   timestamp: number;
+};
+
+type PlannerMessengerSender = {
+  name: string;
+  registered: boolean;
 };
 
 type PlanBuildStatus = {
@@ -631,7 +636,65 @@ async function resolveCommandAction(raw: string): Promise<PlanBuildControlAction
   return modeEnabled ? "off" : "on";
 }
 
-function buildHandoffText(ctx: ExtensionContext, extraInstructions: string): string | null {
+function fallbackPlannerSenderName(ctx: ExtensionContext): string {
+  const shortSessionId = ctx.sessionManager.getSessionId().replace(/[^a-zA-Z0-9_-]+/g, "").slice(0, 8) || "planner";
+  return `${PLANNER_HANDOFF_SENDER_PREFIX}-${shortSessionId}`;
+}
+
+async function resolvePlannerMessengerSender(ctx: ExtensionContext): Promise<PlannerMessengerSender> {
+  const fallback: PlannerMessengerSender = {
+    name: fallbackPlannerSenderName(ctx),
+    registered: false,
+  };
+  const registryDir = join(process.env.PI_MESSENGER_DIR || join(homedir(), ".pi", "agent", "messenger"), "registry");
+
+  let files: string[];
+  try {
+    files = await fs.readdir(registryDir);
+  } catch {
+    return fallback;
+  }
+
+  const currentSessionId = ctx.sessionManager.getSessionId();
+  const currentPid = process.pid;
+  const currentCwd = resolve(ctx.cwd ?? process.cwd());
+  let pidMatch: string | undefined;
+
+  for (const file of files) {
+    if (!file.endsWith(".json")) continue;
+
+    try {
+      const parsed = JSON.parse(await fs.readFile(join(registryDir, file), "utf8")) as {
+        name?: unknown;
+        pid?: unknown;
+        sessionId?: unknown;
+        cwd?: unknown;
+      };
+      if (typeof parsed.name !== "string" || !parsed.name.trim()) continue;
+
+      const sameSession = parsed.sessionId === currentSessionId;
+      const samePid = parsed.pid === currentPid;
+      const sameCwd = typeof parsed.cwd === "string" && resolve(parsed.cwd) === currentCwd;
+
+      if (sameSession && samePid) {
+        return { name: parsed.name, registered: true };
+      }
+      if (sameSession || (samePid && sameCwd)) {
+        pidMatch ??= parsed.name;
+      }
+    } catch {
+      // ignore unreadable messenger registration entries
+    }
+  }
+
+  if (pidMatch) {
+    return { name: pidMatch, registered: true };
+  }
+
+  return fallback;
+}
+
+function buildHandoffText(ctx: ExtensionContext, extraInstructions: string, plannerSender: PlannerMessengerSender): string | null {
   const recent = getMessagesSinceLastUser(ctx);
   const trimmedExtra = extraInstructions.trim();
   if (recent.length === 0 && !trimmedExtra) return null;
@@ -639,6 +702,9 @@ function buildHandoffText(ctx: ExtensionContext, extraInstructions: string): str
   const lines = [
     `Planner handoff from session ${ctx.sessionManager.getSessionId()} in ${ctx.cwd ?? process.cwd()}.`,
     `Implement the agreed plan in the builder dedicated to this planner session. The planner remains read-only.`,
+    plannerSender.registered
+      ? `Planner messenger sender: ${plannerSender.name}.`
+      : `Planner messenger sender: ${plannerSender.name} (handoff-only; the planner is not currently joined to pi_messenger).`,
     "",
   ];
 
@@ -658,7 +724,10 @@ function buildHandoffText(ctx: ExtensionContext, extraInstructions: string): str
     "Execution expectations:",
     "- implement the requested change in the builder session",
     "- run the smallest relevant validation",
-    "- if blocked, report the minimal blocker and the next action needed",
+    plannerSender.registered
+      ? `- when useful, send concise progress or blocker updates to ${plannerSender.name} via pi_messenger`
+      : "- do not treat inability to reply via pi_messenger as a blocker; proceed with implementation and use normal session output for progress",
+    "- if blocked on the task itself, report the minimal blocker and the next action needed",
   );
 
   return lines.join("\n").trim();
@@ -667,6 +736,7 @@ function buildHandoffText(ctx: ExtensionContext, extraInstructions: string): str
 async function queueBuilderMessage(
   text: string,
   targetAgentName: string,
+  plannerSenderName: string,
 ): Promise<{ inboxPath: string; registrationVisible: boolean }> {
   const baseDir = process.env.PI_MESSENGER_DIR || join(homedir(), ".pi", "agent", "messenger");
   const targetInbox = join(baseDir, "inbox", targetAgentName);
@@ -680,7 +750,7 @@ async function queueBuilderMessage(
     JSON.stringify(
       {
         id: randomUUID(),
-        from: PLANNER_AGENT_NAME,
+        from: plannerSenderName,
         to: targetAgentName,
         text,
         timestamp: new Date().toISOString(),
@@ -703,17 +773,28 @@ async function queueBuilderMessage(
   return { inboxPath, registrationVisible };
 }
 
-function formatBuildQueuedMarkdown(builder: BuilderStatus, queuedPath: string, registrationVisible: boolean): string {
+function formatBuildQueuedMarkdown(
+  builder: BuilderStatus,
+  queuedPath: string,
+  registrationVisible: boolean,
+  plannerSender: PlannerMessengerSender,
+): string {
   const lines = [
     `**build delegated**`,
     "",
     `- planner mode: ${modeEnabled ? "on" : "off"}`,
     `- planner session id: ${builder.plannerSessionId}`,
+    `- planner messenger sender: ${plannerSender.name}${plannerSender.registered ? " (registered)" : " (handoff-only; planner not joined to pi_messenger)"}`,
     `- builder name: ${builder.agentName}`,
     `- builder running: ${builder.running ? "yes" : "no"}`,
     `- builder session: ${builder.tmuxSession}`,
     `- queued inbox file: ${queuedPath}`,
   ];
+
+  if (!plannerSender.registered) {
+    lines.push("- note: planner is not joined to pi_messenger, so builder replies through pi_messenger are currently unavailable; the builder should continue without treating that as a blocker.");
+    lines.push("- note: if you want bidirectional planner↔builder messaging, join the planner to pi_messenger before running /build.");
+  }
 
   if (!registrationVisible) {
     lines.push(`- note: builder messenger registration is not visible yet; the message is queued and will be processed once ${builder.agentName} joins messenger.`);
@@ -732,7 +813,8 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
   }
 
   const { settings } = await refreshSettings(ctx.cwd ?? process.cwd());
-  const handoff = buildHandoffText(ctx, args);
+  const plannerSender = await resolvePlannerMessengerSender(ctx);
+  const handoff = buildHandoffText(ctx, args, plannerSender);
   if (!handoff) {
     ctx.hasUI && ctx.ui.notify("No recent planner context found. Ask the planner first or pass explicit instructions to /build.", "error");
     return;
@@ -745,8 +827,8 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
     updateStatusLine(ctx, builder);
   }
 
-  const queued = await queueBuilderMessage(handoff, builder.agentName);
-  emitInfo(pi, formatBuildQueuedMarkdown(builder, queued.inboxPath, queued.registrationVisible), BUILD_HANDOFF_MESSAGE_TYPE);
+  const queued = await queueBuilderMessage(handoff, builder.agentName, plannerSender.name);
+  emitInfo(pi, formatBuildQueuedMarkdown(builder, queued.inboxPath, queued.registrationVisible, plannerSender), BUILD_HANDOFF_MESSAGE_TYPE);
 }
 
 export default function planBuildExtension(pi: ExtensionAPI) {
