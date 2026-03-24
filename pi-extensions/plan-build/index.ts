@@ -9,11 +9,23 @@ const TOOL_NAME = "plan_build";
 
 function resolveExplicitCommandAction(raw: string): PlanBuildAction | null {
   const value = raw.trim().toLowerCase();
-  if (value === "") return "status";
   if (value === "status") return "status";
   if (value === "start") return "start";
   if (value === "stop") return "stop";
   return null;
+}
+
+async function resolveCommandAction(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  raw: string,
+): Promise<PlanBuildAction | null> {
+  const explicit = resolveExplicitCommandAction(raw);
+  if (explicit) return explicit;
+  if (raw.trim() !== "") return null;
+
+  const status = await getBuilderStatus(pi, ctx.cwd ?? process.cwd());
+  return status.running ? "stop" : "start";
 }
 
 function renderSummary(status: Awaited<ReturnType<typeof getBuilderStatus>>): string {
@@ -109,15 +121,19 @@ export default function planBuildExtension(pi: ExtensionAPI) {
   }
 
   pi.registerCommand("plan-build", {
-    description: `Manage the persistent builder session ${BUILDER_AGENT_NAME}: /plan-build [start|status|stop]`,
+    description: `Manage the persistent builder session ${BUILDER_AGENT_NAME}: /plan-build [start|status|stop] (bare command toggles)`,
     handler: async (args, ctx) =>
-      handleCommand(args, ctx, "Usage: /plan-build [start|status|stop]", async (value) => resolveExplicitCommandAction(value)),
+      handleCommand(args, ctx, "Usage: /plan-build [start|status|stop] (no args toggles)", (value, commandCtx) =>
+        resolveCommandAction(pi, commandCtx, value),
+      ),
   });
 
   pi.registerCommand("pb", {
-    description: "Alias for /plan-build",
+    description: "Alias for /plan-build (bare command toggles)",
     handler: async (args, ctx) =>
-      handleCommand(args, ctx, "Usage: /pb [start|status|stop]", async (value) => resolveExplicitCommandAction(value)),
+      handleCommand(args, ctx, "Usage: /pb [start|status|stop] (no args toggles)", (value, commandCtx) =>
+        resolveCommandAction(pi, commandCtx, value),
+      ),
   });
 
   pi.on("session_start", async (_event, ctx) => {
