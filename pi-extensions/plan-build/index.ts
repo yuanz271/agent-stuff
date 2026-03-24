@@ -612,12 +612,6 @@ export default function planBuildExtension(pi: ExtensionAPI) {
       handleControlCommand(args, ctx, "Usage: /plan [start|on|status|off|stop] (no args toggles mode)"),
   });
 
-  pi.registerCommand("pb", {
-    description: "Alias for /plan-build (bare command toggles mode)",
-    handler: async (args, ctx) =>
-      handleControlCommand(args, ctx, "Usage: /pb [start|on|status|off|stop] (no args toggles mode)"),
-  });
-
   pi.registerCommand("build", {
     description: `Delegate the latest planner context to ${BUILDER_AGENT_NAME}. Does nothing when plan-build mode is off.`,
     handler: async (args, ctx) => {
