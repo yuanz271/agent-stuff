@@ -15,7 +15,7 @@ function normalizeAction(raw: string): PlanModeAction | null {
 }
 
 function renderSummary(status: Awaited<ReturnType<typeof getBuilderStatus>>): string {
-  return status.running ? `B:on (${status.tmuxSession})` : "B:off";
+  return status.running ? `${BUILDER_AGENT_NAME}:on (${status.tmuxSession})` : `${BUILDER_AGENT_NAME}:off`;
 }
 
 function updateStatusLine(ctx: ExtensionContext, status: Awaited<ReturnType<typeof getBuilderStatus>>): void {
@@ -51,10 +51,10 @@ export default function planModeExtension(pi: ExtensionAPI) {
     description:
       `Manage the persistent builder session ${BUILDER_AGENT_NAME} for planner→builder workflows. ` +
       `Actions: start, status, stop. start launches a detached tmux-backed Pi session pinned to ${BUILDER_AGENT_NAME} ` +
-      `with fixed session/model invariants; communication should happen via pi_messenger once B is running.`,
+      `with fixed session/model invariants; communication should happen via pi_messenger once ${BUILDER_AGENT_NAME} is running.`,
     parameters: Type.Object({
       action: StringEnum(["start", "status", "stop"] as const, {
-        description: "Lifecycle action to perform for builder B",
+        description: `Lifecycle action to perform for builder ${BUILDER_AGENT_NAME}`,
       }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -94,7 +94,7 @@ export default function planModeExtension(pi: ExtensionAPI) {
   }
 
   pi.registerCommand("plan-mode", {
-    description: "Manage the persistent builder session B: /plan-mode [start|status|stop]",
+    description: `Manage the persistent builder session ${BUILDER_AGENT_NAME}: /plan-mode [start|status|stop]`,
     handler: async (args, ctx) => handleCommand(args, ctx, "Usage: /plan-mode [start|status|stop]"),
   });
 

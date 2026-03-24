@@ -4,7 +4,7 @@ import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
-export const BUILDER_AGENT_NAME = "B";
+export const BUILDER_AGENT_NAME = "builder";
 export const BUILDER_MODEL = "openai/gpt-5.4:xhigh";
 const STATE_VERSION = 1;
 const CAPTURE_LINES = 40;
@@ -220,7 +220,7 @@ async function collectWarnings(paths: Paths): Promise<string[]> {
 
     if (regCwd && resolve(regCwd) !== resolve(paths.projectRoot) && regPid && isProcessAlive(regPid)) {
       warnings.push(
-        `pi_messenger name \"${BUILDER_AGENT_NAME}\" already appears active in another project (${regCwd}, PID ${regPid}). Startup can still succeed, but messenger join in B may fail until that registration is gone.`,
+        `pi_messenger name \"${BUILDER_AGENT_NAME}\" already appears active in another project (${regCwd}, PID ${regPid}). Startup can still succeed, but messenger join in ${BUILDER_AGENT_NAME} may fail until that registration is gone.`,
       );
     }
   } catch {
@@ -333,18 +333,19 @@ function parseNewSessionMetadata(stdout: string): { sessionId?: string; windowId
   };
 }
 
-function withStateOverrides(state: BuilderState, patch: Partial<BuilderState>): BuilderState {
+function withStateOverrides(paths: Paths, state: BuilderState | null, patch: Partial<BuilderState>): BuilderState {
   return {
-    ...state,
+    ...baseState(paths),
+    ...(state ?? {}),
     ...patch,
     version: STATE_VERSION,
-    projectRoot: state.projectRoot,
-    tmuxSession: state.tmuxSession,
-    sessionFile: state.sessionFile,
-    logFile: state.logFile,
-    launchScript: state.launchScript,
-    systemPromptFile: state.systemPromptFile,
-    startupPromptFile: state.startupPromptFile,
+    projectRoot: paths.projectRoot,
+    tmuxSession: paths.tmuxSession,
+    sessionFile: paths.sessionFile,
+    logFile: paths.logFile,
+    launchScript: paths.launchScript,
+    systemPromptFile: paths.systemPromptFile,
+    startupPromptFile: paths.startupPromptFile,
     agentName: BUILDER_AGENT_NAME,
     model: BUILDER_MODEL,
   };
@@ -354,19 +355,21 @@ async function resolveState(pi: ExtensionAPI, cwd: string): Promise<{ paths: Pat
   const projectRoot = await resolveProjectRoot(pi, cwd);
   const paths = buildPaths(projectRoot);
   const existing = await loadState(paths.stateFile);
-  const state = existing ? withStateOverrides(existing, {}) : baseState(paths);
+  const state = withStateOverrides(paths, existing, {});
   const warnings = await collectWarnings(paths);
   return { paths, state, warnings };
 }
 
 function describeAction(action: PlanModeAction, running: boolean, alreadyRunning?: boolean): string {
   if (action === "start") {
-    return alreadyRunning ? "Builder B is already running." : "Started builder B in a detached tmux session.";
+    return alreadyRunning
+      ? `Builder ${BUILDER_AGENT_NAME} is already running.`
+      : `Started builder ${BUILDER_AGENT_NAME} in a detached tmux session.`;
   }
   if (action === "stop") {
-    return running ? "Builder B is still running." : "Stopped builder B.";
+    return running ? `Builder ${BUILDER_AGENT_NAME} is still running.` : `Stopped builder ${BUILDER_AGENT_NAME}.`;
   }
-  return running ? "Builder B is running." : "Builder B is not running.";
+  return running ? `Builder ${BUILDER_AGENT_NAME} is running.` : `Builder ${BUILDER_AGENT_NAME} is not running.`;
 }
 
 async function buildStatus(pi: ExtensionAPI, cwd: string, action: PlanModeAction, state: BuilderState, warnings: string[], alreadyRunning?: boolean): Promise<BuilderStatus> {
@@ -432,7 +435,7 @@ export async function startBuilder(pi: ExtensionAPI, cwd: string): Promise<Build
   }
 
   const metadata = parseNewSessionMetadata(started.stdout);
-  const nextState = withStateOverrides(state, {
+  const nextState = withStateOverrides(paths, state, {
     tmuxSessionId: metadata.sessionId,
     tmuxWindowId: metadata.windowId,
     tmuxPaneId: metadata.paneId,
@@ -452,7 +455,7 @@ export async function startBuilder(pi: ExtensionAPI, cwd: string): Promise<Build
     nextState,
     [
       ...warnings,
-      "Startup is asynchronous. Once B reports ready, send work via pi_messenger({ action: \"send\", to: \"B\", message: \"...\" }).",
+      `Startup is asynchronous. Once ${BUILDER_AGENT_NAME} reports ready, send work via pi_messenger({ action: "send", to: "${BUILDER_AGENT_NAME}", message: "..." }).`,
     ],
   );
 }
@@ -473,7 +476,7 @@ export async function stopBuilder(pi: ExtensionAPI, cwd: string): Promise<Builde
     }
   }
 
-  const nextState = withStateOverrides(state, {
+  const nextState = withStateOverrides(paths, state, {
     lastStoppedAt: new Date().toISOString(),
   });
   await saveState(paths.stateFile, nextState);
@@ -496,11 +499,13 @@ export function formatStatusMarkdown(status: BuilderStatus): string {
 
   if (status.startedAt) lines.push(`- started: ${status.startedAt}`);
   if (status.lastStoppedAt) lines.push(`- last stopped: ${status.lastStoppedAt}`);
-  if (status.alreadyRunning) lines.push(`- note: existing B session reused`);
+  if (status.alreadyRunning) lines.push(`- note: existing ${BUILDER_AGENT_NAME} session reused`);
 
   lines.push("", "**planner → builder workflow**", "");
-  lines.push(`- Start A/B messaging in the planner with \`pi_messenger({ action: \"join\" })\` if needed.`);
-  lines.push(`- Send work to B with \`pi_messenger({ action: \"send\", to: \"B\", message: \"...\" })\`.`);
+  lines.push(`- Start planner/builder messaging in the planner with \`pi_messenger({ action: "join" })\` if needed.`);
+  lines.push(
+    `- Send work to ${BUILDER_AGENT_NAME} with \`pi_messenger({ action: "send", to: "${BUILDER_AGENT_NAME}", message: "..." })\`.`,
+  );
 
   if (status.warnings.length > 0) {
     lines.push("", "**warnings**", "");
