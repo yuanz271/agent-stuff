@@ -591,8 +591,11 @@ async function enableMode(pi: ExtensionAPI, ctx: ExtensionContext, settings: Pla
   );
 }
 
-async function disableMode(pi: ExtensionAPI, ctx: ExtensionContext, settings: PlanBuildSettings): Promise<PlanBuildStatus> {
-  const builder = await getBuilderStatus(pi, ctx.cwd ?? process.cwd(), settings, getPlannerSessionBinding(ctx));
+async function restorePlannerMode(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  builder: BuilderStatus,
+): Promise<string> {
   const toolsToRestore = previousActiveTools;
   const plannerToRestore = previousPlannerSelection;
 
@@ -607,11 +610,16 @@ async function disableMode(pi: ExtensionAPI, ctx: ExtensionContext, settings: Pl
   updateStatusLine(ctx, builder);
 
   const restoreTarget = formatPlannerModel(plannerToRestore);
-  const restoreMessage = restoreWarning
+  return restoreWarning
     ? `Planner model restore was skipped (${restoreWarning})`
     : restoreTarget
       ? `Planner restored to ${restoreTarget}${plannerToRestore?.thinkingLevel ? ` (${plannerToRestore.thinkingLevel})` : ""}`
       : "Planner returned to its prior model state";
+}
+
+async function disableMode(pi: ExtensionAPI, ctx: ExtensionContext, settings: PlanBuildSettings): Promise<PlanBuildStatus> {
+  const builder = await getBuilderStatus(pi, ctx.cwd ?? process.cwd(), settings, getPlannerSessionBinding(ctx));
+  const restoreMessage = await restorePlannerMode(pi, ctx, builder);
 
   return buildStatus(
     "off",
@@ -634,9 +642,19 @@ async function statusOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: Pla
 
 async function stopOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: PlanBuildSettings): Promise<PlanBuildStatus> {
   const builder = await stopBuilder(pi, ctx.cwd ?? process.cwd(), settings, getPlannerSessionBinding(ctx));
+
+  if (modeEnabled) {
+    const restoreMessage = await restorePlannerMode(pi, ctx, builder);
+    return buildStatus(
+      "stop",
+      `Builder ${builder.agentName} forcibly terminated. Plan-build mode disabled. ${restoreMessage}.`,
+      builder,
+      pi,
+    );
+  }
+
   updateStatusLine(ctx, builder);
-  const suffix = modeEnabled ? " Plan-build mode remains on." : "";
-  return buildStatus("stop", `Builder ${builder.agentName} forcibly terminated.${suffix}`, builder, pi);
+  return buildStatus("stop", `Builder ${builder.agentName} forcibly terminated.`, builder, pi);
 }
 
 async function runControlAction(pi: ExtensionAPI, ctx: ExtensionContext, action: PlanBuildControlAction): Promise<PlanBuildStatus> {
@@ -928,7 +946,7 @@ export default function planBuildExtension(pi: ExtensionAPI) {
     description:
       "Manage planner/build mode and the planner-session-scoped builder configured by plan-build-settings.yaml. " +
       "Actions: start, on, status, off, stop, message. " +
-      "start spawns the current planner session's builder without changing planner mode; on enables read-only planner mode, switches the planner to the configured plan model, and starts the builder if needed; off restores normal planner behavior and restores the previous planner model/thinking; stop forcibly terminates the current planner session's builder; message sends a direct paired planner↔builder note through plan-build's internal mailbox.",
+      "start spawns the current planner session's builder without changing planner mode; on enables read-only planner mode, switches the planner to the configured plan model, and starts the builder if needed; off restores normal planner behavior and restores the previous planner model/thinking while leaving the builder alone; stop forcibly terminates the current planner session's builder and, if plan-build mode is on, also returns the planner to normal mode; message sends a direct paired planner↔builder note through plan-build's internal mailbox.",
     parameters: Type.Object({
       action: StringEnum(["start", "on", "status", "off", "stop", "message"] as const, {
         description: "Plan-build control action for planner/build mode or direct paired messaging",
@@ -985,13 +1003,13 @@ export default function planBuildExtension(pi: ExtensionAPI) {
   }
 
   pi.registerCommand("plan-build", {
-    description: "Control plan-build mode and the current planner session's builder: /plan-build [start|on|status|off|stop] (bare command toggles mode; on switches planner model, off restores it)",
+    description: "Control plan-build mode and the current planner session's builder: /plan-build [start|on|status|off|stop] (bare command toggles mode; on switches planner model, off restores it, stop also exits plan-build mode if it is on)",
     handler: async (args, ctx) =>
       handleControlCommand(args, ctx, "Usage: /plan-build [start|on|status|off|stop] (no args toggles mode)"),
   });
 
   pi.registerCommand("plan", {
-    description: "Alias for /plan-build (bare command toggles mode; on switches planner model, off restores it)",
+    description: "Alias for /plan-build (bare command toggles mode; on switches planner model, off restores it, stop also exits plan-build mode if it is on)",
     handler: async (args, ctx) =>
       handleControlCommand(args, ctx, "Usage: /plan [start|on|status|off|stop] (no args toggles mode)"),
   });
