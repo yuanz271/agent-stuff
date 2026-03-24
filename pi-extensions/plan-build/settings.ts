@@ -95,7 +95,7 @@ export const DEFAULT_PLAN_BUILD_SETTINGS: PlanBuildSettings = {
   planner: {
     model: "anthropic/claude-opus-4-6",
     thinking: "high",
-    allowed_tools: ["read", "bash", "grep", "find", "ls", "websearch"],
+    allowed_tools: ["read", "grep", "find", "ls", "websearch"],
   },
   builder: {
     agent_name: "builder",

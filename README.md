@@ -68,7 +68,6 @@ planner:
   thinking: high
   allowed_tools:
     - read
-    - bash
     - grep
     - find
     - ls
