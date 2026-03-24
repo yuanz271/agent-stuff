@@ -7,7 +7,6 @@ import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
-  getDefaultPlanBuildSettingsLoadResult,
   loadPlanBuildSettings,
   type PlanBuildSettings,
   type PlanBuildSettingsLoadResult,
@@ -143,7 +142,7 @@ let modeEnabled = false;
 let previousActiveTools: string[] | undefined;
 let previousPlannerSelection: PlannerSelection | undefined;
 let lastObservedPlannerModel: { provider?: string; modelId?: string } = {};
-let currentSettings: PlanBuildSettingsLoadResult = getDefaultPlanBuildSettingsLoadResult();
+let currentSettings: PlanBuildSettingsLoadResult | undefined;
 
 function normalizeControlAction(raw: string): PlanBuildControlAction | null {
   const value = raw.trim().toLowerCase();
@@ -213,15 +212,22 @@ function isSafePlannerBash(command: string): boolean {
   return safe && !destructive;
 }
 
+function requireCurrentSettings(): PlanBuildSettingsLoadResult {
+  if (!currentSettings) {
+    throw new Error("plan-build settings are not loaded");
+  }
+  return currentSettings;
+}
+
 function builderAgentName(): string {
-  return currentSettings.settings.builder.agent_name;
+  return currentSettings?.settings.builder.agent_name ?? "builder";
 }
 
 function plannerConfig(): PlanBuildSettings["planner"] {
-  return currentSettings.settings.planner;
+  return requireCurrentSettings().settings.planner;
 }
 
-function getConfiguredPlannerSelection(settings: PlanBuildSettings = currentSettings.settings): PlannerSelection | undefined {
+function getConfiguredPlannerSelection(settings: PlanBuildSettings = requireCurrentSettings().settings): PlannerSelection | undefined {
   const ref = settings.planner.model.trim();
   const separator = ref.indexOf("/");
   if (separator <= 0 || separator >= ref.length - 1) return undefined;
@@ -365,7 +371,7 @@ async function restoreModeState(pi: ExtensionAPI, ctx: ExtensionContext): Promis
     }
   }
 
-  const builder = await getBuilderStatus(pi, ctx.cwd ?? process.cwd(), currentSettings.settings).catch(() => undefined);
+  const builder = await getBuilderStatus(pi, ctx.cwd ?? process.cwd(), requireCurrentSettings().settings).catch(() => undefined);
   if (builder) updateStatusLine(ctx, builder);
 }
 
@@ -406,6 +412,7 @@ function buildStatus(action: PlanBuildControlAction, message: string, builder: B
     modelId: lastObservedPlannerModel.modelId,
   });
   const previousPlannerModel = formatPlannerModel(previousPlannerSelection);
+  const loadedSettings = requireCurrentSettings();
 
   return {
     ok: true,
@@ -417,13 +424,13 @@ function buildStatus(action: PlanBuildControlAction, message: string, builder: B
     previousActiveTools,
     plannerModel,
     plannerThinkingLevel: pi.getThinkingLevel(),
-    configuredPlannerModel: currentSettings.settings.planner.model,
-    configuredPlannerThinkingLevel: currentSettings.settings.planner.thinking,
+    configuredPlannerModel: loadedSettings.settings.planner.model,
+    configuredPlannerThinkingLevel: loadedSettings.settings.planner.thinking,
     previousPlannerModel,
     previousPlannerThinkingLevel: previousPlannerSelection?.thinkingLevel,
-    settingsSources: currentSettings.stats.loaded_sources,
-    settingsWarnings: currentSettings.warnings,
-    settingsInvalidFieldCount: currentSettings.stats.invalid_field_count,
+    settingsSources: loadedSettings.stats.loaded_sources,
+    settingsWarnings: loadedSettings.warnings,
+    settingsInvalidFieldCount: loadedSettings.stats.invalid_field_count,
     builder,
   };
 }

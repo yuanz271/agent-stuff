@@ -92,62 +92,11 @@ const raw_builder_schema = z
 
 const thinking_level_schema = z.enum(THINKING_LEVELS);
 
-export const DEFAULT_PLAN_BUILD_SETTINGS: PlanBuildSettings = {
-  version: 1,
-  planner: {
-    model: "anthropic/claude-opus-4-6",
-    thinking: "high",
-    allowed_tools: ["read", "grep", "find", "ls", "websearch"],
-  },
-  builder: {
-    agent_name: "builder",
-    model: "openai/gpt-5.3-codex",
-    thinking: "off",
-  },
-};
-
 interface ParseSourceResult {
   partial: PartialPlanBuildSettings;
   warnings: string[];
   invalid_field_count: number;
   error?: string;
-}
-
-export function getDefaultPlanBuildSettings(): PlanBuildSettings {
-  return {
-    version: DEFAULT_PLAN_BUILD_SETTINGS.version,
-    planner: {
-      model: DEFAULT_PLAN_BUILD_SETTINGS.planner.model,
-      thinking: DEFAULT_PLAN_BUILD_SETTINGS.planner.thinking,
-      allowed_tools: [...DEFAULT_PLAN_BUILD_SETTINGS.planner.allowed_tools],
-      ...(DEFAULT_PLAN_BUILD_SETTINGS.planner.prompt_append
-        ? { prompt_append: DEFAULT_PLAN_BUILD_SETTINGS.planner.prompt_append }
-        : {}),
-    },
-    builder: {
-      agent_name: DEFAULT_PLAN_BUILD_SETTINGS.builder.agent_name,
-      model: DEFAULT_PLAN_BUILD_SETTINGS.builder.model,
-      thinking: DEFAULT_PLAN_BUILD_SETTINGS.builder.thinking,
-      ...(DEFAULT_PLAN_BUILD_SETTINGS.builder.system_prompt_append
-        ? { system_prompt_append: DEFAULT_PLAN_BUILD_SETTINGS.builder.system_prompt_append }
-        : {}),
-      ...(DEFAULT_PLAN_BUILD_SETTINGS.builder.startup_prompt_append
-        ? { startup_prompt_append: DEFAULT_PLAN_BUILD_SETTINGS.builder.startup_prompt_append }
-        : {}),
-    },
-  };
-}
-
-export function getDefaultPlanBuildSettingsLoadResult(): PlanBuildSettingsLoadResult {
-  return {
-    settings: getDefaultPlanBuildSettings(),
-    warnings: [],
-    stats: {
-      loaded_sources: [],
-      skipped_sources: [],
-      invalid_field_count: 0,
-    },
-  };
 }
 
 export async function loadPlanBuildSettings(cwd: string, importMetaUrl: string): Promise<PlanBuildSettingsLoadResult> {
@@ -167,24 +116,31 @@ export async function loadPlanBuildSettings(cwd: string, importMetaUrl: string):
       }
     : undefined;
 
-  const sources: PlanBuildSource[] = [bundled_source, global_source, ...(project_source ? [project_source] : [])];
-  let settings = getDefaultPlanBuildSettings();
-  const warnings: string[] = [];
-  const skipped_sources: Array<{ source: PlanBuildSource; reason: string }> = [];
-  const loaded_sources: PlanBuildSource[] = [];
-  let invalid_field_count = 0;
+  const bundled = await parseSettingsSource(bundled_source);
+  if (bundled.error) {
+    throw new Error(`required bundled plan-build settings failed (${bundled_source.path}): ${bundled.error}`);
+  }
 
-  for (const source of sources) {
+  let settings = finalizePlanBuildSettings(bundled.partial, `bundled plan-build settings (${bundled_source.path})`);
+  const warnings: string[] = [...bundled.warnings];
+  const skipped_sources: Array<{ source: PlanBuildSource; reason: string }> = [];
+  const loaded_sources: PlanBuildSource[] = [bundled_source];
+  let invalid_field_count = bundled.invalid_field_count;
+
+  for (const source of [global_source, ...(project_source ? [project_source] : [])]) {
     const parsed = await parseSettingsSource(source);
     if (parsed.error) {
       skipped_sources.push({ source, reason: parsed.error });
-      if (source.kind === "bundled" || parsed.error !== "file not found") {
+      if (parsed.error !== "file not found") {
         warnings.push(`${source.kind}: ${parsed.error}`);
       }
       continue;
     }
 
-    settings = mergePlanBuildSettings(settings, parsed.partial);
+    settings = finalizePlanBuildSettings(
+      mergePlanBuildSettings(settings, parsed.partial),
+      `plan-build settings after applying ${source.kind} overrides`,
+    );
     loaded_sources.push(source);
     warnings.push(...parsed.warnings);
     invalid_field_count += parsed.invalid_field_count;
@@ -471,6 +427,53 @@ function mergePlanBuildSettings(base: PlanBuildSettings, partial: PartialPlanBui
       thinking: partial.builder?.thinking ?? base.builder.thinking,
       system_prompt_append: builderHasSystemPromptAppend ? partial.builder?.system_prompt_append : base.builder.system_prompt_append,
       startup_prompt_append: builderHasStartupPromptAppend ? partial.builder?.startup_prompt_append : base.builder.startup_prompt_append,
+    },
+  };
+}
+
+function finalizePlanBuildSettings(settings: PartialPlanBuildSettings, context: string): PlanBuildSettings {
+  const missing: string[] = [];
+  const version = settings.version;
+  const planner = settings.planner;
+  const builder = settings.builder;
+
+  if (typeof version !== "number" || !Number.isFinite(version)) missing.push("version");
+  if (!planner?.model) missing.push("planner.model");
+  if (!planner?.thinking) missing.push("planner.thinking");
+  if (!Array.isArray(planner?.allowed_tools)) missing.push("planner.allowed_tools");
+  if (!builder?.agent_name) missing.push("builder.agent_name");
+  if (!builder?.model) missing.push("builder.model");
+  if (!builder?.thinking) missing.push("builder.thinking");
+
+  if (missing.length > 0) {
+    throw new Error(`${context} is incomplete: missing ${missing.join(", ")}`);
+  }
+
+  const completeVersion = version as number;
+  const completePlanner = planner as PlannerSettings;
+  const completeBuilder = builder as BuilderSettings;
+
+  if (!isProviderModelRef(completePlanner.model)) {
+    throw new Error(`${context} is invalid: planner.model must look like 'provider/modelId'`);
+  }
+  if (!isProviderModelRef(completeBuilder.model)) {
+    throw new Error(`${context} is invalid: builder.model must look like 'provider/modelId'`);
+  }
+
+  return {
+    version: completeVersion,
+    planner: {
+      model: completePlanner.model,
+      thinking: completePlanner.thinking,
+      allowed_tools: [...completePlanner.allowed_tools],
+      ...(completePlanner.prompt_append !== undefined ? { prompt_append: completePlanner.prompt_append } : {}),
+    },
+    builder: {
+      agent_name: completeBuilder.agent_name,
+      model: completeBuilder.model,
+      thinking: completeBuilder.thinking,
+      ...(completeBuilder.system_prompt_append !== undefined ? { system_prompt_append: completeBuilder.system_prompt_append } : {}),
+      ...(completeBuilder.startup_prompt_append !== undefined ? { startup_prompt_append: completeBuilder.startup_prompt_append } : {}),
     },
   };
 }
