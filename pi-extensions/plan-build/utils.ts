@@ -14,7 +14,7 @@ const ANSI_CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const ANSI_OSC_RE = /\x1b\][^\x07]*(?:\x07|\x1b\\)/g;
 const CONTROL_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
 
-export type PlanModeAction = "start" | "status" | "stop";
+export type PlanBuildAction = "start" | "status" | "stop";
 
 export type BuilderState = {
   version: number;
@@ -36,7 +36,7 @@ export type BuilderState = {
 
 export type BuilderStatus = {
   ok: true;
-  action: PlanModeAction;
+  action: PlanBuildAction;
   running: boolean;
   alreadyRunning?: boolean;
   message: string;
@@ -104,7 +104,7 @@ function tmuxSessionName(projectRoot: string): string {
 }
 
 function buildPaths(projectRoot: string): Paths {
-  const runtimeDir = join(projectRoot, ".pi", "plan-mode");
+  const runtimeDir = join(projectRoot, ".pi", "plan-build");
   const messengerDir = process.env.PI_MESSENGER_DIR || join(homedir(), ".pi", "agent", "messenger");
 
   return {
@@ -158,7 +158,7 @@ async function resolveProjectRoot(pi: ExtensionAPI, cwd: string): Promise<string
 async function ensureTmuxAvailable(pi: ExtensionAPI, cwd: string): Promise<void> {
   const result = await exec(pi, "tmux", ["-V"], cwd);
   if (result.code !== 0) {
-    throw new Error("tmux is required for plan-mode but was not found or is not working");
+    throw new Error("tmux is required for plan-build but was not found or is not working");
   }
 }
 
@@ -360,7 +360,7 @@ async function resolveState(pi: ExtensionAPI, cwd: string): Promise<{ paths: Pat
   return { paths, state, warnings };
 }
 
-function describeAction(action: PlanModeAction, running: boolean, alreadyRunning?: boolean): string {
+function describeAction(action: PlanBuildAction, running: boolean, alreadyRunning?: boolean): string {
   if (action === "start") {
     return alreadyRunning
       ? `Builder ${BUILDER_AGENT_NAME} is already running.`
@@ -372,7 +372,7 @@ function describeAction(action: PlanModeAction, running: boolean, alreadyRunning
   return running ? `Builder ${BUILDER_AGENT_NAME} is running.` : `Builder ${BUILDER_AGENT_NAME} is not running.`;
 }
 
-async function buildStatus(pi: ExtensionAPI, cwd: string, action: PlanModeAction, state: BuilderState, warnings: string[], alreadyRunning?: boolean): Promise<BuilderStatus> {
+async function buildStatus(pi: ExtensionAPI, cwd: string, action: PlanBuildAction, state: BuilderState, warnings: string[], alreadyRunning?: boolean): Promise<BuilderStatus> {
   const running = await tmuxSessionExists(pi, state.tmuxSession, cwd);
   const backlog = running ? await captureBacklog(pi, cwd, state) : await readTailFromFile(state.logFile);
 
@@ -485,7 +485,7 @@ export async function stopBuilder(pi: ExtensionAPI, cwd: string): Promise<Builde
 
 export function formatStatusMarkdown(status: BuilderStatus): string {
   const lines = [
-    `**plan-mode ${status.action}**`,
+    `**plan-build ${status.action}**`,
     "",
     `- message: ${status.message}`,
     `- running: ${status.running ? "yes" : "no"}`,

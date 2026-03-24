@@ -2,12 +2,12 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 import { StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
 import { BUILDER_AGENT_NAME, formatStatusMarkdown, getBuilderStatus, startBuilder, stopBuilder } from "./utils.js";
-import type { PlanModeAction } from "./utils.js";
+import type { PlanBuildAction } from "./utils.js";
 
-const STATUS_KEY = "plan-mode";
-const TOOL_NAME = "plan_mode";
+const STATUS_KEY = "plan-build";
+const TOOL_NAME = "plan_build";
 
-function normalizeAction(raw: string): PlanModeAction | null {
+function normalizeAction(raw: string): PlanBuildAction | null {
   const value = raw.trim().toLowerCase();
   if (value === "status") return "status";
   if (value === "start" || value === "on") return "start";
@@ -15,11 +15,15 @@ function normalizeAction(raw: string): PlanModeAction | null {
   return null;
 }
 
-function resolveExplicitCommandAction(raw: string): PlanModeAction | null {
+function resolveExplicitCommandAction(raw: string): PlanBuildAction | null {
   return raw.trim() === "" ? "status" : normalizeAction(raw);
 }
 
-async function resolvePlanCommandAction(pi: ExtensionAPI, ctx: ExtensionContext, raw: string): Promise<PlanModeAction | null> {
+async function resolvePlanCommandAction(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  raw: string,
+): Promise<PlanBuildAction | null> {
   const explicit = normalizeAction(raw);
   if (explicit) return explicit;
   if (raw.trim() !== "") return null;
@@ -44,7 +48,7 @@ function updateStatusLine(ctx: ExtensionContext, status: Awaited<ReturnType<type
 function emitInfo(pi: ExtensionAPI, markdown: string): void {
   pi.sendMessage(
     {
-      customType: "plan-mode",
+      customType: "plan-build",
       content: markdown,
       display: true,
     },
@@ -52,16 +56,16 @@ function emitInfo(pi: ExtensionAPI, markdown: string): void {
   );
 }
 
-async function runAction(pi: ExtensionAPI, ctx: ExtensionContext, action: PlanModeAction) {
+async function runAction(pi: ExtensionAPI, ctx: ExtensionContext, action: PlanBuildAction) {
   if (action === "start") return startBuilder(pi, ctx.cwd ?? process.cwd());
   if (action === "stop") return stopBuilder(pi, ctx.cwd ?? process.cwd());
   return getBuilderStatus(pi, ctx.cwd ?? process.cwd());
 }
 
-export default function planModeExtension(pi: ExtensionAPI) {
+export default function planBuildExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: TOOL_NAME,
-    label: "Plan Mode",
+    label: "Plan Build",
     description:
       `Manage the persistent builder session ${BUILDER_AGENT_NAME} for planner→builder workflows. ` +
       `Actions: start, status, stop. start launches a detached tmux-backed Pi session pinned to ${BUILDER_AGENT_NAME} ` +
@@ -90,13 +94,18 @@ export default function planModeExtension(pi: ExtensionAPI) {
     },
   });
 
-  async function handleCommand(args: string, ctx: ExtensionContext, usage: string, resolveAction: (args: string, ctx: ExtensionContext) => Promise<PlanModeAction | null>) {
-    let action: PlanModeAction | null = null;
+  async function handleCommand(
+    args: string,
+    ctx: ExtensionContext,
+    usage: string,
+    resolveAction: (args: string, ctx: ExtensionContext) => Promise<PlanBuildAction | null>,
+  ) {
+    let action: PlanBuildAction | null = null;
     try {
       action = await resolveAction(args, ctx);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      ctx.hasUI && ctx.ui.notify(`plan-mode failed: ${message}`, "error");
+      ctx.hasUI && ctx.ui.notify(`plan-build failed: ${message}`, "error");
       return;
     }
 
@@ -111,12 +120,12 @@ export default function planModeExtension(pi: ExtensionAPI) {
       emitInfo(pi, formatStatusMarkdown(status));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      ctx.hasUI && ctx.ui.notify(`plan-mode failed: ${message}`, "error");
+      ctx.hasUI && ctx.ui.notify(`plan-build failed: ${message}`, "error");
     }
   }
 
   pi.registerCommand("plan", {
-    description: `Toggle plan mode on/off for builder ${BUILDER_AGENT_NAME}, or pass start|stop|status`,
+    description: `Toggle plan-build on/off for builder ${BUILDER_AGENT_NAME}, or pass start|stop|status`,
     handler: async (args, ctx) =>
       handleCommand(
         args,
@@ -126,16 +135,16 @@ export default function planModeExtension(pi: ExtensionAPI) {
       ),
   });
 
-  pi.registerCommand("plan-mode", {
-    description: `Manage the persistent builder session ${BUILDER_AGENT_NAME}: /plan-mode [start|status|stop]`,
+  pi.registerCommand("plan-build", {
+    description: `Manage the persistent builder session ${BUILDER_AGENT_NAME}: /plan-build [start|status|stop]`,
     handler: async (args, ctx) =>
-      handleCommand(args, ctx, "Usage: /plan-mode [start|status|stop|on|off]", async (value) => resolveExplicitCommandAction(value)),
+      handleCommand(args, ctx, "Usage: /plan-build [start|status|stop|on|off]", async (value) => resolveExplicitCommandAction(value)),
   });
 
-  pi.registerCommand("pm", {
-    description: "Alias for /plan-mode",
+  pi.registerCommand("pb", {
+    description: "Alias for /plan-build",
     handler: async (args, ctx) =>
-      handleCommand(args, ctx, "Usage: /pm [start|status|stop|on|off]", async (value) => resolveExplicitCommandAction(value)),
+      handleCommand(args, ctx, "Usage: /pb [start|status|stop|on|off]", async (value) => resolveExplicitCommandAction(value)),
   });
 
   pi.on("session_start", async (_event, ctx) => {
