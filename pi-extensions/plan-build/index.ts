@@ -520,15 +520,8 @@ function formatBuildQueuedMarkdown(builder: BuilderStatus, queuedPath: string, r
   return lines.join("\n");
 }
 
-function parseBuildInput(text: string): string | undefined {
-  if (text === "/build") return "";
-  if (text.startsWith("/build ")) return text.slice(7);
-  return undefined;
-}
-
 async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, args: string): Promise<void> {
   if (!modeEnabled) {
-    ctx.hasUI && ctx.ui.notify("/build is only available when plan-build mode is on.", "error");
     return;
   }
   if (!ctx.isIdle() || ctx.hasPendingMessages()) {
@@ -619,20 +612,16 @@ export default function planBuildExtension(pi: ExtensionAPI) {
       handleControlCommand(args, ctx, "Usage: /pb [start|on|status|off|stop] (no args toggles mode)"),
   });
 
-  pi.on("input", async (event, ctx) => {
-    if (event.source === "extension") return { action: "continue" as const };
-
-    const buildArgs = parseBuildInput(event.text);
-    if (buildArgs === undefined) return { action: "continue" as const };
-
-    try {
-      await handleBuildDelegation(pi, ctx, buildArgs);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      ctx.hasUI && ctx.ui.notify(`build delegation failed: ${message}`, "error");
-    }
-
-    return { action: "handled" as const };
+  pi.registerCommand("build", {
+    description: `Delegate the latest planner context to ${BUILDER_AGENT_NAME}. Does nothing when plan-build mode is off.`,
+    handler: async (args, ctx) => {
+      try {
+        await handleBuildDelegation(pi, ctx, args);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.hasUI && ctx.ui.notify(`build delegation failed: ${message}`, "error");
+      }
+    },
   });
 
   pi.on("tool_call", async (event) => {
