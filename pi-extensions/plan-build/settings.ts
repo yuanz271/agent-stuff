@@ -101,7 +101,7 @@ export const DEFAULT_PLAN_BUILD_SETTINGS: PlanBuildSettings = {
   },
   builder: {
     agent_name: "builder",
-    model: "openai-codex/gpt-5.3-codex",
+    model: "openai/gpt-5.3-codex",
     thinking: "off",
   },
 };
