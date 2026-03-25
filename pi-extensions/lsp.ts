@@ -549,10 +549,10 @@ export default function lspExtension(pi: ExtensionAPI): void {
 		if (!target?.hasUI) return;
 		target.ui.setWidget("lsp-status", undefined);
 		if (queryInFlight > 0 || Date.now() < queryVisibleUntil) {
-			target.ui.setStatus("lsp", target.ui.theme.fg("warning", "LSP on"));
+			target.ui.setStatus("lsp", target.ui.theme.fg("accent", "LSP"));
 			return;
 		}
-		target.ui.setStatus("lsp", target.ui.theme.fg("dim", "LSP off"));
+		target.ui.setStatus("lsp", target.ui.theme.fg("dim", "LSP"));
 	}
 
 	async function getOrSpawnClient(key: string, server: LspServerConfig, root: string, ctx?: ExtensionContext): Promise<LspClient | null> {
