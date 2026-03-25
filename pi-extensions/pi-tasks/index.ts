@@ -14,15 +14,23 @@
  *   /tasks       — Interactive task management menu
  */
 
-import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
-import { TaskStore } from "./task-store.js";
-import { ProcessTracker } from "./process-tracker.js";
-import { TaskWidget, type UICtx } from "./ui/task-widget.js";
-import { loadTasksConfig } from "./tasks-config.js";
-import { openSettingsMenu } from "./ui/settings-menu.js";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
+import { AutoClearManager } from "./auto-clear.js";
+import { ProcessTracker } from "./process-tracker.js";
+import { TaskStore } from "./task-store.js";
+import { loadTasksConfig } from "./tasks-config.js";
+import { openSettingsMenu } from "./ui/settings-menu.js";
+import { TaskWidget, type UICtx } from "./ui/task-widget.js";
+
+// ---- Debug ----
+
+const DEBUG = !!process.env.PI_TASKS_DEBUG;
+function debug(...args: unknown[]) {
+  if (DEBUG) console.error("[pi-tasks]", ...args);
+}
 
 // ---- Helpers ----
 
@@ -35,6 +43,9 @@ const TASK_TOOL_NAMES = new Set(["TaskCreate", "TaskList", "TaskGet", "TaskUpdat
 
 /** How many turns without task tool usage before injecting a reminder. */
 const REMINDER_INTERVAL = 4;
+
+/** How many turns completed tasks linger before auto-clearing. */
+const AUTO_CLEAR_DELAY = 4;
 
 const SYSTEM_REMINDER = `<system-reminder>
 The task tools haven't been used recently. If you're working on tasks that would benefit from tracking progress, consider using TaskCreate to add new tasks and TaskUpdate to update task status (set to in_progress when starting, completed when done). Also consider cleaning up the task list if it has become stale. Only use these if relevant to the current work. This is just a gentle reminder - ignore if not applicable. Make sure that you NEVER mention this reminder to the user
@@ -74,39 +85,79 @@ export default function (pi: ExtensionAPI) {
   /** Maps agent IDs to task IDs for O(1) completion lookup. */
   const agentTaskMap = new Map<string, string>();
 
-  // ── Subagent extension presence detection ──
-  // Two paths: (1) listen for ready broadcast (subagents loads first),
-  //            (2) send ping on our init (tasks loads first).
-  let subagentsAvailable = false;
+  // ── Subagent RPC helpers ──
 
-  // Ping subagents extension — scoped reply channel, no filtering needed
-  const pingId = randomUUID();
-  const unsubPing = pi.events.on(`subagents:rpc:ping:reply:${pingId}`, () => {
-    subagentsAvailable = true;
-    unsubPing();
-  });
-  pi.events.emit("subagents:rpc:ping", { requestId: pingId });
+  /** RPC reply envelope — matches pi-mono's RpcResponse shape. */
+  type RpcReply<T = void> =
+    | { success: true; data?: T }
+    | { success: false; error: string };
 
-  // Also listen for ready broadcast (covers: subagents loads after us)
-  pi.events.on("subagents:ready", () => {
-    subagentsAvailable = true;
-    unsubPing();   // clean up ping listener if still pending
-  });
+  /** Call a subagents RPC method: emit request, wait for scoped reply, unwrap envelope. */
+  function rpcCall<T>(channel: string, params: Record<string, unknown>, timeoutMs: number): Promise<T> {
+    const requestId = randomUUID();
+    debug(`rpc:send ${channel}`, { requestId });
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        unsub();
+        debug(`rpc:timeout ${channel}`, { requestId });
+        reject(new Error(`${channel} timeout`));
+      }, timeoutMs);
+      const unsub = pi.events.on(`${channel}:reply:${requestId}`, (raw: unknown) => {
+        unsub(); clearTimeout(timer);
+        debug(`rpc:reply ${channel}`, { requestId, raw });
+        const reply = raw as RpcReply<T>;
+        if (reply.success) resolve(reply.data as T);
+        else reject(new Error(reply.error));
+      });
+      pi.events.emit(channel, { requestId, ...params });
+      debug(`rpc:emitted ${channel}`, { requestId });
+    });
+  }
 
   /** Spawn a subagent via pi.events RPC (requires @tintinweb/pi-subagents extension). */
   function spawnSubagent(type: string, prompt: string, options?: any): Promise<string> {
-    const requestId = randomUUID();
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { unsub(); reject(new Error("subagents:rpc:spawn timeout")); }, 30000);
-      const unsub = pi.events.on(`subagents:rpc:spawn:reply:${requestId}`, (p: unknown) => {
-        const { id, error } = p as { id?: string; error?: string };
-        unsub(); clearTimeout(timer);
-        if (error) reject(new Error(error));
-        else resolve(id!);
-      });
-      pi.events.emit("subagents:rpc:spawn", { requestId, type, prompt, options });
-    });
+    debug("spawn:call", { type, options: { ...options, prompt: undefined } });
+    return rpcCall<{ id: string }>("subagents:rpc:spawn", { type, prompt, options }, 30_000)
+      .then(d => { debug("spawn:ok", d); return d.id; });
   }
+
+  /** Stop a subagent via pi.events RPC (requires @tintinweb/pi-subagents extension). */
+  function stopSubagent(agentId: string): Promise<void> {
+    return rpcCall<void>("subagents:rpc:stop", { agentId }, 10_000).catch(() => {});
+  }
+
+  // ── Subagent extension presence & version detection ──
+  const PROTOCOL_VERSION = 2;
+  let subagentsAvailable = false;
+  let pendingWarning: string | undefined;
+
+  /** Ping subagents and check protocol version. Works with any handler version. */
+  function checkSubagentsVersion() {
+    const requestId = randomUUID();
+    const timer = setTimeout(() => { unsub(); }, 5_000);
+    const unsub = pi.events.on(`subagents:rpc:ping:reply:${requestId}`, (raw: unknown) => {
+      unsub(); clearTimeout(timer);
+      const remoteVersion = (raw as any)?.data?.version as number | undefined;
+      if (remoteVersion === undefined) {
+        pendingWarning =
+          "@tintinweb/pi-subagents is outdated — please update for task execution support.";
+      } else if (remoteVersion > PROTOCOL_VERSION) {
+        pendingWarning =
+          `@tintinweb/pi-tasks is outdated (protocol v${PROTOCOL_VERSION}, ` +
+          `pi-subagents has v${remoteVersion}) — please update for task execution support.`;
+      } else if (remoteVersion < PROTOCOL_VERSION) {
+        pendingWarning =
+          `@tintinweb/pi-subagents is outdated (protocol v${remoteVersion}, ` +
+          `pi-tasks has v${PROTOCOL_VERSION}) — please update for task execution support.`;
+      } else {
+        subagentsAvailable = true;
+      }
+    });
+    pi.events.emit("subagents:rpc:ping", { requestId });
+  }
+
+  checkSubagentsVersion();
+  pi.events.on("subagents:ready", () => checkSubagentsVersion());
 
   /** Build a prompt for a task being executed by a subagent. */
   function buildTaskPrompt(task: { id: string; subject: string; description: string }, additionalContext?: string): string {
@@ -115,6 +166,8 @@ export default function (pi: ExtensionAPI) {
     prompt += `\n\nComplete this task fully. Do not attempt to manage tasks yourself.`;
     return prompt;
   }
+
+  const autoClear = new AutoClearManager(() => store, () => cfg.autoClearCompleted ?? "on_list_complete", AUTO_CLEAR_DELAY);
 
   // ── Subagent completion listener ──
   // Listens for subagent lifecycle events to update task status and optionally cascade.
@@ -156,21 +209,29 @@ export default function (pi: ExtensionAPI) {
         }
       }
     }
+    autoClear.trackCompletion(task.id, currentTurn);
     widget.update();
   });
 
   // Failure → store error, revert to pending, don't cascade (branch stops)
+  // Intentional stop (status === "stopped") → mark completed, preserve partial result
   pi.events.on("subagents:failed", (data) => {
-    const { id, error, status } = data as { id: string; error?: string; status: string };
+    const { id, error, result, status } = data as { id: string; error?: string; result?: string; status: string };
     const taskId = agentTaskMap.get(id);
     if (!taskId) return;
     agentTaskMap.delete(id);
     const task = store.get(taskId);
     if (!task) return;
-    store.update(task.id, {
-      status: "pending",
-      metadata: { ...task.metadata, lastError: error || status },
-    });
+
+    if (status === "stopped") {
+      // Intentional stop — mark completed, preserve partial result
+      store.update(task.id, { status: "completed", metadata: { ...task.metadata, result: result || task.metadata?.result } });
+      autoClear.trackCompletion(task.id, currentTurn);
+    } else {
+      // Actual error — revert to pending
+      store.update(task.id, { status: "pending", metadata: { ...task.metadata, lastError: error || status } });
+      autoClear.resetBatchCountdown();
+    }
     widget.setActiveTask(task.id, false);
     widget.update();
   });
@@ -220,6 +281,7 @@ export default function (pi: ExtensionAPI) {
     latestCtx = ctx;
     widget.setUICtx(ctx.ui as UICtx);
     upgradeStoreIfNeeded(ctx);
+    if (autoClear.onTurnStart(currentTurn)) widget.update();
   });
 
   // ── Token usage tracking ──
@@ -265,14 +327,36 @@ export default function (pi: ExtensionAPI) {
     widget.setUICtx(ctx.ui as UICtx);
     upgradeStoreIfNeeded(ctx);
     showPersistedTasks();
+    if (pendingWarning) {
+      ctx.ui.notify(pendingWarning, "warning");
+      pendingWarning = undefined;
+    }
   });
 
-  // session_switch fires on resume (reason: "resume") — reload persisted tasks.
+  // session_switch fires on /new (reason: "new") and /resume (reason: "resume").
+  // On /new: reset all session-scoped state so the store switches to the new session file.
+  // On resume: reload persisted tasks from the existing session file.
   pi.on("session_switch" as any, async (event: any, ctx: ExtensionContext) => {
     latestCtx = ctx;
     widget.setUICtx(ctx.ui as UICtx);
+
+    const isResume = event?.reason === "resume";
+
+    // Reset session-scoped state for both /new and /resume
+    storeUpgraded = false;
+    persistedTasksShown = false;
+    currentTurn = 0;
+    lastTaskToolUseTurn = 0;
+    reminderInjectedThisCycle = false;
+    autoClear.reset();
+
+    // Memory mode has no file-backed store to switch — clear explicitly on /new
+    if (!isResume && taskScope === "memory") {
+      store.clearAll();
+    }
+
     upgradeStoreIfNeeded(ctx);
-    showPersistedTasks(event?.reason === "resume");
+    showPersistedTasks(isResume);
   });
 
   // Keep latestCtx fresh on every tool execution as well.
@@ -345,6 +429,7 @@ All tasks are created with status \`pending\`.
     }),
 
     execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      autoClear.resetBatchCountdown();
       const meta = params.metadata ?? {};
       if (params.agentType) meta.agentType = params.agentType;
       const task = store.create(params.subject, params.description, params.activeForm, Object.keys(meta).length > 0 ? meta : undefined);
@@ -468,10 +553,22 @@ Returns full task details:
       lines.push(`Description: ${desc}`);
 
       if (task.blockedBy.length > 0) {
-        lines.push(`Blocked by: ${task.blockedBy.map(id => "#" + id).join(", ")}`);
+        const openBlockers = task.blockedBy.filter(bid => {
+          const blocker = store.get(bid);
+          return blocker && blocker.status !== "completed";
+        });
+        if (openBlockers.length > 0) {
+          lines.push(`Blocked by: ${openBlockers.map(id => "#" + id).join(", ")}`);
+        }
       }
       if (task.blocks.length > 0) {
         lines.push(`Blocks: ${task.blocks.map(id => "#" + id).join(", ")}`);
+      }
+
+      // Show metadata if non-empty
+      const metaKeys = Object.keys(task.metadata);
+      if (metaKeys.length > 0) {
+        lines.push(`Metadata: ${JSON.stringify(task.metadata)}`);
       }
 
       return Promise.resolve(textResult(lines.join("\n")));
@@ -592,8 +689,12 @@ Set up task dependencies:
       // Update widget active task tracking
       if (fields.status === "in_progress") {
         widget.setActiveTask(taskId);
+        autoClear.resetBatchCountdown();
+      } else if (fields.status === "pending") {
+        autoClear.resetBatchCountdown();
       } else if (fields.status === "completed" || fields.status === "deleted") {
         widget.setActiveTask(taskId, false);
+        if (fields.status === "completed") autoClear.trackCompletion(taskId, currentTurn);
       }
 
       widget.update();
@@ -630,6 +731,39 @@ Set up task dependencies:
 
       const processOutput = tracker.getOutput(task_id);
       if (!processOutput) {
+        // No shell process — check if this is a subagent task
+        // Support both task IDs and agent IDs (resolve agent ID → task ID)
+        let resolvedId = task_id;
+        if (!store.get(resolvedId)) {
+          // Check if this is an agent ID mapped to a task
+          for (const [agentId, taskId] of agentTaskMap) {
+            if (agentId === task_id || agentId.startsWith(task_id)) { resolvedId = taskId; break; }
+          }
+        }
+        const task = store.get(resolvedId);
+        if (!task) throw new Error(`No task found with ID ${task_id}`);
+
+        if (task.metadata?.agentId) {
+          // Subagent task — wait for completion if blocking
+          if (block && task.status === "in_progress") {
+            await new Promise<void>((resolve) => {
+              const timer = setTimeout(() => { unsubOk(); unsubFail(); resolve(); }, timeout ?? 30000);
+              const cleanup = () => { clearTimeout(timer); resolve(); };
+              const unsubOk = pi.events.on("subagents:completed", (d: unknown) => {
+                if ((d as any).id === task.metadata?.agentId) { unsubOk(); unsubFail(); cleanup(); }
+              });
+              const unsubFail = pi.events.on("subagents:failed", (d: unknown) => {
+                if ((d as any).id === task.metadata?.agentId) { unsubOk(); unsubFail(); cleanup(); }
+              });
+              // Re-check in case status changed between the outer check and listener registration
+              const current = store.get(task_id);
+              if (current && current.status !== "in_progress") { unsubOk(); unsubFail(); cleanup(); }
+              signal?.addEventListener("abort", () => { unsubOk(); unsubFail(); cleanup(); }, { once: true });
+            });
+          }
+          const updated = store.get(task_id) ?? task;
+          return textResult(`Task #${task_id} [${updated.status}] — subagent ${task.metadata.agentId}`);
+        }
         throw new Error(`No background process for task ${task_id}`);
       }
 
@@ -671,10 +805,28 @@ Set up task dependencies:
 
       const stopped = await tracker.stop(taskId);
       if (!stopped) {
+        // No shell process — check if this is a subagent task
+        // Support both task IDs and agent IDs
+        let resolvedId = taskId;
+        if (!store.get(resolvedId)) {
+          for (const [agentId, tId] of agentTaskMap) {
+            if (agentId === taskId || agentId.startsWith(taskId)) { resolvedId = tId; break; }
+          }
+        }
+        const task = store.get(resolvedId);
+        if (task?.metadata?.agentId && task.status === "in_progress") {
+          store.update(taskId, { status: "completed" });
+          autoClear.trackCompletion(taskId, currentTurn);
+          await stopSubagent(task.metadata.agentId);
+          widget.setActiveTask(taskId, false);
+          widget.update();
+          return textResult(`Task #${taskId} stopped successfully`);
+        }
         throw new Error(`No running background process for task ${taskId}`);
       }
 
       store.update(taskId, { status: "completed" });
+      autoClear.trackCompletion(taskId, currentTurn);
       widget.setActiveTask(taskId, false);
       widget.update();
       return textResult(`Task #${taskId} stopped successfully`);
@@ -688,7 +840,7 @@ Set up task dependencies:
   pi.registerTool({
     name: "TaskExecute",
     label: "TaskExecute",
-    description: `Execute one or more tasks as subagents. Requires @tintinweb/pi-subagents extension.
+    description: `Execute one or more tasks as subagents.
 
 ## When to Use This Tool
 
@@ -702,6 +854,9 @@ Set up task dependencies:
 - **additional_context**: Extra context appended to each agent's prompt
 - **model**: Model override for agents (e.g., "sonnet", "haiku")
 - **max_turns**: Maximum turns per agent`,
+    promptGuidelines: [
+      "Never use the Agent tool for tasks launched via TaskExecute — agents are already running.",
+    ],
     parameters: Type.Object({
       task_ids: Type.Array(Type.String(), { description: "Task IDs to execute as subagents" }),
       additional_context: Type.Optional(Type.String({ description: "Extra context for agent prompts" })),
@@ -712,8 +867,8 @@ Set up task dependencies:
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
       if (!subagentsAvailable) {
         return textResult(
-          "TaskExecute requires the @tintinweb/pi-subagents extension to be loaded. " +
-          "Install and enable it, then try again."
+          "Subagent execution is currently unavailable. " +
+          "Ensure the @tintinweb/pi-subagents extension is loaded and try again."
         );
       }
 
@@ -759,6 +914,7 @@ Set up task dependencies:
           widget.setActiveTask(taskId);
           launched.push(`#${taskId} → agent ${agentId}`);
         } catch (err: any) {
+          debug(`spawn:error task=#${taskId}`, err);
           store.update(taskId, { status: "pending" });
           results.push(`#${taskId}: spawn failed — ${err.message}`);
         }
@@ -774,7 +930,12 @@ Set up task dependencies:
       widget.update();
 
       const lines: string[] = [];
-      if (launched.length > 0) lines.push(`Launched ${launched.length} agent(s):\n${launched.join("\n")}`);
+      if (launched.length > 0) {
+        lines.push(
+          `Launched ${launched.length} agent(s):\n${launched.join("\n")}\n` +
+          `Use TaskOutput to check progress. Do not spawn additional agents for these tasks.`
+        );
+      }
       if (results.length > 0) lines.push(`Skipped:\n${results.join("\n")}`);
       if (lines.length === 0) lines.push("No tasks to execute.");
 
@@ -880,6 +1041,7 @@ Set up task dependencies:
           return viewTasks();
         } else if (action === "✓ Complete") {
           store.update(taskId, { status: "completed" });
+          autoClear.trackCompletion(taskId, currentTurn);
           widget.setActiveTask(taskId, false);
           widget.update();
           return viewTasks();
@@ -893,7 +1055,7 @@ Set up task dependencies:
       };
 
       const settingsMenu = (): Promise<void> =>
-        openSettingsMenu(ui, cfg, mainMenu);
+        openSettingsMenu(ui, cfg, mainMenu, AUTO_CLEAR_DELAY);
 
       const createTask = async (): Promise<void> => {
         const subject = await ui.input("Task subject");
