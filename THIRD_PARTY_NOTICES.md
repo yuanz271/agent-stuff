@@ -25,14 +25,6 @@ Apache License 2.0 — same terms as stated in upstream `LICENSE`.
 
 MIT License — same terms as stated in upstream `package.json` (`"license": "MIT"`).
 
-## damage-control extension
-
-- **Source**: https://github.com/cagdotin/agents
-- **Included paths in this repo**:
-  - `pi-extensions/damage-control/*`
-- **Local customization note**: `pi-extensions/damage-control/matcher.ts` and `pi-extensions/damage-control/damage-control-rules.yaml` intentionally diverge from upstream.
-- **Upstream license note**: upstream `README.md` states MIT, but no root `LICENSE` file was present in the referenced repository at the time of import. Verify upstream licensing terms before redistribution.
-
 ## pi-tasks
 
 - **Source**: https://github.com/tintinweb/pi-tasks

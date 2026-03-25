@@ -7,6 +7,7 @@ All notable changes to agent-stuff are documented here.
 * Removed `pi-messenger` extension and `/pi-messenger-crew` skill.
 * Removed `pi-subagents` extension.
 * Removed `session-stats` extension.
+* Removed `damage-control` extension.
 * Added `plan-build` as a planner/builder mode controller with explicit `start` / `on` / `status` / `off` / `stop`, read-only planner mode, planner-model switching with restore on `off`, `/build` delegation to a persistent tmux-backed builder session, planner-session-scoped builders (different planner sessions no longer share a builder), startup output that shows the paired planner session, an internal session-scoped planner↔builder mailbox with direct `plan_build({ action: "message", ... })` messaging, `stop` semantics that also exit planner mode when the builder is explicitly stopped, layered settings via bundled/global/project `plan-build-settings.yaml` files, split builder `model`/`thinking` settings (with legacy `model: provider/id:thinking` shorthand still accepted), default planner settings that omit `bash` unless re-enabled in global/project overrides, and a default builder target of `openai/gpt-5.3-codex` with thinking `off`.
 * Removed `pi-autoresearch` extension and `/autoresearch-create` skill.
 * Added `pdf` skill for PDF processing (text/table extraction, merge/split/rotate, form filling, OCR, encryption, and PDF creation) with `uv run` inline script metadata.
