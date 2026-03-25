@@ -42,6 +42,7 @@ Keep this list updated whenever importing or porting an extension/skill so sourc
 - `pi-extensions/websearch/*` → original work, not ported from upstream
 - `pi-extensions/side-chat/*` → `https://github.com/nicobailon/pi-side-chat` @ `f1dba8bdb26e` (`origin/main`)
 - `pi-extensions/pi-tasks/*` → `https://github.com/tintinweb/pi-tasks` @ `46cca7a` (`origin/master`)
+- `pi-extensions/pi-subagents/*` → `https://github.com/tintinweb/pi-subagents` @ `2c8e1c1` (`origin/master`)
 - `pi-extensions/pi-supervisor/*` → `https://github.com/tintinweb/pi-supervisor` @ `a6d8a501bae9` (`origin/master`)
 - `pi-extensions/pi-schedule-prompt/*` → `https://github.com/tintinweb/pi-schedule-prompt` @ `ef7ab49f2988` (`origin/master`)
 
