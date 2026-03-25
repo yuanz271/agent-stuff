@@ -42,7 +42,6 @@ Keep this list updated whenever importing or porting an extension/skill so sourc
 - `pi-extensions/websearch/*` → original work, not ported from upstream
 - `pi-extensions/damage-control/*` → `https://github.com/cagdotin/agents` @ `d8974ff068b4` (`origin/master`)
 - Note: for `damage-control`, treat the upstream pin as provenance only. The local `pi-extensions/damage-control/matcher.ts` and bundled rules file `pi-extensions/damage-control/damage-control-rules.yaml` are intentionally customized and excluded from upstream parity decisions.
-- `pi-extensions/session-stats/*` → `https://github.com/cagdotin/agents` @ `d8974ff068b4` (`origin/master`)
 - `pi-extensions/side-chat/*` → `https://github.com/nicobailon/pi-side-chat` @ `f1dba8bdb26e` (`origin/main`)
 - `pi-extensions/pi-tasks/*` → `https://github.com/tintinweb/pi-tasks` @ `46cca7a` (`origin/master`)
 - `pi-extensions/pi-supervisor/*` → `https://github.com/tintinweb/pi-supervisor` @ `a6d8a501bae9` (`origin/master`)
