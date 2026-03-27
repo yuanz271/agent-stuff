@@ -292,6 +292,19 @@ export async function runAgent(
     session.setActiveToolsByName(activeTools);
   }
 
+  // Bind extensions so that session_start fires and extensions can initialize
+  // (e.g. loading credentials, setting up state). Placed after tool filtering
+  // so extension-provided skills/prompts from extendResourcesFromExtensions()
+  // respect the active tool set. All ExtensionBindings fields are optional.
+  await session.bindExtensions({
+    onError: (err) => {
+      options.onToolActivity?.({
+        type: "end",
+        toolName: `extension-error:${err.extensionPath}`,
+      });
+    },
+  });
+
   options.onSessionCreated?.(session);
 
   // Track turns for graceful max_turns enforcement
