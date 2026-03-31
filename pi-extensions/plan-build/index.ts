@@ -751,9 +751,20 @@ function pairRelayFingerprint(message: PairChannelMessage): string {
   return `${message.from}|${message.to}|${message.kind}|${message.plannerSessionId}|${message.text.replace(/\s+/g, " ").trim().toLowerCase()}`;
 }
 
+function isBuilderCompletionMessage(message: PairChannelMessage): boolean {
+  if (message.from !== "builder") return false;
+  if (message.kind !== "message") return false;
+  const normalized = message.text.replace(/\s+/g, " ").trim().toLowerCase();
+  if (normalized.startsWith("builder completion report")) return true;
+  const hasStatus = /\bstatus\s*:\s*(done|blocked)\b/i.test(message.text);
+  const hasFiles = /\bfiles\s+changed\s*:/i.test(message.text);
+  const hasValidation = /\bvalidation\s*:/i.test(message.text);
+  return hasStatus && hasFiles && hasValidation;
+}
+
 function maybeRelayBuilderMessageToUser(pi: ExtensionAPI, message: PairChannelMessage): void {
   if (currentPairRole() !== "planner") return;
-  if (message.from !== "builder") return;
+  if (!isBuilderCompletionMessage(message)) return;
 
   const now = Date.now();
   const fingerprint = pairRelayFingerprint(message);
@@ -766,7 +777,7 @@ function maybeRelayBuilderMessageToUser(pi: ExtensionAPI, message: PairChannelMe
   rt.lastBuilderRelayAtMs = now;
 
   const relayPrompt = [
-    "Builder sent an execution update.",
+    "Builder sent a completion update.",
     "Reply to the USER now with a concise status update.",
     "Include: (1) done/blocked, (2) files changed, (3) validation result, (4) next step.",
     "Do not ask the builder to repeat the same report unless critical information is missing.",
@@ -1248,8 +1259,6 @@ export default function planBuildExtension(pi: ExtensionAPI) {
   });
 
   pi.on("turn_end", async (_event, ctx) => {
-    await maybeAutoReportBuilderCompletion(pi, ctx).catch((err) => {
-      console.warn("[plan-build] auto completion report failed:", err);
-    });
+    await maybeAutoReportBuilderCompletion(pi, ctx);
   });
 }
