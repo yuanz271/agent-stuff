@@ -158,6 +158,7 @@ interface PlanBuildRuntime {
   pairInboxWatcher: FSWatcher | null;
   pairInboxPath: string | undefined;
   pairInboxDebounceTimer: ReturnType<typeof setTimeout> | null;
+  pairInboxPollTimer: ReturnType<typeof setInterval> | null;
   pairMessageProcessing: boolean;
   pairMessageNeedsRecheck: boolean;
   latestPairContext: ExtensionContext | undefined;
@@ -172,6 +173,7 @@ const rt: PlanBuildRuntime = {
   pairInboxWatcher: null,
   pairInboxPath: undefined,
   pairInboxDebounceTimer: null,
+  pairInboxPollTimer: null,
   pairMessageProcessing: false,
   pairMessageNeedsRecheck: false,
   latestPairContext: undefined,
@@ -796,6 +798,10 @@ function stopPairInboxWatcher(): void {
     clearTimeout(rt.pairInboxDebounceTimer);
     rt.pairInboxDebounceTimer = null;
   }
+  if (rt.pairInboxPollTimer) {
+    clearInterval(rt.pairInboxPollTimer);
+    rt.pairInboxPollTimer = null;
+  }
   if (rt.pairInboxWatcher) {
     rt.pairInboxWatcher.close();
     rt.pairInboxWatcher = null;
@@ -832,6 +838,16 @@ async function startPairInboxWatcher(pi: ExtensionAPI, ctx: ExtensionContext): P
   rt.pairInboxWatcher.on("error", () => {
     stopPairInboxWatcher();
   });
+
+  // Fallback polling: some environments can miss fs.watch events for directory writes.
+  // Keep a lightweight periodic scan so builder→planner messages are eventually delivered.
+  rt.pairInboxPollTimer = setInterval(() => {
+    if (rt.latestPairContext) {
+      void processPendingPairMessages(pi, rt.latestPairContext).catch((err) => {
+        console.warn("[plan-build] periodic pair inbox scan failed:", err);
+      });
+    }
+  }, 2_000);
 }
 
 async function queuePairedMessage(
@@ -913,7 +929,8 @@ function buildHandoffText(ctx: ExtensionContext, extraInstructions: string): str
     "Execution expectations:",
     "- implement the requested change in the builder session",
     "- run the smallest relevant validation",
-    '- use plan_build({ action: "message", message: "..." }) only for material updates, concrete questions, or blockers',
+    '- send exactly one completion message to the planner for this handoff via plan_build({ action: "message", message: "..." }) including status, files changed, and validation results',
+    '- additional planner messages are only for material blockers or concrete clarification questions',
     "- if blocked on the task itself, report the minimal blocker and the next action needed",
   );
 

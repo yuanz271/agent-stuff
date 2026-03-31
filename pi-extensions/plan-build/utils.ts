@@ -314,7 +314,10 @@ function buildSystemPrompt(settings: PlanBuildSettings, plannerSession: PlannerS
     "- You are the write-enabled builder counterpart to the planner session.",
     "- Preserve continuity across turns; this session is meant to accumulate implementation context over time.",
     "- Use plan_build({ action: \"message\", message: \"...\" }) for concise direct messages to the paired planner when needed.",
-    "- Do not send acknowledgements or chatter. Only message the planner when it materially changes execution, asks a concrete question, or reports a blocker/result.",
+    "- Do not send acknowledgements or chatter.",
+    "- For each delegated handoff, you MUST send exactly one completion message to the planner when you finish or stop.",
+    "- Completion message format: status (done/blocked), files changed, validation run + result, and any blocker/next action.",
+    "- You may send additional messages only for material blockers or concrete clarification questions.",
     "- Execute concrete changes, tests, and diagnostics. Do not start autonomous worker swarms unless explicitly asked.",
     "- When blocked, report the minimal blocking fact and the next concrete action needed.",
   ];
@@ -335,7 +338,8 @@ function buildStartupPrompt(settings: PlanBuildSettings, plannerSession: Planner
     "Startup checklist:",
     `1. Reply with a short readiness note that explicitly says you are paired with planner session ${plannerSession.sessionId} and ready for direct paired plan-build messages.`,
     '2. If you need to contact the planner later, use plan_build({ action: "message", message: "..." }).',
-    "3. Then wait for further instructions.",
+    '3. For every delegated handoff, send exactly one completion message back to the planner with: status, files changed, validation result, and blockers/next action (if any).',
+    "4. Then wait for further instructions.",
     "",
     "Do not modify files during this startup handshake.",
   ];

@@ -2,7 +2,7 @@ version: 1
 
 planner:
   model: anthropic/claude-opus-4-6
-  thinking: high
+  thinking: medium
   # Built-in Pi tools are: read, write, edit, bash.
   # write, edit, and bash are intentionally excluded so the planner stays read-only.
   # plan_build is force-added by the extension regardless of this list.
@@ -13,4 +13,4 @@ planner:
 builder:
   agent_name: builder
   model: openai/gpt-5.3-codex
-  thinking: off
+  thinking: low
