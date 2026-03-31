@@ -162,6 +162,12 @@ interface PlanBuildRuntime {
   pairMessageProcessing: boolean;
   pairMessageNeedsRecheck: boolean;
   latestPairContext: ExtensionContext | undefined;
+  pendingBuilderHandoff:
+    | { id: string; receivedAtMs: number; plannerSessionId: string }
+    | undefined;
+  lastOutboundPairMessageAtMs: number | undefined;
+  lastBuilderRelayFingerprint: string | undefined;
+  lastBuilderRelayAtMs: number | undefined;
 }
 
 const rt: PlanBuildRuntime = {
@@ -177,6 +183,10 @@ const rt: PlanBuildRuntime = {
   pairMessageProcessing: false,
   pairMessageNeedsRecheck: false,
   latestPairContext: undefined,
+  pendingBuilderHandoff: undefined,
+  lastOutboundPairMessageAtMs: undefined,
+  lastBuilderRelayFingerprint: undefined,
+  lastBuilderRelayAtMs: undefined,
 };
 
 function normalizeControlAction(raw: string): PlanBuildControlAction | null {
@@ -737,6 +747,37 @@ function formatIncomingPairMessage(message: PairChannelMessage): string {
   return [heading, "", `- planner session id: ${message.plannerSessionId}`, "", message.text].join("\n");
 }
 
+function pairRelayFingerprint(message: PairChannelMessage): string {
+  return `${message.from}|${message.to}|${message.kind}|${message.plannerSessionId}|${message.text.replace(/\s+/g, " ").trim().toLowerCase()}`;
+}
+
+function maybeRelayBuilderMessageToUser(pi: ExtensionAPI, message: PairChannelMessage): void {
+  if (currentPairRole() !== "planner") return;
+  if (message.from !== "builder") return;
+
+  const now = Date.now();
+  const fingerprint = pairRelayFingerprint(message);
+  const withinWindow = (rt.lastBuilderRelayAtMs ?? 0) > now - 60_000;
+  if (withinWindow && rt.lastBuilderRelayFingerprint === fingerprint) {
+    return;
+  }
+
+  rt.lastBuilderRelayFingerprint = fingerprint;
+  rt.lastBuilderRelayAtMs = now;
+
+  const relayPrompt = [
+    "Builder sent an execution update.",
+    "Reply to the USER now with a concise status update.",
+    "Include: (1) done/blocked, (2) files changed, (3) validation result, (4) next step.",
+    "Do not ask the builder to repeat the same report unless critical information is missing.",
+    "",
+    `Builder message (${message.kind}):`,
+    message.text,
+  ].join("\n");
+
+  pi.sendUserMessage(relayPrompt, { deliverAs: "followUp" });
+}
+
 function deliverPairMessage(pi: ExtensionAPI, message: PairChannelMessage): void {
   pi.sendMessage(
     {
@@ -747,6 +788,47 @@ function deliverPairMessage(pi: ExtensionAPI, message: PairChannelMessage): void
     },
     { triggerTurn: true, deliverAs: "steer" },
   );
+  maybeRelayBuilderMessageToUser(pi, message);
+}
+
+function latestAssistantText(ctx: ExtensionContext): string {
+  const branch = ctx.sessionManager.getBranch();
+  for (let i = branch.length - 1; i >= 0; i--) {
+    const entry = branch[i];
+    if (entry.type !== "message") continue;
+    const msg = entry.message;
+    if (!("role" in msg) || msg.role !== "assistant") continue;
+    const text = extractTextContent(msg.content).trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+async function maybeAutoReportBuilderCompletion(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+  if (currentPairRole() !== "builder") return;
+  const pending = rt.pendingBuilderHandoff;
+  if (!pending) return;
+
+  // Builder already sent a manual paired message for this handoff.
+  if ((rt.lastOutboundPairMessageAtMs ?? 0) >= pending.receivedAtMs) {
+    rt.pendingBuilderHandoff = undefined;
+    return;
+  }
+
+  const summary = latestAssistantText(ctx);
+  if (!summary) return;
+
+  const report = [
+    "Builder completion report (auto):",
+    "- status: done",
+    "- files changed: see latest builder response and diffs",
+    "- validation: see latest builder response",
+    "- details:",
+    truncate(summary, 3_000),
+  ].join("\n");
+
+  await queuePairedMessage(pi, ctx, report, "message");
+  rt.pendingBuilderHandoff = undefined;
 }
 
 async function processPendingPairMessages(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
@@ -782,6 +864,13 @@ async function processPendingPairMessages(pi: ExtensionAPI, ctx: ExtensionContex
       }
       // Delivery errors propagate so a valid message is never silently lost.
       deliverPairMessage(pi, parsed);
+      if (role === "builder" && parsed.kind === "handoff") {
+        rt.pendingBuilderHandoff = {
+          id: parsed.id,
+          receivedAtMs: Date.parse(parsed.timestamp) || Date.now(),
+          plannerSessionId: parsed.plannerSessionId,
+        };
+      }
       await fs.unlink(messagePath).catch(() => {});
     }
   } finally {
@@ -876,6 +965,7 @@ async function queuePairedMessage(
 
   const queuedPath = join(targetInboxPath, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`);
   await fs.writeFile(queuedPath, JSON.stringify(message, null, 2), "utf8");
+  rt.lastOutboundPairMessageAtMs = Date.now();
 
   return {
     queuedPath,
@@ -1155,5 +1245,11 @@ export default function planBuildExtension(pi: ExtensionAPI) {
   pi.on("session_tree", restore);
   pi.on("model_select", async (event) => {
     rt.lastObservedPlannerModel = { provider: event.model.provider, modelId: event.model.id };
+  });
+
+  pi.on("turn_end", async (_event, ctx) => {
+    await maybeAutoReportBuilderCompletion(pi, ctx).catch((err) => {
+      console.warn("[plan-build] auto completion report failed:", err);
+    });
   });
 }
