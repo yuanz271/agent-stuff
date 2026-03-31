@@ -22,6 +22,8 @@ const BUILD_HANDOFF_MESSAGE_TYPE = "plan-build-handoff";
 const PAIR_MESSAGE_TYPE = "plan-build-pair-message";
 const MAX_CONTEXT_MESSAGE_CHARS = 4_000;
 const MAX_HANDOFF_CHARS = 32_000;
+const BUILDER_RELAY_DEDUP_WINDOW_MS = 60_000;
+const BUILDER_AUTO_REPORT_SUMMARY_MAX_CHARS = 3_000;
 const MUTATING_BASH_PATTERNS = [
   /\brm\b/i,
   /\brmdir\b/i,
@@ -747,15 +749,20 @@ function formatIncomingPairMessage(message: PairChannelMessage): string {
   return [heading, "", `- planner session id: ${message.plannerSessionId}`, "", message.text].join("\n");
 }
 
+function normalizeWhitespaceLower(text: string): string {
+  return text.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
 function pairRelayFingerprint(message: PairChannelMessage): string {
-  return `${message.from}|${message.to}|${message.kind}|${message.plannerSessionId}|${message.text.replace(/\s+/g, " ").trim().toLowerCase()}`;
+  return `${message.from}|${message.to}|${message.kind}|${message.plannerSessionId}|${normalizeWhitespaceLower(message.text)}`;
 }
 
 function isBuilderCompletionMessage(message: PairChannelMessage): boolean {
-  if (message.from !== "builder") return false;
-  if (message.kind !== "message") return false;
-  const normalized = message.text.replace(/\s+/g, " ").trim().toLowerCase();
+  if (message.from !== "builder" || message.kind !== "message") return false;
+
+  const normalized = normalizeWhitespaceLower(message.text);
   if (normalized.startsWith("builder completion report")) return true;
+
   const hasStatus = /\bstatus\s*:\s*(done|blocked)\b/i.test(message.text);
   const hasFiles = /\bfiles\s+changed\s*:/i.test(message.text);
   const hasValidation = /\bvalidation\s*:/i.test(message.text);
@@ -768,7 +775,7 @@ function maybeRelayBuilderMessageToUser(pi: ExtensionAPI, message: PairChannelMe
 
   const now = Date.now();
   const fingerprint = pairRelayFingerprint(message);
-  const withinWindow = (rt.lastBuilderRelayAtMs ?? 0) > now - 60_000;
+  const withinWindow = (rt.lastBuilderRelayAtMs ?? 0) > now - BUILDER_RELAY_DEDUP_WINDOW_MS;
   if (withinWindow && rt.lastBuilderRelayFingerprint === fingerprint) {
     return;
   }
@@ -835,7 +842,7 @@ async function maybeAutoReportBuilderCompletion(pi: ExtensionAPI, ctx: Extension
     "- files changed: see latest builder response and diffs",
     "- validation: see latest builder response",
     "- details:",
-    truncate(summary, 3_000),
+    truncate(summary, BUILDER_AUTO_REPORT_SUMMARY_MAX_CHARS),
   ].join("\n");
 
   await queuePairedMessage(pi, ctx, report, "message");
