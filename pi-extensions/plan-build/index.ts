@@ -24,6 +24,7 @@ const MAX_CONTEXT_MESSAGE_CHARS = 4_000;
 const MAX_HANDOFF_CHARS = 32_000;
 const BUILDER_RELAY_DEDUP_WINDOW_MS = 60_000;
 const BUILDER_AUTO_REPORT_SUMMARY_MAX_CHARS = 3_000;
+const MAX_TRACKED_REPORTED_HANDOFF_IDS = 256;
 const MUTATING_BASH_PATTERNS = [
   /\brm\b/i,
   /\brmdir\b/i,
@@ -129,6 +130,7 @@ type PairChannelMessage = {
   timestamp: string;
   kind: "handoff" | "message";
   text: string;
+  handoffId?: string;
 };
 
 type PlanBuildStatus = {
@@ -170,6 +172,7 @@ interface PlanBuildRuntime {
   lastOutboundPairMessageAtMs: number | undefined;
   lastBuilderRelayFingerprint: string | undefined;
   lastBuilderRelayAtMs: number | undefined;
+  reportedBuilderHandoffIds: Set<string>;
 }
 
 const rt: PlanBuildRuntime = {
@@ -189,6 +192,7 @@ const rt: PlanBuildRuntime = {
   lastOutboundPairMessageAtMs: undefined,
   lastBuilderRelayFingerprint: undefined,
   lastBuilderRelayAtMs: undefined,
+  reportedBuilderHandoffIds: new Set<string>(),
 };
 
 function normalizeControlAction(raw: string): PlanBuildControlAction | null {
@@ -738,15 +742,36 @@ function isPairChannelMessage(value: unknown): value is PairChannelMessage {
     typeof message.plannerSessionId === "string" &&
     typeof message.timestamp === "string" &&
     (message.kind === "handoff" || message.kind === "message") &&
-    typeof message.text === "string"
+    typeof message.text === "string" &&
+    (message.handoffId === undefined || typeof message.handoffId === "string")
   );
+}
+
+function extractHandoffIdFromText(text: string): string | undefined {
+  const direct = text.match(/\bhandoff[_\s-]?id\s*:\s*([a-zA-Z0-9_-]+)/i);
+  if (direct?.[1]) return direct[1];
+  const bracketed = text.match(/\[handoff[_\s-]?id\s*=\s*([a-zA-Z0-9_-]+)\]/i);
+  if (bracketed?.[1]) return bracketed[1];
+  return undefined;
+}
+
+function getMessageHandoffId(message: PairChannelMessage): string | undefined {
+  return message.handoffId ?? extractHandoffIdFromText(message.text);
 }
 
 function formatIncomingPairMessage(message: PairChannelMessage): string {
   const heading = message.kind === "handoff"
     ? `**plan-build handoff from ${message.from}**`
     : `**plan-build message from ${message.from}**`;
-  return [heading, "", `- planner session id: ${message.plannerSessionId}`, "", message.text].join("\n");
+  const handoffId = getMessageHandoffId(message);
+  return [
+    heading,
+    "",
+    `- planner session id: ${message.plannerSessionId}`,
+    ...(handoffId ? [`- handoff id: ${handoffId}`] : []),
+    "",
+    message.text,
+  ].join("\n");
 }
 
 function normalizeWhitespaceLower(text: string): string {
@@ -754,7 +779,8 @@ function normalizeWhitespaceLower(text: string): string {
 }
 
 function pairRelayFingerprint(message: PairChannelMessage): string {
-  return `${message.from}|${message.to}|${message.kind}|${message.plannerSessionId}|${normalizeWhitespaceLower(message.text)}`;
+  const handoffId = getMessageHandoffId(message) ?? "";
+  return `${message.from}|${message.to}|${message.kind}|${message.plannerSessionId}|${handoffId}|${normalizeWhitespaceLower(message.text)}`;
 }
 
 function isBuilderCompletionMessage(message: PairChannelMessage): boolean {
@@ -773,6 +799,11 @@ function maybeRelayBuilderMessageToUser(pi: ExtensionAPI, message: PairChannelMe
   if (currentPairRole() !== "planner") return;
   if (!isBuilderCompletionMessage(message)) return;
 
+  const handoffId = getMessageHandoffId(message);
+  if (handoffId && rt.reportedBuilderHandoffIds.has(handoffId)) {
+    return;
+  }
+
   const now = Date.now();
   const fingerprint = pairRelayFingerprint(message);
   const withinWindow = (rt.lastBuilderRelayAtMs ?? 0) > now - BUILDER_RELAY_DEDUP_WINDOW_MS;
@@ -782,12 +813,20 @@ function maybeRelayBuilderMessageToUser(pi: ExtensionAPI, message: PairChannelMe
 
   rt.lastBuilderRelayFingerprint = fingerprint;
   rt.lastBuilderRelayAtMs = now;
+  if (handoffId) {
+    rt.reportedBuilderHandoffIds.add(handoffId);
+    if (rt.reportedBuilderHandoffIds.size > MAX_TRACKED_REPORTED_HANDOFF_IDS) {
+      const oldest = rt.reportedBuilderHandoffIds.values().next().value;
+      if (oldest) rt.reportedBuilderHandoffIds.delete(oldest);
+    }
+  }
 
   const relayPrompt = [
     "Builder sent a completion update.",
     "Reply to the USER now with a concise status update.",
     "Include: (1) done/blocked, (2) files changed, (3) validation result, (4) next step.",
     "Do not ask the builder to repeat the same report unless critical information is missing.",
+    ...(handoffId ? ["", `handoff_id: ${handoffId}`] : []),
     "",
     `Builder message (${message.kind}):`,
     message.text,
@@ -838,6 +877,7 @@ async function maybeAutoReportBuilderCompletion(pi: ExtensionAPI, ctx: Extension
 
   const report = [
     "Builder completion report (auto):",
+    `- handoff_id: ${pending.id}`,
     "- status: done",
     "- files changed: see latest builder response and diffs",
     "- validation: see latest builder response",
@@ -845,7 +885,7 @@ async function maybeAutoReportBuilderCompletion(pi: ExtensionAPI, ctx: Extension
     truncate(summary, BUILDER_AUTO_REPORT_SUMMARY_MAX_CHARS),
   ].join("\n");
 
-  await queuePairedMessage(pi, ctx, report, "message");
+  await queuePairedMessage(pi, ctx, report, "message", { handoffId: pending.id });
   rt.pendingBuilderHandoff = undefined;
 }
 
@@ -884,7 +924,7 @@ async function processPendingPairMessages(pi: ExtensionAPI, ctx: ExtensionContex
       deliverPairMessage(pi, parsed);
       if (role === "builder" && parsed.kind === "handoff") {
         rt.pendingBuilderHandoff = {
-          id: parsed.id,
+          id: getMessageHandoffId(parsed) ?? parsed.id,
           receivedAtMs: Date.parse(parsed.timestamp) || Date.now(),
           plannerSessionId: parsed.plannerSessionId,
         };
@@ -962,7 +1002,8 @@ async function queuePairedMessage(
   ctx: ExtensionContext,
   text: string,
   kind: PairChannelMessage["kind"],
-): Promise<{ queuedPath: string; plannerSessionId: string; to: PairRole }> {
+  opts?: { handoffId?: string },
+): Promise<{ queuedPath: string; plannerSessionId: string; to: PairRole; handoffId?: string }> {
   const trimmed = text.trim();
   if (!trimmed) {
     throw new Error("message text is required");
@@ -979,6 +1020,7 @@ async function queuePairedMessage(
     timestamp: new Date().toISOString(),
     kind,
     text: trimmed,
+    ...(opts?.handoffId ? { handoffId: opts.handoffId } : {}),
   };
 
   const queuedPath = join(targetInboxPath, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`);
@@ -989,6 +1031,7 @@ async function queuePairedMessage(
     queuedPath,
     plannerSessionId: plannerSession.sessionId,
     to: message.to,
+    handoffId: message.handoffId,
   };
 }
 
@@ -996,9 +1039,10 @@ async function sendPairMessageAction(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   rawMessage: string | undefined,
-): Promise<{ ok: true; action: "message"; role: PairRole; to: PairRole; plannerSessionId: string; queuedPath: string }> {
+): Promise<{ ok: true; action: "message"; role: PairRole; to: PairRole; plannerSessionId: string; queuedPath: string; handoffId?: string }> {
   const role = currentPairRole();
-  const queued = await queuePairedMessage(pi, ctx, rawMessage ?? "", "message");
+  const handoffId = role === "builder" ? rt.pendingBuilderHandoff?.id : undefined;
+  const queued = await queuePairedMessage(pi, ctx, rawMessage ?? "", "message", { handoffId });
   return {
     ok: true,
     action: "message",
@@ -1006,10 +1050,11 @@ async function sendPairMessageAction(
     to: queued.to,
     plannerSessionId: queued.plannerSessionId,
     queuedPath: queued.queuedPath,
+    handoffId: queued.handoffId,
   };
 }
 
-function buildHandoffText(ctx: ExtensionContext, extraInstructions: string): string | null {
+function buildHandoffText(ctx: ExtensionContext, extraInstructions: string, handoffId: string): string | null {
   const recent = getMessagesSinceLastUser(ctx);
   const trimmedExtra = extraInstructions.trim();
   if (recent.length === 0 && !trimmedExtra) return null;
@@ -1017,6 +1062,7 @@ function buildHandoffText(ctx: ExtensionContext, extraInstructions: string): str
   const lines = [
     `Planner handoff from session ${ctx.sessionManager.getSessionId()} in ${ctx.cwd ?? process.cwd()}.`,
     `Implement the agreed plan in the builder dedicated to this planner session. The planner remains read-only.`,
+    `handoff_id: ${handoffId}`,
     'Direct paired communication is available through plan_build({ action: "message", message: "..." }).',
     "",
   ];
@@ -1037,7 +1083,7 @@ function buildHandoffText(ctx: ExtensionContext, extraInstructions: string): str
     "Execution expectations:",
     "- implement the requested change in the builder session",
     "- run the smallest relevant validation",
-    '- send exactly one completion message to the planner for this handoff via plan_build({ action: "message", message: "..." }) including status, files changed, and validation results',
+    '- send exactly one completion message to the planner for this handoff via plan_build({ action: "message", message: "..." }) including handoff_id, status, files changed, and validation results',
     '- additional planner messages are only for material blockers or concrete clarification questions',
     "- if blocked on the task itself, report the minimal blocker and the next action needed",
   );
@@ -1046,7 +1092,7 @@ function buildHandoffText(ctx: ExtensionContext, extraInstructions: string): str
   return joined.length <= MAX_HANDOFF_CHARS ? joined : joined.slice(0, MAX_HANDOFF_CHARS - 1) + "…";
 }
 
-function formatBuildQueuedMarkdown(builder: BuilderStatus, queuedPath: string): string {
+function formatBuildQueuedMarkdown(builder: BuilderStatus, queuedPath: string, handoffId: string): string {
   const lines = [
     `**build delegated**`,
     "",
@@ -1055,6 +1101,7 @@ function formatBuildQueuedMarkdown(builder: BuilderStatus, queuedPath: string): 
     `- builder name: ${builder.agentName}`,
     `- builder running: ${builder.running ? "yes" : "no"}`,
     `- builder session: ${builder.tmuxSession}`,
+    `- handoff id: ${handoffId}`,
     `- queued pair-message file: ${queuedPath}`,
     `- paired transport: internal plan-build mailbox`,
   ];
@@ -1072,7 +1119,8 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
   }
 
   const { settings } = await refreshSettings(ctx.cwd ?? process.cwd());
-  const handoff = buildHandoffText(ctx, args);
+  const handoffId = randomUUID();
+  const handoff = buildHandoffText(ctx, args, handoffId);
   if (!handoff) {
     ctx.hasUI && ctx.ui.notify("No recent planner context found. Ask the planner first or pass explicit instructions to /build.", "error");
     return;
@@ -1085,8 +1133,8 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
     updateStatusLine(ctx, builder);
   }
 
-  const queued = await queuePairedMessage(pi, ctx, handoff, "handoff");
-  emitInfo(pi, formatBuildQueuedMarkdown(builder, queued.queuedPath), BUILD_HANDOFF_MESSAGE_TYPE);
+  const queued = await queuePairedMessage(pi, ctx, handoff, "handoff", { handoffId });
+  emitInfo(pi, formatBuildQueuedMarkdown(builder, queued.queuedPath, handoffId), BUILD_HANDOFF_MESSAGE_TYPE);
 }
 
 export default function planBuildExtension(pi: ExtensionAPI) {
