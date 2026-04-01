@@ -1135,6 +1135,68 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
   emitInfo(pi, formatBuildQueuedMarkdown(builder, queued.queuedPath, handoffId), BUILD_HANDOFF_MESSAGE_TYPE);
 }
 
+type BuilderInterruptState = {
+  tmuxSession: string;
+  tmuxPaneId?: string;
+  agentName?: string;
+};
+
+function isBuilderInterruptState(value: unknown): value is BuilderInterruptState {
+  if (typeof value !== "object" || value === null) return false;
+  const state = value as Record<string, unknown>;
+  return typeof state.tmuxSession === "string" && (state.tmuxPaneId === undefined || typeof state.tmuxPaneId === "string");
+}
+
+async function resolveBuilderInterruptState(pi: ExtensionAPI, ctx: ExtensionContext): Promise<BuilderInterruptState | null> {
+  if (!rt.modeEnabled || currentPairRole() !== "planner") return null;
+
+  const cwd = ctx.cwd ?? process.cwd();
+  const plannerSession = getPlannerSessionBinding(ctx);
+  const paths = await resolvePairChannelPaths(pi, cwd, plannerSession);
+  const statePath = join(paths.runtimeDir, "builder-state.json");
+
+  let raw: string;
+  try {
+    raw = await fs.readFile(statePath, "utf8");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ENOENT") return null;
+    throw new Error(`Failed to read builder state file ${statePath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  const parsed: unknown = JSON.parse(raw);
+  if (!isBuilderInterruptState(parsed)) {
+    throw new Error(`Invalid builder state file ${statePath}: missing tmuxSession`);
+  }
+
+  const hasSession = await pi.exec("tmux", ["has-session", "-t", parsed.tmuxSession], {
+    cwd,
+    timeout: 5_000,
+  });
+  if ((hasSession.code ?? 1) !== 0) return null;
+
+  return parsed;
+}
+
+async function interruptBuilderIfRunning(pi: ExtensionAPI, ctx: ExtensionContext): Promise<boolean> {
+  const state = await resolveBuilderInterruptState(pi, ctx);
+  if (!state) return false;
+
+  const cwd = ctx.cwd ?? process.cwd();
+  const target = state.tmuxPaneId?.trim() || `${state.tmuxSession}:0.0`;
+  const sent = await pi.exec("tmux", ["send-keys", "-t", target, "C-c"], {
+    cwd,
+    timeout: 5_000,
+  });
+  if ((sent.code ?? 1) !== 0) {
+    throw new Error(sent.stderr?.trim() || sent.stdout?.trim() || `Failed to interrupt builder pane ${target}`);
+  }
+
+  const agentName = state.agentName?.trim() || "builder";
+  ctx.hasUI && ctx.ui.notify(`Sent interrupt to ${agentName} (${target}).`, "warning");
+  return true;
+}
+
 export default function planBuildExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: TOOL_NAME,
@@ -1219,6 +1281,24 @@ export default function planBuildExtension(pi: ExtensionAPI) {
         const message = error instanceof Error ? error.message : String(error);
         ctx.hasUI && ctx.ui.notify(`build delegation failed: ${message}`, "error");
       }
+    },
+  });
+
+  pi.registerCommand("abort", {
+    description:
+      "Abort current planner turn, or when plan-build mode is on and builder is running, send Ctrl+C to the paired builder's active tmux pane.",
+    handler: async (_args, ctx) => {
+      try {
+        if (await interruptBuilderIfRunning(pi, ctx)) {
+          return;
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.hasUI && ctx.ui.notify(`builder interrupt failed during /abort: ${message}; aborting planner turn instead.`, "error");
+      }
+
+      // Always retain planner-side abort path, even if builder interrupt fails.
+      await ctx.abort();
     },
   });
 
