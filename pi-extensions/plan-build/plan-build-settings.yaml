@@ -4,10 +4,12 @@ planner:
   model: anthropic/claude-opus-4-6
   thinking: high
   # Built-in Pi tools are: read, write, edit, bash.
-  # write, edit, and bash are intentionally excluded so the planner stays read-only.
+  # write and edit stay excluded so the planner remains read-only.
+  # bash is enabled for read-only commands only; mutating commands are blocked by plan-build runtime checks.
   # plan_build is force-added by the extension regardless of this list.
   allowed_tools:
     - read
+    - bash
     - websearch
 
 builder:
