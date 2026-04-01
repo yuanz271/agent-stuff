@@ -1141,13 +1141,22 @@ type BuilderInterruptState = {
   agentName?: string;
 };
 
+type BuilderInterruptResolution = {
+  cwd: string;
+  state: BuilderInterruptState;
+};
+
 function isBuilderInterruptState(value: unknown): value is BuilderInterruptState {
   if (typeof value !== "object" || value === null) return false;
   const state = value as Record<string, unknown>;
   return typeof state.tmuxSession === "string" && (state.tmuxPaneId === undefined || typeof state.tmuxPaneId === "string");
 }
 
-async function resolveBuilderInterruptState(pi: ExtensionAPI, ctx: ExtensionContext): Promise<BuilderInterruptState | null> {
+function tmuxExecSucceeded(result: { code?: number | null }): boolean {
+  return (result.code ?? 1) === 0;
+}
+
+async function resolveBuilderInterruptState(pi: ExtensionAPI, ctx: ExtensionContext): Promise<BuilderInterruptResolution | null> {
   if (!rt.modeEnabled || currentPairRole() !== "planner") return null;
 
   const cwd = ctx.cwd ?? process.cwd();
@@ -1173,22 +1182,22 @@ async function resolveBuilderInterruptState(pi: ExtensionAPI, ctx: ExtensionCont
     cwd,
     timeout: 5_000,
   });
-  if ((hasSession.code ?? 1) !== 0) return null;
+  if (!tmuxExecSucceeded(hasSession)) return null;
 
-  return parsed;
+  return { cwd, state: parsed };
 }
 
 async function interruptBuilderIfRunning(pi: ExtensionAPI, ctx: ExtensionContext): Promise<boolean> {
-  const state = await resolveBuilderInterruptState(pi, ctx);
-  if (!state) return false;
+  const resolved = await resolveBuilderInterruptState(pi, ctx);
+  if (!resolved) return false;
 
-  const cwd = ctx.cwd ?? process.cwd();
+  const { cwd, state } = resolved;
   const target = state.tmuxPaneId?.trim() || `${state.tmuxSession}:0.0`;
   const sent = await pi.exec("tmux", ["send-keys", "-t", target, "C-c"], {
     cwd,
     timeout: 5_000,
   });
-  if ((sent.code ?? 1) !== 0) {
+  if (!tmuxExecSucceeded(sent)) {
     throw new Error(sent.stderr?.trim() || sent.stdout?.trim() || `Failed to interrupt builder pane ${target}`);
   }
 
