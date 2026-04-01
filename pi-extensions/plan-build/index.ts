@@ -795,31 +795,29 @@ function isBuilderCompletionMessage(message: PairChannelMessage): boolean {
   return hasStatus && hasFiles && hasValidation;
 }
 
+function rememberReportedBuilderHandoff(handoffId: string): void {
+  rt.reportedBuilderHandoffIds.add(handoffId);
+  if (rt.reportedBuilderHandoffIds.size <= MAX_TRACKED_REPORTED_HANDOFF_IDS) return;
+
+  const oldest = rt.reportedBuilderHandoffIds.values().next().value;
+  if (oldest) rt.reportedBuilderHandoffIds.delete(oldest);
+}
+
 function maybeRelayBuilderMessageToUser(pi: ExtensionAPI, message: PairChannelMessage): void {
   if (currentPairRole() !== "planner") return;
   if (!isBuilderCompletionMessage(message)) return;
 
   const handoffId = getMessageHandoffId(message);
-  if (handoffId && rt.reportedBuilderHandoffIds.has(handoffId)) {
-    return;
-  }
+  if (handoffId && rt.reportedBuilderHandoffIds.has(handoffId)) return;
 
   const now = Date.now();
   const fingerprint = pairRelayFingerprint(message);
   const withinWindow = (rt.lastBuilderRelayAtMs ?? 0) > now - BUILDER_RELAY_DEDUP_WINDOW_MS;
-  if (withinWindow && rt.lastBuilderRelayFingerprint === fingerprint) {
-    return;
-  }
+  if (withinWindow && rt.lastBuilderRelayFingerprint === fingerprint) return;
 
   rt.lastBuilderRelayFingerprint = fingerprint;
   rt.lastBuilderRelayAtMs = now;
-  if (handoffId) {
-    rt.reportedBuilderHandoffIds.add(handoffId);
-    if (rt.reportedBuilderHandoffIds.size > MAX_TRACKED_REPORTED_HANDOFF_IDS) {
-      const oldest = rt.reportedBuilderHandoffIds.values().next().value;
-      if (oldest) rt.reportedBuilderHandoffIds.delete(oldest);
-    }
-  }
+  if (handoffId) rememberReportedBuilderHandoff(handoffId);
 
   const relayPrompt = [
     "Builder sent a completion update.",
