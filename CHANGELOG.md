@@ -7,6 +7,7 @@ All notable changes to agent-stuff are documented here.
 * Removed `pi-messenger` extension and `/pi-messenger-crew` skill.
 * Removed `pi-subagents` extension.
 * Re-added `pi-subagents` extension (synced to latest upstream `tintinweb/pi-subagents` v0.5.1).
+* Removed `pi-subagents` extension again.
 * Removed `session-stats` extension.
 * Removed `damage-control` extension.
 * Removed `lsp.ts` extension.
