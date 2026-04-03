@@ -318,6 +318,8 @@ function buildSystemPrompt(settings: PlanBuildSettings, plannerSession: PlannerS
     "- For each delegated handoff, you MUST send exactly one completion message to the planner when you finish or stop.",
     "- Completion message format: handoff_id, status (done/blocked), files changed, validation run + result, and any blocker/next action.",
     "- You may send additional messages only for material blockers or concrete clarification questions.",
+    "- Treat planner messages as intent/specification, not code to paste blindly.",
+    "- If planner includes code-like text, extract intent/constraints and implement natively in the repository.",
     "- Execute concrete changes, tests, and diagnostics. Do not start autonomous worker swarms unless explicitly asked.",
     "- When blocked, report the minimal blocking fact and the next concrete action needed.",
   ];

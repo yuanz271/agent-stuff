@@ -1089,6 +1089,8 @@ function buildHandoffText(ctx: ExtensionContext, extraInstructions: string, hand
 
   lines.push(
     "Execution expectations:",
+    "- send intent/spec only: goal, relevant files, implementation steps, constraints, and validation criteria",
+    "- do not send concrete code snippets, patches, or copy-paste-ready implementation blocks to the builder",
     "- implement the requested change in the builder session",
     "- run the smallest relevant validation",
     '- send exactly one completion message to the planner for this handoff via plan_build({ action: "message", message: "..." }) including handoff_id, status, files changed, and validation results',
@@ -1373,6 +1375,7 @@ export default function planBuildExtension(pi: ExtensionAPI) {
       "- Stay read-only. Do not modify files directly.",
       "- Do not use mutating bash commands.",
       "- Focus on understanding the codebase, producing plans, reviewing results, and preparing precise build instructions.",
+      "- Send intent/spec to the builder, not implementation code. Do not send concrete code snippets, patches, or copy-paste-ready blocks.",
       "- When the user wants execution, they will run /build to delegate the current plan to the builder dedicated to this planner session.",
       '- You may send concise direct messages to the paired builder with plan_build({ action: "message", message: "..." }). Use this for clarifications or course corrections, not chatter.',
       "- The paired builder may also message you directly. Answer only when it materially helps execution.",
