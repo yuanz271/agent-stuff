@@ -87,6 +87,7 @@ const SAFE_BASH_PREFIXES = [
   /^\s*top\b/,
   /^\s*htop\b/,
   /^\s*free\b/,
+  /^\s*nvidia-smi\b/i,
   /^\s*git\s+(status|log|diff|show|branch|remote|config\s+--get|ls-)\b/i,
   /^\s*npm\s+(list|ls|view|info|search|outdated|audit)\b/i,
   /^\s*yarn\s+(list|info|why|audit)\b/i,
@@ -257,8 +258,17 @@ function getMessagesSinceLastUser(ctx: ExtensionContext): ExtractedMessage[] {
   return extracted;
 }
 
+function stripBenignRedirects(command: string): string {
+  return command
+    // Allow redirecting stdout/stderr to /dev/null (non-mutating sink)
+    .replace(/(^|[\s;|&])(?:[12]?>\s*\/dev\/null)(?=$|[\s;|&])/gi, "$1")
+    // Allow fd merging (e.g., 2>&1, 1>&2)
+    .replace(/(^|[\s;|&])(?:[12]?>&[12])(?=$|[\s;|&])/g, "$1");
+}
+
 function isSafePlannerBash(command: string): boolean {
-  const destructive = MUTATING_BASH_PATTERNS.some((pattern) => pattern.test(command));
+  const commandForMutatingChecks = stripBenignRedirects(command);
+  const destructive = MUTATING_BASH_PATTERNS.some((pattern) => pattern.test(commandForMutatingChecks));
   const safe = SAFE_BASH_PREFIXES.some((pattern) => pattern.test(command));
   return safe && !destructive;
 }
