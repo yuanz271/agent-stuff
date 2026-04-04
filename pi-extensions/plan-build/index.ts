@@ -1407,7 +1407,6 @@ export default function planBuildExtension(pi: ExtensionAPI) {
   };
 
   pi.on("session_start", restore);
-  pi.on("session_switch", restore);
   pi.on("session_tree", restore);
   pi.on("model_select", async (event) => {
     rt.lastObservedPlannerModel = { provider: event.model.provider, modelId: event.model.id };

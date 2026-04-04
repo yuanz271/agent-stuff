@@ -333,16 +333,19 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  // session_switch fires on /new (reason: "new") and /resume (reason: "resume").
-  // On /new: reset all session-scoped state so the store switches to the new session file.
+  // session_start(reason=new|resume|fork) replaces removed session_switch/session_fork.
+  // On new/fork: reset all session-scoped state so the store switches to the new session file.
   // On resume: reload persisted tasks from the existing session file.
-  pi.on("session_switch" as any, async (event: any, ctx: ExtensionContext) => {
+  pi.on("session_start" as any, async (event: any, ctx: ExtensionContext) => {
+    const reason = event?.reason;
+    if (reason !== "new" && reason !== "resume" && reason !== "fork") return;
+
     latestCtx = ctx;
     widget.setUICtx(ctx.ui as UICtx);
 
-    const isResume = event?.reason === "resume";
+    const isResume = reason === "resume";
 
-    // Reset session-scoped state for both /new and /resume
+    // Reset session-scoped state for session replacement flows.
     storeUpgraded = false;
     persistedTasksShown = false;
     currentTurn = 0;
@@ -350,7 +353,7 @@ export default function (pi: ExtensionAPI) {
     reminderInjectedThisCycle = false;
     autoClear.reset();
 
-    // Memory mode has no file-backed store to switch — clear explicitly on /new
+    // Memory mode has no file-backed store to switch — clear explicitly on fresh branches.
     if (!isResume && taskScope === "memory") {
       store.clearAll();
     }

@@ -92,19 +92,11 @@ export default async function (pi: ExtensionAPI) {
 
   // --- Lifecycle events ---
 
-  pi.on("session_start", async (_event, ctx) => {
-    initializeSession(ctx);
-  });
-
-  pi.on("session_switch", async (_event, ctx) => {
-    autoCleanupDisabledJobs();
-    cleanupSession(ctx);
-    initializeSession(ctx);
-  });
-
-  pi.on("session_fork", async (_event, ctx) => {
-    autoCleanupDisabledJobs();
-    cleanupSession(ctx);
+  pi.on("session_start", async (event: any, ctx) => {
+    if (event?.reason === "new" || event?.reason === "resume" || event?.reason === "fork") {
+      autoCleanupDisabledJobs();
+      cleanupSession(ctx);
+    }
     initializeSession(ctx);
   });
 

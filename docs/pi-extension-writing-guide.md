@@ -121,10 +121,9 @@ Every handler receives `(event, ctx: ExtensionContext)`. Key events:
 
 | Event | When | Can Return |
 |-------|------|------------|
-| `session_start` | Session loads | — |
+| `session_start` | Session loads or is replaced (`event.reason`: `startup` \| `reload` \| `new` \| `resume` \| `fork`) | — |
 | `session_shutdown` | Exit (Ctrl+C) | — |
 | `session_before_switch` | Before `/new` or `/resume` | `{ cancel: true }` |
-| `session_switch` | After session switch | — |
 | `session_before_fork` | Before `/fork` | `{ cancel: true }` |
 | `session_before_compact` | Before compaction | `{ cancel: true }` or custom compaction |
 | `before_agent_start` | After user prompt, before agent loop | `{ message, systemPrompt }` |
@@ -314,9 +313,11 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  pi.on("session_start", async (_e, ctx) => reconstruct(ctx));
-  pi.on("session_switch", async (_e, ctx) => reconstruct(ctx));
-  pi.on("session_fork", async (_e, ctx) => reconstruct(ctx));
+  pi.on("session_start", async (event, ctx) => {
+    if (event.reason === "startup" || event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
+      reconstruct(ctx);
+    }
+  });
   pi.on("session_tree", async (_e, ctx) => reconstruct(ctx));
 
   pi.registerTool({
