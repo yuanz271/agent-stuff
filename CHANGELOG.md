@@ -4,6 +4,7 @@ All notable changes to agent-stuff are documented here.
 
 ## Unreleased
 
+* Added a persistent `memory` extension with bounded cross-session `MEMORY.md` and `USER.md` stores under `~/.pi/agent/memories/`, frozen system-prompt injection, and a `memory` tool for `add` / `replace` / `remove` / `read`.
 * Removed `pi-messenger` extension and `/pi-messenger-crew` skill.
 * Removed `pi-subagents` extension.
 * Re-added `pi-subagents` extension (synced to latest upstream `tintinweb/pi-subagents` v0.5.1).
