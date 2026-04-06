@@ -73,6 +73,13 @@ export class MemoryStore {
 		return parts.join("\n\n");
 	}
 
+	/** Compact status string for footer display, e.g. "🧠 1,474/2,200 · 619/1,375". */
+	getStatusText(): string {
+		const m = this._charCount("memory");
+		const u = this._charCount("user");
+		return `🧠 ${fmt(m)}/${fmt(this.limits.memory)} · ${fmt(u)}/${fmt(this.limits.user)}`;
+	}
+
 	// ── Mutations ──────────────────────────────────────────────────────────
 
 	async add(target: Target, content: string): Promise<MutationResult> {

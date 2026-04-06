@@ -11,7 +11,7 @@
  * See SPEC.md for full design.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
 import { join } from "path";
@@ -19,18 +19,25 @@ import { homedir } from "os";
 import { MemoryStore } from "./store.js";
 
 const MEMORY_DIR = join(homedir(), ".pi", "agent", "memories");
+const STATUS_KEY = "memory";
 
 export default function memory(pi: ExtensionAPI) {
 	const store = new MemoryStore(MEMORY_DIR);
 
+	function updateStatus(ctx: ExtensionContext): void {
+		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, store.getStatusText());
+	}
+
 	// ── Session lifecycle ──────────────────────────────────────────────────
 
-	pi.on("session_start", async (_event: any, _ctx) => {
+	pi.on("session_start", async (_event: any, ctx) => {
 		await store.loadFromDisk();
+		updateStatus(ctx);
 	});
 
-	pi.on("session_before_compact", async (_event, _ctx) => {
+	pi.on("session_before_compact", async (_event, ctx) => {
 		await store.loadFromDisk();
+		updateStatus(ctx);
 	});
 
 	// ── System prompt injection ────────────────────────────────────────────
@@ -86,7 +93,7 @@ export default function memory(pi: ExtensionAPI) {
 			),
 		}),
 
-		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const { action, target, content, old_text } = params;
 			let result;
 
@@ -131,6 +138,8 @@ export default function memory(pi: ExtensionAPI) {
 				const message = error instanceof Error ? error.message : String(error);
 				result = { success: false, error: `Memory operation failed: ${message}` };
 			}
+
+			updateStatus(ctx);
 
 			return {
 				content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
