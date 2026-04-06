@@ -271,8 +271,11 @@ export class MemoryStore {
 			fileHandle = await open(tmp, "w");
 			await fileHandle.writeFile(content, { encoding: "utf8" });
 			await fileHandle.sync();
-			await fileHandle.close();
-			fileHandle = undefined;
+			try {
+				await fileHandle.close();
+			} finally {
+				fileHandle = undefined;
+			}
 			await rename(tmp, path);
 		} catch (err) {
 			if (fileHandle) {
