@@ -18,11 +18,12 @@ const THREAT_PATTERNS: [RegExp, string][] = [
 	[/curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)/i, "exfil_curl"],
 	[/wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)/i, "exfil_wget"],
 	[/cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)/i, "read_secrets"],
-	// Persistence / backdoor — scoped to command contexts to avoid
-	// false-positives on legitimate environment notes like
-	// "SSH keys are in ~/.ssh/authorized_keys, rotated quarterly."
-	[/(cat|echo|tee|scp|cp|mv|chmod|chown|rm|>>?)\s+[^\n]*authorized_keys/i, "ssh_backdoor"],
-	[/(cat|echo|tee|scp|cp|mv|chmod|chown|rm|>>?)\s+[^\n]*(\$HOME\/\.ssh|~\/\.ssh)/i, "ssh_access"],
+	// Persistence / backdoor — broad by design because these entries are
+	// reinjected into future system prompts. Until there is an explicit
+	// allowlist/escape hatch for legitimate environment notes, we prefer
+	// blocking any mention of these persistence indicators.
+	[/authorized_keys/i, "ssh_backdoor"],
+	[/\$HOME\/\.ssh|~\/\.ssh/i, "ssh_access"],
 ];
 
 const INVISIBLE_CHARS = new Set([

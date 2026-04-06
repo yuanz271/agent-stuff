@@ -10,7 +10,7 @@
  * See SPEC.md for full design rationale.
  */
 
-import { readFile, writeFile, rename, unlink, mkdir } from "fs/promises";
+import { readFile, open, rename, unlink, mkdir } from "fs/promises";
 import { join } from "path";
 import { randomBytes } from "crypto";
 import { scanContent } from "./scanner.js";
@@ -162,8 +162,10 @@ export class MemoryStore {
 	// ── Read (for explicit read action) ────────────────────────────────────
 
 	async read(target: Target): Promise<MutationResult> {
-		await this._reloadTarget(target);
-		return this._successResponse(target);
+		return this._withLock(async () => {
+			await this._reloadTarget(target);
+			return this._successResponse(target);
+		});
 	}
 
 	// ── Private helpers ────────────────────────────────────────────────────
@@ -264,11 +266,27 @@ export class MemoryStore {
 	private async _writeFileAtomic(path: string, entries: string[]): Promise<void> {
 		const content = entries.join(ENTRY_DELIMITER);
 		const tmp = path + `.tmp.${randomBytes(4).toString("hex")}`;
+		let fileHandle: Awaited<ReturnType<typeof open>> | undefined;
 		try {
-			await writeFile(tmp, content, { encoding: "utf8", flush: true });
+			fileHandle = await open(tmp, "w");
+			await fileHandle.writeFile(content, { encoding: "utf8" });
+			await fileHandle.sync();
+			await fileHandle.close();
+			fileHandle = undefined;
 			await rename(tmp, path);
 		} catch (err) {
-			try { await unlink(tmp); } catch { /* ignore cleanup failure */ }
+			if (fileHandle) {
+				try {
+					await fileHandle.close();
+				} catch {
+					// Best-effort cleanup only; preserve the original write failure.
+				}
+			}
+			try {
+				await unlink(tmp);
+			} catch {
+				// Best-effort temp-file cleanup only; preserve the original write failure.
+			}
 			throw err;
 		}
 	}
