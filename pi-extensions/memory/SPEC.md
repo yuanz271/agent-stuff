@@ -138,10 +138,10 @@ Registered via `pi.registerTool()`. Name: `memory`.
 
 ```
 Parameters:
-  action:   "add" | "replace" | "remove"   (required)
-  target:   "memory" | "user"              (required)
-  content:  string                          (required for add, replace)
-  old_text: string                          (required for replace, remove)
+  action:   "add" | "replace" | "remove" | "read"   (required)
+  target:   "memory" | "user"                        (required)
+  content:  string                                    (required for add, replace)
+  old_text: string                                    (required for replace, remove)
 ```
 
 ### Tool Description

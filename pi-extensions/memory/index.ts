@@ -119,7 +119,7 @@ export default function memory(pi: ExtensionAPI) {
 						break;
 
 					case "read":
-						result = store.read(target);
+						result = await store.read(target);
 						break;
 
 					default:

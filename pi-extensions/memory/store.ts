@@ -78,6 +78,7 @@ export class MemoryStore {
 	async add(target: Target, content: string): Promise<MutationResult> {
 		content = content.trim();
 		if (!content) return { success: false, error: "Content cannot be empty." };
+		if (content.includes(ENTRY_DELIMITER)) return { success: false, error: "Content must not contain the entry delimiter '\n§\n'." };
 
 		const scanError = scanContent(content);
 		if (scanError) return { success: false, error: scanError };
@@ -112,6 +113,7 @@ export class MemoryStore {
 		newContent = newContent.trim();
 		if (!oldText) return { success: false, error: "old_text cannot be empty." };
 		if (!newContent) return { success: false, error: "content cannot be empty. Use 'remove' to delete entries." };
+		if (newContent.includes(ENTRY_DELIMITER)) return { success: false, error: "Content must not contain the entry delimiter '\n§\n'." };
 
 		const scanError = scanContent(newContent);
 		if (scanError) return { success: false, error: scanError };
@@ -159,7 +161,8 @@ export class MemoryStore {
 
 	// ── Read (for explicit read action) ────────────────────────────────────
 
-	read(target: Target): MutationResult {
+	async read(target: Target): Promise<MutationResult> {
+		await this._reloadTarget(target);
 		return this._successResponse(target);
 	}
 
@@ -262,7 +265,7 @@ export class MemoryStore {
 		const content = entries.join(ENTRY_DELIMITER);
 		const tmp = path + `.tmp.${randomBytes(4).toString("hex")}`;
 		try {
-			await writeFile(tmp, content, "utf8");
+			await writeFile(tmp, content, { encoding: "utf8", flush: true });
 			await rename(tmp, path);
 		} catch (err) {
 			try { await unlink(tmp); } catch { /* ignore cleanup failure */ }
