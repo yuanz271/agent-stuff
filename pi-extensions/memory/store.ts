@@ -10,7 +10,7 @@
  * See SPEC.md for full design rationale.
  */
 
-import { readFile, open, rename, unlink, mkdir } from "fs/promises";
+import { readFile, open, rename, unlink, mkdir, type FileHandle } from "fs/promises";
 import { join } from "path";
 import { randomBytes } from "crypto";
 import { scanContent } from "./scanner.js";
@@ -77,11 +77,8 @@ export class MemoryStore {
 
 	async add(target: Target, content: string): Promise<MutationResult> {
 		content = content.trim();
-		if (!content) return { success: false, error: "Content cannot be empty." };
-		if (content.includes(ENTRY_DELIMITER)) return { success: false, error: "Content must not contain the entry delimiter '\n§\n'." };
-
-		const scanError = scanContent(content);
-		if (scanError) return { success: false, error: scanError };
+		const invalid = _validateContent(content);
+		if (invalid) return invalid;
 
 		return this._withLock(async () => {
 			await this._reloadTarget(target);
@@ -112,11 +109,8 @@ export class MemoryStore {
 		oldText = oldText.trim();
 		newContent = newContent.trim();
 		if (!oldText) return { success: false, error: "old_text cannot be empty." };
-		if (!newContent) return { success: false, error: "content cannot be empty. Use 'remove' to delete entries." };
-		if (newContent.includes(ENTRY_DELIMITER)) return { success: false, error: "Content must not contain the entry delimiter '\n§\n'." };
-
-		const scanError = scanContent(newContent);
-		if (scanError) return { success: false, error: scanError };
+		const invalid = _validateContent(newContent, "content cannot be empty. Use 'remove' to delete entries.");
+		if (invalid) return invalid;
 
 		return this._withLock(async () => {
 			await this._reloadTarget(target);
@@ -266,7 +260,7 @@ export class MemoryStore {
 	private async _writeFileAtomic(path: string, entries: string[]): Promise<void> {
 		const content = entries.join(ENTRY_DELIMITER);
 		const tmp = path + `.tmp.${randomBytes(4).toString("hex")}`;
-		let fileHandle: Awaited<ReturnType<typeof open>> | undefined;
+		let fileHandle: FileHandle | undefined;
 		try {
 			fileHandle = await open(tmp, "w");
 			await fileHandle.writeFile(content, { encoding: "utf8" });
@@ -300,6 +294,15 @@ export class MemoryStore {
 		this._lockChain = new Promise<void>((r) => { resolve = r; });
 		return prev.then(fn).finally(() => resolve!());
 	}
+}
+
+/** Shared pre-lock validation for content written to the store. */
+function _validateContent(content: string, emptyMessage = "Content cannot be empty."): MutationResult | null {
+	if (!content) return { success: false, error: emptyMessage };
+	if (content.includes(ENTRY_DELIMITER)) return { success: false, error: "Content must not contain the entry delimiter '\n§\n'." };
+	const scanError = scanContent(content);
+	if (scanError) return { success: false, error: scanError };
+	return null;
 }
 
 function fmt(n: number): string {
