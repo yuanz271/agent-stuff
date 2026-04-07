@@ -12,7 +12,7 @@ Prefer this skill over `summarize`/`markitdown` when:
 - Tables, figure captions, or footnotes need faithful preservation
 - You need the full document text, not a summary
 
-Use `summarize`/`markitdown` for quick prose-only PDFs or when Vertex AI is unavailable.
+Use the `liteparse` skill for quick prose-only PDFs or when Vertex AI is unavailable.
 
 ## Usage
 
