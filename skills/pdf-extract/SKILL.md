@@ -14,14 +14,6 @@ Prefer this skill over `summarize`/`markitdown` when:
 
 Use `summarize`/`markitdown` for quick prose-only PDFs or when Vertex AI is unavailable.
 
-## Prerequisites
-
-1. `GOOGLE_CLOUD_PROJECT` environment variable set to your GCP project ID.
-2. Vertex AI authenticated: `gcloud auth application-default login`
-3. `GOOGLE_CLOUD_LOCATION` (optional, defaults to `us-central1`)
-
-No `npm install` needed — uses Node.js built-in `fetch`.
-
 ## Usage
 
 Paths are relative to this skill directory.
@@ -54,7 +46,5 @@ Formatting rules applied:
 
 ## Notes
 
-- Local files are base64-encoded and sent inline. Large PDFs (>10 MB) may be slow or hit limits — use a GCS URI instead.
 - Model: `gemini-3.1-flash-lite-preview` default; override with `--model <id>` (e.g. `gemini-2.5-flash`, `gemini-2.5-pro`).
-- Auth: `gcloud auth application-default print-access-token` (no service account JSON needed).
-- Region: `GOOGLE_CLOUD_LOCATION` env var (default: `us-central1`).
+- Local files are base64-encoded inline; use a GCS URI for PDFs over ~10 MB.
