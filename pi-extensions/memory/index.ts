@@ -1,7 +1,7 @@
 /**
  * Memory extension — persistent user preferences across sessions.
  *
- * Single store: USER.md under ~/.pi/agent/memories/
+ * Single store: MEMORY.md under ~/.pi/agent/memories/
  * Stores user preferences, environment facts, communication style —
  * anything personal and cross-project. Think IDE-local settings:
  * private to this agent instance, not committed to any repo.

@@ -2,7 +2,7 @@
 
 ## Overview
 
-A Pi extension that gives the agent **bounded, file-backed persistent memory** across sessions. Two stores — `MEMORY.md` (agent's notes) and `USER.md` (user profile) — are injected into the system prompt as a frozen snapshot and managed via a registered tool.
+A Pi extension that gives the agent **bounded, file-backed persistent memory** across sessions. A single store — `MEMORY.md` — holds user preferences, environment facts, communication style, and cross-project conventions. Think of it as IDE-local settings: private to this agent instance, not committed to any repo.
 
 Modeled after the Hermes Agent memory system. Adapted to the Pi extension API surface.
 
@@ -33,11 +33,14 @@ Modeled after the Hermes Agent memory system. Adapted to the Pi extension API su
 
 ```
 ~/.pi/agent/memories/
-├── MEMORY.md
-└── USER.md
+└── MEMORY.md
 ```
 
 Profile-scoped, global (shared across all sessions). Created on first load if missing.
+
+### Migration
+
+On first `loadFromDisk()` after upgrading from the two-store design, a one-time idempotent rename moves `USER.md` → `MEMORY.md` if `USER.md` exists and `MEMORY.md` does not. This is a no-op on subsequent loads.
 
 ### Entry Format
 
@@ -47,19 +50,18 @@ Example `MEMORY.md`:
 ```
 User runs macOS 14, Homebrew, Docker Desktop. Shell: zsh.
 §
-Project ~/code/api uses Go 1.22, sqlc, chi router. Tests: make test.
+Prefers uv for Python (not pip/poetry/venv).
 §
 Don't use sudo for Docker — user is in docker group.
 ```
 
-### Character Limits
+### Character Limit
 
-| Store | Default Limit | Approximate Tokens |
-|-------|--------------|-------------------|
-| `memory` | 2,200 chars | ~800 |
-| `user` | 1,375 chars | ~500 |
+| Store | Limit | Approximate Tokens |
+|-------|-------|-------------------|
+| `MEMORY.md` | 3,575 chars | ~1,300 |
 
-Character count = `entries.join("\n§\n").length`. Limits are enforced on mutation; loads always succeed regardless of size.
+Character count = `entries.join("\n§\n").length`. Limit is enforced on mutation; loads always succeed regardless of size.
 
 ---
 
@@ -102,29 +104,18 @@ Tool call: memory(add/replace/remove)
 
 ### Format
 
-Appended to the end of the system prompt via `before_agent_start`. Each non-empty store renders as:
+Appended to the end of the system prompt via `before_agent_start`. Rendered as:
 
 ```
 ══════════════════════════════════════════════════
-MEMORY (your personal notes) [67% — 1,474/2,200 chars]
+MEMORY [45% — 1,474/3,575 chars]
 ══════════════════════════════════════════════════
 Entry one text here
 §
 Entry two text here
 ```
 
-```
-══════════════════════════════════════════════════
-USER PROFILE (who the user is) [45% — 619/1,375 chars]
-══════════════════════════════════════════════════
-User name, preferences, etc.
-```
-
-Empty stores are omitted entirely (no header, no empty block).
-
-### Ordering
-
-Memory block first, then user profile block. Both after the base system prompt.
+Empty store is omitted entirely (no header, no empty block). Rendered after the base system prompt.
 
 ---
 
@@ -139,7 +130,6 @@ Registered via `pi.registerTool()`. Name: `memory`.
 ```
 Parameters:
   action:   "add" | "replace" | "remove" | "read"   (required)
-  target:   "memory" | "user"                        (required)
   content:  string                                    (required for add, replace)
   old_text: string                                    (required for replace, remove)
 ```
@@ -148,9 +138,8 @@ Parameters:
 
 The tool description instructs the agent on:
 - **When to save** (proactively): user corrections, preferences, environment facts, conventions, lessons learned.
-- **Priority**: user preferences/corrections > environment facts > procedural knowledge.
-- **What to skip**: trivial info, easily re-discovered facts, raw data dumps, session-specific ephemera.
-- **Two targets**: `memory` (agent's notes) vs `user` (user profile).
+- **Priority**: user preferences/corrections > environment facts > workflow habits.
+- **What to skip**: trivial info, repo-specific conventions (use AGENTS.md instead), task progress, session-specific ephemera.
 - **Capacity awareness**: usage % is visible; consolidate when above 80%.
 
 ### Prompt Guidelines
@@ -205,9 +194,8 @@ Success:
 ```json
 {
   "success": true,
-  "target": "memory",
   "entries": ["entry1", "entry2"],
-  "usage": "67% — 1,474/2,200 chars",
+  "usage": "41% — 1,474/3,575 chars",
   "entry_count": 2,
   "message": "Entry added."
 }
@@ -217,9 +205,9 @@ Failure:
 ```json
 {
   "success": false,
-  "error": "Memory at 2,100/2,200 chars. Adding this entry (250 chars) would exceed the limit. Replace or remove existing entries first.",
+  "error": "Memory at 3,400/3,575 chars. Adding this entry (250 chars) would exceed the limit. Replace or remove existing entries first.",
   "entries": ["entry1", "..."],
-  "usage": "95% — 2,100/2,200 chars"
+  "usage": "95% — 3,400/3,575 chars"
 }
 ```
 
@@ -335,11 +323,13 @@ pi-extensions/memory/
 │                 - registerTool("memory", ...)
 │
 ├── store.ts      MemoryStore class
-│                 - loadFromDisk()
+│                 - loadFromDisk()  (includes USER.md → MEMORY.md migration)
 │                 - getSnapshotBlock(): string
-│                 - add(target, content): MutationResult
-│                 - replace(target, oldText, newContent): MutationResult
-│                 - remove(target, oldText): MutationResult
+│                 - getStatusText(): string
+│                 - add(content): MutationResult
+│                 - replace(oldText, newContent): MutationResult
+│                 - remove(oldText): MutationResult
+│                 - read(): MutationResult
 │                 - (private) readFile, writeFileAtomic, renderBlock
 │
 └── scanner.ts    Content security
@@ -372,7 +362,7 @@ pi-extensions/memory/
 
 These are **not** part of the core spec but inform the design (interfaces should not preclude them):
 
-- **Status widget**: show memory usage in footer via `ctx.ui.setStatus()`.
+- **Status widget**: ✅ implemented — `ctx.ui.setStatus()` shows `🧠 n/3,575` in footer.
 - **Background review**: spawn auxiliary LLM call every N turns to review conversation and save memories.
 - **Pre-compression flush**: before `session_before_compact`, make one LLM call with only the memory tool to save important context.
 - **External providers**: pluggable memory backends (Honcho, Mem0, etc.) via a provider interface.

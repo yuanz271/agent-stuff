@@ -1,7 +1,7 @@
 /**
- * MemoryStore — bounded, file-backed persistent user preferences.
+ * MemoryStore — bounded, file-backed persistent memory.
  *
- * Single store: USER.md — user preferences, environment facts, communication
+ * Single store: MEMORY.md — user preferences, environment facts, communication
  * style, cross-project conventions. Think of it as IDE-local settings: private
  * to this agent instance, not committed to any repo.
  *
@@ -12,8 +12,8 @@
  *     Tool responses always reflect this live state.
  */
 
-import { readFile, open, rename, unlink, mkdir, type FileHandle } from "fs/promises";
-import { join } from "path";
+import { readFile, open, rename, unlink, mkdir, access, type FileHandle } from "fs/promises";
+import { dirname, join } from "path";
 import { randomBytes } from "crypto";
 import { scanContent } from "./scanner.js";
 
@@ -49,7 +49,21 @@ export class MemoryStore {
 
 	/** Read entries from disk and capture frozen snapshot. */
 	async loadFromDisk(): Promise<void> {
-		await mkdir(join(this.path, ".."), { recursive: true });
+		await mkdir(dirname(this.path), { recursive: true });
+		// One-time idempotent migration: USER.md → MEMORY.md
+		// Guard with existence check: POSIX rename() overwrites destination silently,
+		// so only attempt rename when MEMORY.md is absent.
+		const legacyPath = join(dirname(this.path), "USER.md");
+		let targetExists = true;
+		try { await access(this.path); } catch { targetExists = false; }
+		if (!targetExists) {
+			try {
+				await rename(legacyPath, this.path);
+			} catch (err) {
+				if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+				// ENOENT: no USER.md either — nothing to migrate
+			}
+		}
 		this.entries = await this._readFile();
 		this.snapshot = this._renderBlock();
 	}
