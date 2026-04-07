@@ -103,20 +103,12 @@ export class MemoryStore {
 					success: false,
 					error: `Memory at ${fmt(current)}/${fmt(CHAR_LIMIT)} chars. Adding this entry (${content.length} chars) would exceed the limit. Replace or remove existing entries first.`,
 					entries: this.entries,
-					usage: `${this._pct()}% — ${fmt(current)}/${fmt(CHAR_LIMIT)} chars`,
+					usage: `${this._pct(current)}% — ${fmt(current)}/${fmt(CHAR_LIMIT)} chars`,
 				};
 			}
 
 			this.entries.push(content);
-			try {
-				await this._writeFileAtomic();
-			} catch (err) {
-				// Write failed (disk full, permission denied, etc.).
-				// Reload to restore this.entries to the committed disk state
-				// so getStatusText() never reflects the uncommitted mutation.
-				this.entries = await this._readFile();
-				throw err;
-			}
+			await this._persistEntries();
 			return this._successResponse("Entry added.");
 		});
 	}
@@ -146,12 +138,7 @@ export class MemoryStore {
 			}
 
 			this.entries[idx] = newContent;
-			try {
-				await this._writeFileAtomic();
-			} catch (err) {
-				this.entries = await this._readFile();
-				throw err;
-			}
+			await this._persistEntries();
 			return this._successResponse("Entry replaced.");
 		});
 	}
@@ -167,12 +154,7 @@ export class MemoryStore {
 			if (!matchResult.ok) return matchResult.error!;
 
 			this.entries.splice(matchResult.index!, 1);
-			try {
-				await this._writeFileAtomic();
-			} catch (err) {
-				this.entries = await this._readFile();
-				throw err;
-			}
+			await this._persistEntries();
 			return this._successResponse("Entry removed.");
 		});
 	}
@@ -191,8 +173,8 @@ export class MemoryStore {
 		return this.entries.join(ENTRY_DELIMITER).length;
 	}
 
-	private _pct(): number {
-		return Math.min(100, Math.round((this._charCount() / CHAR_LIMIT) * 100));
+	private _pct(current = this._charCount()): number {
+		return Math.min(100, Math.round((current / CHAR_LIMIT) * 100));
 	}
 
 	private _successResponse(message?: string): MutationResult {
@@ -200,7 +182,7 @@ export class MemoryStore {
 		const result: MutationResult = {
 			success: true,
 			entries: this.entries,
-			usage: `${this._pct()}% — ${fmt(current)}/${fmt(CHAR_LIMIT)} chars`,
+			usage: `${this._pct(current)}% — ${fmt(current)}/${fmt(CHAR_LIMIT)} chars`,
 			entry_count: this.entries.length,
 		};
 		if (message) result.message = message;
@@ -244,6 +226,21 @@ export class MemoryStore {
 
 	private async _reload(): Promise<void> {
 		this.entries = await this._readFile();
+	}
+
+	/**
+	 * Write entries to disk and restore from disk on failure.
+	 * Ensures this.entries always reflects committed state after the call.
+	 */
+	private async _persistEntries(): Promise<void> {
+		try {
+			await this._writeFileAtomic();
+		} catch (err) {
+			// Write failed (disk full, permission denied, etc.).
+			// Reload so this.entries reflects committed disk state.
+			this.entries = await this._readFile();
+			throw err;
+		}
 	}
 
 	private async _readFile(): Promise<string[]> {
