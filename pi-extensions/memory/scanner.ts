@@ -9,7 +9,7 @@
 const THREAT_PATTERNS: [RegExp, string][] = [
 	// Prompt injection
 	[/ignore\s+(previous|all|above|prior)\s+instructions/i, "prompt_injection"],
-	[/you\s+are\s+now\s+/i, "role_hijack"],
+	[/you\s+are\s+now\s+(a|an|the)\s+/i, "role_hijack"],
 	[/do\s+not\s+tell\s+the\s+user/i, "deception_hide"],
 	[/system\s+prompt\s+override/i, "sys_prompt_override"],
 	[/disregard\s+(your|all|any)\s+(instructions|rules|guidelines)/i, "disregard_rules"],

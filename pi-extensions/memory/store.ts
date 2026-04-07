@@ -73,7 +73,11 @@ export class MemoryStore {
 		return this.snapshot;
 	}
 
-	/** Compact status string for footer display, e.g. "🧠 115/3,575". */
+	/**
+	 * Compact status string for footer display, e.g. "🧠 115/3,000".
+	 * Reads this.entries without a lock — safe when called after a mutation
+	 * completes (lock released), which is the only call site in index.ts.
+	 */
 	getStatusText(): string {
 		return `🧠 ${fmt(this._charCount())}/${fmt(CHAR_LIMIT)}`;
 	}
@@ -104,7 +108,15 @@ export class MemoryStore {
 			}
 
 			this.entries.push(content);
-			await this._writeFileAtomic();
+			try {
+				await this._writeFileAtomic();
+			} catch (err) {
+				// Write failed (disk full, permission denied, etc.).
+				// Reload to restore this.entries to the committed disk state
+				// so getStatusText() never reflects the uncommitted mutation.
+				this.entries = await this._readFile();
+				throw err;
+			}
 			return this._successResponse("Entry added.");
 		});
 	}
@@ -134,7 +146,12 @@ export class MemoryStore {
 			}
 
 			this.entries[idx] = newContent;
-			await this._writeFileAtomic();
+			try {
+				await this._writeFileAtomic();
+			} catch (err) {
+				this.entries = await this._readFile();
+				throw err;
+			}
 			return this._successResponse("Entry replaced.");
 		});
 	}
@@ -150,16 +167,21 @@ export class MemoryStore {
 			if (!matchResult.ok) return matchResult.error!;
 
 			this.entries.splice(matchResult.index!, 1);
-			await this._writeFileAtomic();
+			try {
+				await this._writeFileAtomic();
+			} catch (err) {
+				this.entries = await this._readFile();
+				throw err;
+			}
 			return this._successResponse("Entry removed.");
 		});
 	}
 
 	async read(): Promise<MutationResult> {
-		return this._withLock(async () => {
-			await this._reload();
-			return this._successResponse();
-		});
+		// No lock needed: _readFile reads directly from disk, and atomic writes
+		// guarantee readers always see a complete file (pre- or post-write).
+		await this._reload();
+		return this._successResponse();
 	}
 
 	// ── Private helpers ────────────────────────────────────────────────────
