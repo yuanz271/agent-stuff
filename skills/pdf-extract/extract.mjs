@@ -4,7 +4,7 @@ import { readFileSync, existsSync, writeFileSync } from 'fs';
 import { resolve } from 'path';
 import { createSign } from 'crypto';
 
-const DEFAULT_MODEL = 'gemini-3.1-flash-lite-preview';
+const DEFAULT_MODEL = 'gemini-2.5-flash';
 const GOOGLE_OAUTH_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
 const DEFAULT_TOKEN_URI = 'https://oauth2.googleapis.com/token';
 

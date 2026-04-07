@@ -3,7 +3,7 @@ name: pdf-extract
 description: "High-fidelity PDF → Markdown conversion via Vertex AI Gemini. Preserves equations (LaTeX), tables, multi-column layout, and figure captions. Use this instead of markitdown when the PDF has heavy math or complex structure."
 ---
 
-Convert a PDF to well-structured Markdown using Vertex AI Gemini (`gemini-3.1-flash-lite-preview` default; override with `--model`).
+Convert a PDF to well-structured Markdown using Vertex AI Gemini (`gemini-2.5-flash` default; override with `--model`).
 Accepts a local file path or a GCS URI (`gs://`).
 
 Prefer this skill over `summarize`/`markitdown` when:
@@ -46,5 +46,5 @@ Formatting rules applied:
 
 ## Notes
 
-- Model: `gemini-3.1-flash-lite-preview` default; override with `--model <id>` (e.g. `gemini-2.5-flash`, `gemini-2.5-pro`).
+- Model: `gemini-2.5-flash` default; override with `--model <id>` (e.g. `gemini-2.5-pro`, `gemini-3.1-flash-lite-preview`).
 - Local files are base64-encoded inline; use a GCS URI for PDFs over ~10 MB.
