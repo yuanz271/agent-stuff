@@ -19,7 +19,7 @@ import { scanContent } from "./scanner.js";
 
 const ENTRY_DELIMITER = "\n§\n";
 const SEPARATOR = "═".repeat(46);
-const CHAR_LIMIT = 3575;
+const CHAR_LIMIT = 3000;
 
 export interface MutationResult {
 	success: boolean;

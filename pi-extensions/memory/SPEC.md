@@ -59,7 +59,7 @@ Don't use sudo for Docker — user is in docker group.
 
 | Store | Limit | Approximate Tokens |
 |-------|-------|-------------------|
-| `MEMORY.md` | 3,575 chars | ~1,300 |
+| `MEMORY.md` | 3,000 chars | ~1,100 |
 
 Character count = `entries.join("\n§\n").length`. Limit is enforced on mutation; loads always succeed regardless of size.
 
@@ -108,7 +108,7 @@ Appended to the end of the system prompt via `before_agent_start`. Rendered as:
 
 ```
 ══════════════════════════════════════════════════
-MEMORY [45% — 1,474/3,575 chars]
+MEMORY [49% — 1,474/3,000 chars]
 ══════════════════════════════════════════════════
 Entry one text here
 §
@@ -195,7 +195,7 @@ Success:
 {
   "success": true,
   "entries": ["entry1", "entry2"],
-  "usage": "41% — 1,474/3,575 chars",
+  "usage": "49% — 1,474/3,000 chars",
   "entry_count": 2,
   "message": "Entry added."
 }
@@ -205,9 +205,9 @@ Failure:
 ```json
 {
   "success": false,
-  "error": "Memory at 3,400/3,575 chars. Adding this entry (250 chars) would exceed the limit. Replace or remove existing entries first.",
+  "error": "Memory at 2,900/3,000 chars. Adding this entry (250 chars) would exceed the limit. Replace or remove existing entries first.",
   "entries": ["entry1", "..."],
-  "usage": "95% — 3,400/3,575 chars"
+  "usage": "97% — 2,900/3,000 chars"
 }
 ```
 
