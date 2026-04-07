@@ -46,45 +46,6 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 * [`side-chat`](pi-extensions/side-chat) - Fork the current conversation into a non-capturing overlay side chat (`Alt+/`, `/side`) while the main agent keeps working.
 * [`uv.ts`](pi-extensions/uv.ts) - Bash wrapper that routes Python tooling (`pip`, `poetry`, `python -m ...`) toward `uv` workflows via intercepted commands.
 
-### `plan-build` settings
-
-`plan-build` loads settings in this order:
-
-1. bundled defaults (`pi-extensions/plan-build/plan-build-settings.yaml`)
-2. global user settings (`~/.pi/agent/plan-build-settings.yaml`)
-3. nearest project settings discovered from `cwd` upward (`.pi/plan-build-settings.yaml`, walking to git root)
-
-Later layers override earlier ones field-by-field.
-
-When planner mode is on, `plan-build` keeps the `plan_build` tool active even if planner `allowed_tools` omit it, so the paired planner and builder can exchange direct messages through the internal plan-build mailbox.
-
-For builder settings, prefer separate `model` and `thinking` fields. Legacy combined shorthand like `model: openai/gpt-5.3-codex:off` is still accepted and normalized for backward compatibility. The configured `builder.agent_name` acts as a base name; the runtime builder name is suffixed per planner session so different planner sessions do not share a builder.
-
-Example:
-
-```yaml
-planner:
-  model: anthropic/claude-opus-4-6
-  thinking: high
-  allowed_tools:
-    - read
-    - grep
-    - find
-    - ls
-    - websearch
-  prompt_append: |
-    Prefer small, reviewable implementation plans.
-
-builder:
-  agent_name: builder
-  model: openai/gpt-5.3-codex
-  thinking: off
-  system_prompt_append: |
-    Prefer the smallest relevant validation first.
-  startup_prompt_append: |
-    Report readiness briefly, then wait.
-```
-
 ## Docs
 
 Reference documents in the [`docs`](docs) folder:
