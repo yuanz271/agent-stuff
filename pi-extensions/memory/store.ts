@@ -42,7 +42,7 @@ export class MemoryStore {
 	private _lockChain: Promise<void> = Promise.resolve();
 
 	constructor(dir: string) {
-		this.path = join(dir, "USER.md");
+		this.path = join(dir, "MEMORY.md");
 	}
 
 	// ── Load / Snapshot ────────────────────────────────────────────────────
@@ -202,7 +202,7 @@ export class MemoryStore {
 		const content = this.entries.join(ENTRY_DELIMITER);
 		const current = content.length;
 		const pct = Math.min(100, Math.round((current / CHAR_LIMIT) * 100));
-		const header = `USER PREFERENCES [${pct}% — ${fmt(current)}/${fmt(CHAR_LIMIT)} chars]`;
+		const header = `MEMORY [${pct}% — ${fmt(current)}/${fmt(CHAR_LIMIT)} chars]`;
 		return `${SEPARATOR}\n${header}\n${SEPARATOR}\n${content}`;
 	}
 
