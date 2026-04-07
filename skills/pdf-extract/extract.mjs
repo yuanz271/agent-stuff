@@ -4,7 +4,7 @@ import { readFileSync, existsSync, writeFileSync } from 'fs';
 import { resolve } from 'path';
 import { execSync } from 'child_process';
 
-const DEFAULT_MODEL = 'gemini-2.5-flash';
+const DEFAULT_MODEL = 'gemini-3.1-flash-lite-preview';
 const PROMPT = `\
 Convert this PDF document into well-structured markdown, faithfully and completely, \
 preserving the original reading order (column by column, top to bottom).
