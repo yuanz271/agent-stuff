@@ -18,6 +18,8 @@ Use `summarize`/`markitdown` for quick prose-only PDFs or when Vertex AI is unav
 
 Paths are relative to this skill directory.
 
+> **Timeout:** PDF extraction is slow — use a bash timeout of at least 120 seconds. Large PDFs (>5 MB) may need 180–300 seconds.
+
 ```bash
 # Print extracted Markdown to stdout
 node extract.mjs <path-to-pdf>
