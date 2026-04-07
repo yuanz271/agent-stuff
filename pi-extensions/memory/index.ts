@@ -1,14 +1,13 @@
 /**
- * Memory extension — bounded, file-backed persistent memory across sessions.
+ * Memory extension — persistent user preferences across sessions.
  *
- * Two stores:
- *   MEMORY.md — agent's personal notes (environment, conventions, lessons)
- *   USER.md   — user profile (preferences, communication style, identity)
+ * Single store: USER.md under ~/.pi/agent/memories/
+ * Stores user preferences, environment facts, communication style —
+ * anything personal and cross-project. Think IDE-local settings:
+ * private to this agent instance, not committed to any repo.
  *
  * Injected into the system prompt as a frozen snapshot at session start.
- * Agent manages memory via the `memory` tool (add/replace/remove).
- *
- * See SPEC.md for full design.
+ * Agent manages memory via the `memory` tool (add/replace/remove/read).
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
@@ -61,29 +60,24 @@ export default function memory(pi: ExtensionAPI) {
 			"- User corrects you or says 'remember this' / 'don't do that again'\n" +
 			"- User shares a preference, habit, or personal detail (name, role, timezone, coding style)\n" +
 			"- You discover something about the environment (OS, installed tools, project structure)\n" +
-			"- You learn a convention, API quirk, or workflow specific to this user's setup\n" +
-			"- You identify a stable fact that will be useful again in future sessions\n\n" +
-			"PRIORITY: User preferences and corrections > environment facts > procedural knowledge. " +
+			"- You learn a convention or workflow specific to this user's setup\n\n" +
+			"PRIORITY: User preferences and corrections > environment facts > workflow habits. " +
 			"The most valuable memory prevents the user from having to repeat themselves.\n\n" +
-			"Do NOT save task progress, session outcomes, or temporary state.\n\n" +
-			"TWO TARGETS:\n" +
-			"- 'user': who the user is — name, role, preferences, communication style, pet peeves\n" +
-			"- 'memory': your notes — environment facts, project conventions, tool quirks, lessons learned\n\n" +
+			"Do NOT save task progress, session outcomes, or temporary state. " +
+			"Repo-specific conventions belong in AGENTS.md, not here.\n\n" +
 			"ACTIONS: add (new entry), replace (update existing — old_text identifies it), " +
 			"remove (delete — old_text identifies it), read (show current entries).\n\n" +
-			"SKIP: trivial/obvious info, things easily re-discovered, raw data dumps, and temporary task state.",
-		promptSnippet: "memory — save/update/remove persistent notes (memory) or user profile (user)",
+			"SKIP: trivial/obvious info, things easily re-discovered, raw data dumps, repo-specific conventions, and temporary task state.",
+		promptSnippet: "memory — save/update/remove persistent user preferences and environment facts",
 		promptGuidelines: [
-			"Proactively save user preferences, environment facts, and lessons learned to memory.",
+			"Proactively save user preferences, environment facts, and cross-project workflow habits to memory.",
+			"Do not save repo-specific conventions — those belong in AGENTS.md.",
 			"When memory is above 80% capacity, consolidate entries before adding new ones.",
 			"Do not save task progress, session-specific ephemera, or easily re-discovered facts.",
 		],
 		parameters: Type.Object({
 			action: StringEnum(["add", "replace", "remove", "read"] as const, {
 				description: "The action to perform.",
-			}),
-			target: StringEnum(["memory", "user"] as const, {
-				description: "Which memory store: 'memory' for personal notes, 'user' for user profile.",
 			}),
 			content: Type.Optional(
 				Type.String({ description: "The entry content. Required for 'add' and 'replace'." }),
@@ -94,16 +88,16 @@ export default function memory(pi: ExtensionAPI) {
 		}),
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const { action, target, content, old_text } = params;
+			const { action, content, old_text } = params;
 			let result;
 
 			try {
 				switch (action) {
 					case "add":
 						if (!content) {
-							result = { success: false, error: "Content is required for 'add' action." };
+							result = { success: false, error: "content is required for 'add' action." };
 						} else {
-							result = await store.add(target, content);
+							result = await store.add(content);
 						}
 						break;
 
@@ -113,7 +107,7 @@ export default function memory(pi: ExtensionAPI) {
 						} else if (!content) {
 							result = { success: false, error: "content is required for 'replace' action." };
 						} else {
-							result = await store.replace(target, old_text, content);
+							result = await store.replace(old_text, content);
 						}
 						break;
 
@@ -121,20 +115,18 @@ export default function memory(pi: ExtensionAPI) {
 						if (!old_text) {
 							result = { success: false, error: "old_text is required for 'remove' action." };
 						} else {
-							result = await store.remove(target, old_text);
+							result = await store.remove(old_text);
 						}
 						break;
 
 					case "read":
-						result = await store.read(target);
+						result = await store.read();
 						break;
 
 					default:
 						result = { success: false, error: `Unknown action '${action}'. Use: add, replace, remove, read.` };
 				}
 			} catch (error) {
-				// Boundary-safe translation: file-system read/write failures should fail the tool
-				// call clearly without silently degrading to empty memory state.
 				const message = error instanceof Error ? error.message : String(error);
 				result = { success: false, error: `Memory operation failed: ${message}` };
 			}

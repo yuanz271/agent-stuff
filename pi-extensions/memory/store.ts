@@ -1,13 +1,15 @@
 /**
- * MemoryStore — bounded, file-backed persistent memory.
+ * MemoryStore — bounded, file-backed persistent user preferences.
+ *
+ * Single store: USER.md — user preferences, environment facts, communication
+ * style, cross-project conventions. Think of it as IDE-local settings: private
+ * to this agent instance, not committed to any repo.
  *
  * Two parallel states:
  *   - snapshot: frozen at loadFromDisk(), used for system prompt injection.
  *     Never mutated mid-session. Keeps prefix cache stable.
  *   - entries: live state, mutated by tool calls, persisted to disk.
  *     Tool responses always reflect this live state.
- *
- * See SPEC.md for full design rationale.
  */
 
 import { readFile, open, rename, unlink, mkdir, type FileHandle } from "fs/promises";
@@ -17,13 +19,11 @@ import { scanContent } from "./scanner.js";
 
 const ENTRY_DELIMITER = "\n§\n";
 const SEPARATOR = "═".repeat(46);
-
-// ── Types ────────────────────────────────────────────────────────────────────
+const CHAR_LIMIT = 3575;
 
 export interface MutationResult {
 	success: boolean;
 	error?: string;
-	target?: string;
 	entries?: string[];
 	usage?: string;
 	entry_count?: number;
@@ -31,88 +31,71 @@ export interface MutationResult {
 	matches?: string[];
 }
 
-type Target = "memory" | "user";
-
 // ── MemoryStore ──────────────────────────────────────────────────────────────
 
 export class MemoryStore {
-	private entries: Record<Target, string[]> = { memory: [], user: [] };
-	private snapshot: Record<Target, string> = { memory: "", user: "" };
-	private limits: Record<Target, number>;
-	private dir: string;
+	private entries: string[] = [];
+	private snapshot: string = "";
+	private readonly path: string;
 
 	/** Serializes mutations so reload-modify-write is not interleaved. */
 	private _lockChain: Promise<void> = Promise.resolve();
 
-	constructor(dir: string, memoryLimit = 2200, userLimit = 1375) {
-		this.dir = dir;
-		this.limits = { memory: memoryLimit, user: userLimit };
+	constructor(dir: string) {
+		this.path = join(dir, "USER.md");
 	}
 
 	// ── Load / Snapshot ────────────────────────────────────────────────────
 
 	/** Read entries from disk and capture frozen snapshot. */
 	async loadFromDisk(): Promise<void> {
-		await mkdir(this.dir, { recursive: true });
-		this.entries.memory = await this._readFile(this._path("memory"));
-		this.entries.user = await this._readFile(this._path("user"));
-		this.snapshot = {
-			memory: this._renderBlock("memory"),
-			user: this._renderBlock("user"),
-		};
+		await mkdir(join(this.path, ".."), { recursive: true });
+		this.entries = await this._readFile();
+		this.snapshot = this._renderBlock();
 	}
 
-	/**
-	 * Return the frozen snapshot block for system prompt injection.
-	 * Combines both stores. Empty stores are omitted.
-	 */
+	/** Return the frozen snapshot block for system prompt injection. */
 	getSnapshotBlock(): string {
-		const parts: string[] = [];
-		if (this.snapshot.memory) parts.push(this.snapshot.memory);
-		if (this.snapshot.user) parts.push(this.snapshot.user);
-		return parts.join("\n\n");
+		return this.snapshot;
 	}
 
-	/** Compact status string for footer display, e.g. "🧠 1,474/2,200 · 619/1,375". */
+	/** Compact status string for footer display, e.g. "🧠 115/3,575". */
 	getStatusText(): string {
-		const m = this._charCount("memory");
-		const u = this._charCount("user");
-		return `🧠 ${fmt(m)}/${fmt(this.limits.memory)} · ${fmt(u)}/${fmt(this.limits.user)}`;
+		return `🧠 ${fmt(this._charCount())}/${fmt(CHAR_LIMIT)}`;
 	}
 
 	// ── Mutations ──────────────────────────────────────────────────────────
 
-	async add(target: Target, content: string): Promise<MutationResult> {
+	async add(content: string): Promise<MutationResult> {
 		content = content.trim();
 		const invalid = _validateContent(content);
 		if (invalid) return invalid;
 
 		return this._withLock(async () => {
-			await this._reloadTarget(target);
-			const entries = this.entries[target];
+			await this._reload();
 
-			if (entries.includes(content)) {
-				return this._successResponse(target, "Entry already exists (no duplicate added).");
+			if (this.entries.includes(content)) {
+				return this._successResponse("Entry already exists (no duplicate added).");
 			}
 
-			const projected = [...entries, content].join(ENTRY_DELIMITER).length;
-			if (projected > this.limits[target]) {
-				const current = this._charCount(target);
+			const projected = [...this.entries, content].join(ENTRY_DELIMITER).length;
+			if (projected > CHAR_LIMIT) {
+				const current = this._charCount();
 				return {
 					success: false,
-					error: `Memory at ${fmt(current)}/${fmt(this.limits[target])} chars. Adding this entry (${content.length} chars) would exceed the limit. Replace or remove existing entries first.`,
-					entries,
-					usage: `${this._pct(target)}% — ${fmt(current)}/${fmt(this.limits[target])} chars`,
+					error: `Memory at ${fmt(current)}/${fmt(CHAR_LIMIT)} chars. Adding this entry (${content.length} chars) would exceed the limit. Replace or remove existing entries first.`,
+					entries: this.entries,
+					usage: `${this._pct()}% — ${fmt(current)}/${fmt(CHAR_LIMIT)} chars`,
 				};
 			}
 
-			entries.push(content);
-			await this._writeFileAtomic(this._path(target), entries);
-			return this._successResponse(target, "Entry added.");
+			this.entries.push(content);
+			await this._writeFileAtomic();
+			return this._successResponse("Entry added.");
 		});
 	}
 
-	async replace(target: Target, oldText: string, newContent: string): Promise<MutationResult> {
+	async replace(oldText: string, newContent: string): Promise<MutationResult> {
 		oldText = oldText.trim();
 		newContent = newContent.trim();
 		if (!oldText) return { success: false, error: "old_text cannot be empty." };
@@ -120,93 +103,78 @@ export class MemoryStore {
 		if (invalid) return invalid;
 
 		return this._withLock(async () => {
-			await this._reloadTarget(target);
-			const entries = this.entries[target];
+			await this._reload();
 
-			const matchResult = this._findMatch(entries, oldText);
+			const matchResult = this._findMatch(oldText);
 			if (!matchResult.ok) return matchResult.error!;
 
 			const idx = matchResult.index!;
-			const test = [...entries];
+			const test = [...this.entries];
 			test[idx] = newContent;
 			const projected = test.join(ENTRY_DELIMITER).length;
-			if (projected > this.limits[target]) {
+			if (projected > CHAR_LIMIT) {
 				return {
 					success: false,
-					error: `Replacement would put memory at ${fmt(projected)}/${fmt(this.limits[target])} chars. Shorten the new content or remove other entries first.`,
+					error: `Replacement would put memory at ${fmt(projected)}/${fmt(CHAR_LIMIT)} chars. Shorten the new content or remove other entries first.`,
 				};
 			}
 
-			entries[idx] = newContent;
-			await this._writeFileAtomic(this._path(target), entries);
-			return this._successResponse(target, "Entry replaced.");
+			this.entries[idx] = newContent;
+			await this._writeFileAtomic();
+			return this._successResponse("Entry replaced.");
 		});
 	}
 
-	async remove(target: Target, oldText: string): Promise<MutationResult> {
+	async remove(oldText: string): Promise<MutationResult> {
 		oldText = oldText.trim();
 		if (!oldText) return { success: false, error: "old_text cannot be empty." };
 
 		return this._withLock(async () => {
-			await this._reloadTarget(target);
-			const entries = this.entries[target];
+			await this._reload();
 
-			const matchResult = this._findMatch(entries, oldText);
+			const matchResult = this._findMatch(oldText);
 			if (!matchResult.ok) return matchResult.error!;
 
-			entries.splice(matchResult.index!, 1);
-			await this._writeFileAtomic(this._path(target), entries);
-			return this._successResponse(target, "Entry removed.");
+			this.entries.splice(matchResult.index!, 1);
+			await this._writeFileAtomic();
+			return this._successResponse("Entry removed.");
 		});
 	}
 
-	// ── Read (for explicit read action) ────────────────────────────────────
-
-	async read(target: Target): Promise<MutationResult> {
+	async read(): Promise<MutationResult> {
 		return this._withLock(async () => {
-			await this._reloadTarget(target);
-			return this._successResponse(target);
+			await this._reload();
+			return this._successResponse();
 		});
 	}
 
 	// ── Private helpers ────────────────────────────────────────────────────
 
-	private _path(target: Target): string {
-		return join(this.dir, target === "user" ? "USER.md" : "MEMORY.md");
+	private _charCount(): number {
+		if (!this.entries.length) return 0;
+		return this.entries.join(ENTRY_DELIMITER).length;
 	}
 
-	private _charCount(target: Target): number {
-		const entries = this.entries[target];
-		if (!entries.length) return 0;
-		return entries.join(ENTRY_DELIMITER).length;
+	private _pct(): number {
+		return Math.min(100, Math.round((this._charCount() / CHAR_LIMIT) * 100));
 	}
 
-	private _pct(target: Target): number {
-		const limit = this.limits[target];
-		if (limit <= 0) return 0;
-		return Math.min(100, Math.round((this._charCount(target) / limit) * 100));
-	}
-
-	private _successResponse(target: Target, message?: string): MutationResult {
-		const entries = this.entries[target];
-		const current = this._charCount(target);
-		const limit = this.limits[target];
-		const pct = this._pct(target);
+	private _successResponse(message?: string): MutationResult {
+		const current = this._charCount();
 		const result: MutationResult = {
 			success: true,
-			target,
-			entries,
-			usage: `${pct}% — ${fmt(current)}/${fmt(limit)} chars`,
-			entry_count: entries.length,
+			entries: this.entries,
+			usage: `${this._pct()}% — ${fmt(current)}/${fmt(CHAR_LIMIT)} chars`,
+			entry_count: this.entries.length,
 		};
 		if (message) result.message = message;
 		return result;
 	}
 
-	private _findMatch(entries: string[], substring: string): { ok: boolean; index?: number; error?: MutationResult } {
+	private _findMatch(substring: string): { ok: boolean; index?: number; error?: MutationResult } {
 		const matches: [number, string][] = [];
-		for (let i = 0; i < entries.length; i++) {
-			if (entries[i].includes(substring)) matches.push([i, entries[i]]);
+		for (let i = 0; i < this.entries.length; i++) {
+			if (this.entries[i].includes(substring)) matches.push([i, this.entries[i]]);
 		}
 		if (matches.length === 0) {
 			return { ok: false, error: { success: false, error: `No entry matched '${substring}'.` } };
@@ -229,30 +197,22 @@ export class MemoryStore {
 		return { ok: true, index: matches[0][0] };
 	}
 
-	private _renderBlock(target: Target): string {
-		const entries = this.entries[target];
-		if (!entries.length) return "";
-
-		const content = entries.join(ENTRY_DELIMITER);
+	private _renderBlock(): string {
+		if (!this.entries.length) return "";
+		const content = this.entries.join(ENTRY_DELIMITER);
 		const current = content.length;
-		const limit = this.limits[target];
-		const pct = Math.min(100, Math.round((current / limit) * 100));
-
-		const header =
-			target === "user"
-				? `USER PROFILE (who the user is) [${pct}% — ${fmt(current)}/${fmt(limit)} chars]`
-				: `MEMORY (your personal notes) [${pct}% — ${fmt(current)}/${fmt(limit)} chars]`;
-
+		const pct = Math.min(100, Math.round((current / CHAR_LIMIT) * 100));
+		const header = `USER PREFERENCES [${pct}% — ${fmt(current)}/${fmt(CHAR_LIMIT)} chars]`;
 		return `${SEPARATOR}\n${header}\n${SEPARATOR}\n${content}`;
 	}
 
-	private async _reloadTarget(target: Target): Promise<void> {
-		this.entries[target] = await this._readFile(this._path(target));
+	private async _reload(): Promise<void> {
+		this.entries = await this._readFile();
 	}
 
-	private async _readFile(path: string): Promise<string[]> {
+	private async _readFile(): Promise<string[]> {
 		try {
-			const raw = await readFile(path, "utf8");
+			const raw = await readFile(this.path, "utf8");
 			if (!raw.trim()) return [];
 			const entries = raw.split(ENTRY_DELIMITER).map((e) => e.trim()).filter(Boolean);
 			// Deduplicate (preserve order, keep first)
@@ -260,13 +220,13 @@ export class MemoryStore {
 		} catch (error) {
 			const err = error as NodeJS.ErrnoException;
 			if (err.code === "ENOENT") return [];
-			throw new Error(`Failed to read memory file ${path}: ${err.message}`);
+			throw new Error(`Failed to read memory file ${this.path}: ${err.message}`);
 		}
 	}
 
-	private async _writeFileAtomic(path: string, entries: string[]): Promise<void> {
-		const content = entries.join(ENTRY_DELIMITER);
-		const tmp = path + `.tmp.${randomBytes(4).toString("hex")}`;
+	private async _writeFileAtomic(): Promise<void> {
+		const content = this.entries.join(ENTRY_DELIMITER);
+		const tmp = this.path + `.tmp.${randomBytes(4).toString("hex")}`;
 		let fileHandle: FileHandle | undefined;
 		try {
 			fileHandle = await open(tmp, "w");
@@ -277,20 +237,12 @@ export class MemoryStore {
 			} finally {
 				fileHandle = undefined;
 			}
-			await rename(tmp, path);
+			await rename(tmp, this.path);
 		} catch (err) {
 			if (fileHandle) {
-				try {
-					await fileHandle.close();
-				} catch {
-					// Best-effort cleanup only; preserve the original write failure.
-				}
+				try { await fileHandle.close(); } catch { /* best-effort */ }
 			}
-			try {
-				await unlink(tmp);
-			} catch {
-				// Best-effort temp-file cleanup only; preserve the original write failure.
-			}
+			try { await unlink(tmp); } catch { /* best-effort */ }
 			throw err;
 		}
 	}
@@ -306,7 +258,7 @@ export class MemoryStore {
 /** Shared pre-lock validation for content written to the store. */
 function _validateContent(content: string, emptyMessage = "Content cannot be empty."): MutationResult | null {
 	if (!content) return { success: false, error: emptyMessage };
-	if (content.includes(ENTRY_DELIMITER)) return { success: false, error: "Content must not contain the entry delimiter '\n§\n'." };
+	if (content.includes(ENTRY_DELIMITER)) return { success: false, error: "Content must not contain the entry delimiter '\\n§\\n'." };
 	const scanError = scanContent(content);
 	if (scanError) return { success: false, error: scanError };
 	return null;

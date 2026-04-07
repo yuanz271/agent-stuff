@@ -41,7 +41,7 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 * [`pi-tasks`](pi-extensions/pi-tasks) - Claude Code-style task tracking extension with task tools, widget, dependency graph, and optional subagent task execution (`/tasks` command).
 * [`pi-supervisor`](pi-extensions/pi-supervisor) - Outcome-focused supervisory overlay that monitors runs and injects steering via `/supervise`.
 * [`pi-schedule-prompt`](pi-extensions/pi-schedule-prompt) - Schedule one-shot or recurring future prompts with `schedule_prompt` and manage them via `/schedule-prompt`.
-* [`memory`](pi-extensions/memory) - Persistent cross-session memory extension with bounded `MEMORY.md` and `USER.md` stores under `~/.pi/agent/memories/`, injected as a frozen snapshot into the system prompt and managed through the `memory` tool (`add` / `replace` / `remove` / `read`).
+* [`memory`](pi-extensions/memory) - Persistent user preferences across sessions, stored in `~/.pi/agent/memories/USER.md` and injected as a frozen snapshot into the system prompt. Managed via the `memory` tool (`add` / `replace` / `remove` / `read`). Think IDE-local settings: personal and cross-project, not repo-specific.
 * [`session-breakdown.ts`](pi-extensions/session-breakdown.ts) - TUI for 7/30/90-day session and cost analysis with usage graph.
 * [`side-chat`](pi-extensions/side-chat) - Fork the current conversation into a non-capturing overlay side chat (`Alt+/`, `/side`) while the main agent keeps working.
 * [`uv.ts`](pi-extensions/uv.ts) - Bash wrapper that routes Python tooling (`pip`, `poetry`, `python -m ...`) toward `uv` workflows via intercepted commands.
