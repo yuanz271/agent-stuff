@@ -54,3 +54,13 @@ MIT License — same terms as stated in upstream `LICENSE`.
 - **Upstream copyright**: Copyright (c) 2026 tintinweb
 
 MIT License — same terms as stated in upstream `LICENSE`.
+
+## liteparse skill
+
+- **Source**: https://github.com/run-llama/llamaparse-agent-skills
+- **Included paths in this repo**:
+  - `skills/liteparse/*`
+- **Upstream license**: MIT License
+- **Upstream copyright**: Copyright (c) LlamaIndex 2026
+
+MIT License — same terms as stated in upstream `LICENSE`.

@@ -25,6 +25,7 @@ All skill files are in the [`skills`](skills) folder:
 * [`/tmux`](skills/tmux) - Driving tmux directly with keystrokes and pane output scraping
 * [`/uv`](skills/uv) - Using `uv` for Python dependency management and script execution
 * [`/make-release`](skills/make-release) - Bump version, update changelog, commit, tag, and show push instructions
+* [`/liteparse`](skills/liteparse) - Parse PDF, DOCX, PPTX, XLSX, and images locally with LiteParse (no cloud dependencies)
 
 ## PI Coding Agent Extensions
 
