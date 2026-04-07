@@ -3,7 +3,7 @@ name: pdf-extract
 description: "High-fidelity PDF → Markdown conversion via Vertex AI Gemini. Preserves equations (LaTeX), tables, multi-column layout, and figure captions. Use this instead of markitdown when the PDF has heavy math or complex structure."
 ---
 
-Convert a PDF to well-structured Markdown using Vertex AI Gemini (`gemini-2.5-flash`).
+Convert a PDF to well-structured Markdown using Vertex AI Gemini (`gemini-2.5-flash` default; override with `--model`).
 Accepts a local file path or a GCS URI (`gs://`).
 
 Prefer this skill over `summarize`/`markitdown` when:
@@ -20,13 +20,7 @@ Use `summarize`/`markitdown` for quick prose-only PDFs or when Vertex AI is unav
 2. Vertex AI authenticated: `gcloud auth application-default login`
 3. `GOOGLE_CLOUD_LOCATION` (optional, defaults to `us-central1`)
 
-## First-time setup
-
-Install dependencies (once per machine):
-
-```bash
-npm install
-```
+No `npm install` needed — uses Node.js built-in `fetch`.
 
 ## Usage
 
@@ -41,6 +35,10 @@ node extract.mjs paper.pdf --output paper-clean.md
 
 # Use a GCS URI instead of a local file
 node extract.mjs gs://my-bucket/paper.pdf --output paper-clean.md
+
+# Use a different model
+node extract.mjs paper.pdf --model gemini-2.5-pro
+node extract.mjs paper.pdf --model gemini-2.5-flash
 ```
 
 ## Output
@@ -57,5 +55,6 @@ Formatting rules applied:
 ## Notes
 
 - Local files are base64-encoded and sent inline. Large PDFs (>10 MB) may be slow or hit limits — use a GCS URI instead.
-- Model: `gemini-2.5-flash` (hardcoded in `extract.mjs`; edit to change).
+- Model: `gemini-2.5-flash` default; override with `--model <id>` (e.g. `gemini-2.5-pro`).
+- Auth: `gcloud auth application-default print-access-token` (no service account JSON needed).
 - Region: `GOOGLE_CLOUD_LOCATION` env var (default: `us-central1`).
