@@ -24,6 +24,7 @@ All skill files are in the [`skills`](skills) folder:
 * [`/summarize`](skills/summarize) - Converting URLs/files to Markdown with optional summaries, including structured research-paper critique mode for PDF papers
 * [`/tmux`](skills/tmux) - Driving tmux directly with keystrokes and pane output scraping
 * [`/uv`](skills/uv) - Using `uv` for Python dependency management and script execution
+* [`/make-release`](skills/make-release) - Bump version, update changelog, commit, tag, and show push instructions
 
 ## PI Coding Agent Extensions
 
@@ -89,12 +90,6 @@ builder:
 Reference documents in the [`docs`](docs) folder:
 
 * [`pi-extension-writing-guide.md`](docs/pi-extension-writing-guide.md) - Guide to writing pi-coding-agent extensions
-
-## Plumbing Commands
-
-These command files need customization before use. They live in [`plumbing-commands`](plumbing-commands):
-
-* [`/make-release`](plumbing-commands/make-release.md) - Automates repository release with version management.
 
 ## Intercepted Commands
 
