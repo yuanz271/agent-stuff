@@ -1,1 +1,1 @@
-/Users/zhaoy11/dotfiles/agent-stuff/SYSTEM.md
+../dotfiles/agent-stuff/SYSTEM.md

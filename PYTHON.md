@@ -1,1 +1,1 @@
-/Users/zhaoy11/dotfiles/agent-stuff/PYTHON.md
+../dotfiles/agent-stuff/PYTHON.md
