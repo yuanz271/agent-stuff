@@ -29,7 +29,7 @@ import {
   type WriteOperations,
 } from "@mariozechner/pi-coding-agent";
 
-import { RealFSProvider, VM } from "@earendil-works/gondolin";
+import { createHttpHooks, RealFSProvider, VM } from "@earendil-works/gondolin";
 
 const GUEST_WORKSPACE = "/workspace";
 
@@ -210,7 +210,17 @@ export default function (pi: ExtensionAPI) {
         ),
       );
 
+      // Allow HTTPS to Google APIs needed for websearch and pdf-extract.
+      // All other outbound HTTPS and raw TCP (including SSH) remain blocked.
+      const { httpHooks } = createHttpHooks({
+        allowedHosts: [
+          "oauth2.googleapis.com",     // service account auth
+          "aiplatform.googleapis.com", // Vertex AI (websearch, pdf-extract)
+        ],
+      });
+
       const created = await VM.create({
+        httpHooks,
         vfs: {
           mounts: {
             [GUEST_WORKSPACE]: new RealFSProvider(localCwd),
