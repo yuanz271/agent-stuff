@@ -45,6 +45,6 @@ Keep this list updated whenever importing or porting an extension/skill so sourc
 - `pi-extensions/pi-tasks/*` → `https://github.com/tintinweb/pi-tasks` @ `46cca7a` (`origin/master`)
 - `pi-extensions/pi-supervisor/*` → `https://github.com/tintinweb/pi-supervisor` @ `a6d8a501bae9` (`origin/master`)
 - `pi-extensions/pi-schedule-prompt/*` → `https://github.com/tintinweb/pi-schedule-prompt` @ `ef7ab49f2988` (`origin/master`)
-- `skills/liteparse/*` → `https://github.com/run-llama/llamaparse-agent-skills` @ `main` (copied at latest HEAD)
+- `skills/liteparse/*` → `https://github.com/run-llama/llamaparse-agent-skills` @ `1f10f60a9eba` (`origin/main`)
 
 Also update `THIRD_PARTY_NOTICES.md` whenever this list changes.
