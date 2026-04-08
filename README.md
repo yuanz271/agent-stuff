@@ -45,6 +45,7 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 * [`session-breakdown.ts`](pi-extensions/session-breakdown.ts) - TUI for 7/30/90-day session and cost analysis with usage graph.
 * [`side-chat`](pi-extensions/side-chat) - Fork the current conversation into a non-capturing overlay side chat (`Alt+/`, `/side`) while the main agent keeps working.
 * [`uv.ts`](pi-extensions/uv.ts) - Bash wrapper that routes Python tooling (`pip`, `poetry`, `python -m ...`) toward `uv` workflows via intercepted commands.
+* [`gondolin`](pi-extensions/gondolin) - Sandbox extension that overrides `read`/`write`/`edit`/`bash` tools to execute inside a local Gondolin micro-VM (QEMU), with the working directory mounted at `/workspace`. Requires `brew install qemu`.
 
 ## Docs
 

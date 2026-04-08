@@ -29,10 +29,11 @@
     ]
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*",
+    "@earendil-works/gondolin": "^0.7.0",
+    "@mariozechner/pi-agent-core": "*",
     "@mariozechner/pi-ai": "*",
-    "@mariozechner/pi-tui": "*",
-    "@mariozechner/pi-agent-core": "*"
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*"
   },
   "dependencies": {
     "@sinclair/typebox": "latest",

@@ -64,3 +64,14 @@ MIT License — same terms as stated in upstream `LICENSE`.
 - **Upstream copyright**: Copyright (c) LlamaIndex 2026
 
 MIT License — same terms as stated in upstream `LICENSE`.
+
+## gondolin Pi extension
+
+- **Source**: https://github.com/earendil-works/gondolin
+- **Included paths in this repo**:
+  - `pi-extensions/gondolin/*`
+- **Upstream version**: v0.7.0 (`c9a37ff25d8a`)
+- **Upstream license**: Apache License 2.0
+- **Upstream copyright**: Copyright holder not named in LICENSE file.
+
+Apache License 2.0 — same terms as stated in upstream `LICENSE`.
