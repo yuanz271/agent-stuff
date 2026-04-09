@@ -61,7 +61,7 @@ async function checkWithHaiku(
 	apiKey: string,
 ): Promise<{ shouldUpdate: boolean; reason: string }> {
 	const model = getModel("anthropic", "claude-haiku-4-5");
-	if (!model) return { shouldUpdate: true, reason: "model not found" };
+	if (!model) return { shouldUpdate: false, reason: "model not found" };
 
 	try {
 		const docList = docs.map((d) => `- "${d.title}" (${d.path})`).join("\n");
@@ -97,14 +97,15 @@ async function checkWithHaiku(
 
 		const toolCall = response.content.find((c: any) => c.type === "toolCall");
 		if (!toolCall || toolCall.type !== "toolCall") {
-			return { shouldUpdate: true, reason: "no tool call" };
+			return { shouldUpdate: false, reason: "no tool call" };
 		}
 		return {
 			shouldUpdate: toolCall.arguments.should_update,
 			reason: toolCall.arguments.reason,
 		};
 	} catch (e) {
-		return { shouldUpdate: true, reason: `error: ${e}` };
+		// API failure (network, rate limit, auth) — skip rather than trigger spurious updates.
+		return { shouldUpdate: false, reason: `error: ${e}` };
 	}
 }
 
@@ -125,7 +126,14 @@ export default function (pi: ExtensionAPI) {
 	function detectFromDisk(filePath: string) {
 		try {
 			detect(filePath, fs.readFileSync(filePath, "utf-8"));
-		} catch {}
+		} catch (e) {
+			const code = (e as NodeJS.ErrnoException).code;
+			if (code !== "ENOENT") {
+				// Unexpected error (permission denied, encoding failure, etc.) — surface it.
+				console.warn(`[magic-docs] Failed to read ${filePath}: ${e}`);
+			}
+			// ENOENT: file deleted between write and detection — silently skip.
+		}
 	}
 
 	function textFrom(content: any[]): string | null {
@@ -179,7 +187,9 @@ export default function (pi: ExtensionAPI) {
 		if (tracked.size === 0) return;
 
 		// Get API key
-		const apiKey = await ctx.modelRegistry.getApiKey(getModel("anthropic", "claude-haiku-4-5")!);
+		const haikuModel = getModel("anthropic", "claude-haiku-4-5");
+		if (!haikuModel) return;
+		const apiKey = await ctx.modelRegistry.getApiKey(haikuModel);
 		if (!apiKey) return;
 
 		// Get recent conversation messages for Haiku to evaluate
