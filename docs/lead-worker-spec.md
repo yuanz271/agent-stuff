@@ -118,13 +118,16 @@ User runs: /lead ~/repoA
 1. Resolve and validate path:
    - If ~/repoA does not exist → report error, do nothing
 
-2. Call ctx.switchSession(path.resolve('~/repoA/.pi/lead.jsonl'))
+2. Ensure `~/repoA/.pi/` exists:
+   - `mkdir -p ~/repoA/.pi/` (Pi does not create parent directories automatically)
+
+3. Call ctx.switchSession(path.resolve('~/repoA/.pi/lead.jsonl'))
    - Resumes existing session if lead.jsonl exists (full history restored)
    - Creates a fresh session if lead.jsonl does not exist (first activation for this repo)
    - Updates lead's cwd to ~/repoA
 
-3. Try to connect to ~/repoA/.pi/worker.sock
-   a. Connection succeeds → worker already running, proceed to step 4
+4. Try to connect to ~/repoA/.pi/worker.sock
+   a. Connection succeeds → worker already running, proceed to step 5
    b. Connection fails    → worker not running, go to spawn
 
    Spawn worker:
@@ -133,7 +136,7 @@ User runs: /lead ~/repoA
    - Poll for worker.sock (timeout: 10s, interval: 200ms)
    - Connect once socket appears
 
-4. Query worker status, surface to user
+5. Query worker status, surface to user
 ```
 
 ### Switch to another repo
@@ -274,7 +277,7 @@ Each repo must contain:
 
 3. **Tilde expansion** — `~` must be expanded to `os.homedir()` before calling `path.resolve` — Node.js `path.resolve` does not expand tildes.
 
-4. **First-ever activation** — `ctx.switchSession` on a non-existent `lead.jsonl` creates a fresh session. All subsequent activations resume from the existing file.
+4. **First-ever activation** — Lead creates `<repo>/.pi/` with `mkdirSync` if absent (Pi does not create parent directories). `ctx.switchSession` on a non-existent `lead.jsonl` then creates a fresh session. All subsequent activations resume from the existing file.
 
 5. **Lead session switching** — `ctx.switchSession(absolutePath)` loads the session in-process, restores full history, and updates `cwd`. No Pi restart required.
 
