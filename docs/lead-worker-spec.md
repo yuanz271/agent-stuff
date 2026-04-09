@@ -27,12 +27,12 @@ A multi-session Pi setup where a single **lead** session coordinates multiple pe
 ## Roles
 
 ### Lead
-- The single session the user interacts with
-- Switches active repo on user request
+- A regular Pi session until the user activates it with `/lead <repo-path>`
+- On activation: loads the repo's lead session and connects to (or spawns) its worker
 - Delegates tasks to the active worker
 - Surfaces results back to the user
 - Never edits files or runs commands directly
-- Stateless across restarts — all durable state is in the repo
+- Lead mode is per-activation — no special startup required
 
 ### Worker
 - One per repository, one-to-one with a repo path
@@ -107,36 +107,44 @@ The socket is a persistent bidirectional connection — both lead and worker can
 
 ## Lifecycle
 
-### Switch to a repo
+### Activate lead mode
 
 ```
-User: "switch to ~/repoA"
+User runs: /lead ~/repoA
 
-1. Lead tries to connect to ~/repoA/.pi/worker.sock
-   a. Connection succeeds  → worker already running, proceed to step 3
-   b. Connection fails     → worker not running, go to step 2
+1. Call ctx.switchSession(path.resolve('~/repoA/.pi/lead.jsonl'))
+   - Creates session file if it doesn't exist (new repo)
+   - Loads full conversation history if it does (resume)
+   - Updates lead's cwd to ~/repoA
 
-2. Spawn worker:
-   - `spawn('pi', ['--session', '~/repoA/.pi/worker.jsonl'], { cwd: '~/repoA', detached: true, stdio: 'ignore' })` then `unref()`
-   - Worker is fully independent of the lead process after spawn
-   - Poll for ~/repoA/.pi/worker.sock (timeout: 10s, interval: 200ms)
+2. Try to connect to ~/repoA/.pi/worker.sock
+   a. Connection succeeds → worker already running, proceed to step 3
+   b. Connection fails    → worker not running, go to spawn
+
+   Spawn worker:
+   - resolve path: repoPath = path.resolve('~/repoA')
+   - spawn('pi', ['--session', repoPath + '/.pi/worker.jsonl'], { cwd: repoPath, detached: true, stdio: 'ignore' }).unref()
+   - Poll for worker.sock (timeout: 10s, interval: 200ms)
    - Connect once socket appears
 
-3. Call `ctx.switchSession("~/repoA/.pi/lead.jsonl")`
-   - Loads the session file in-process (no restart)
-   - Also updates lead's cwd to ~/repoA
+3. Query worker status, surface to user
+```
 
-4. Send status query to worker, surface result to user
+### Switch to another repo
+
+```
+User runs: /lead ~/repoB
+  → Same flow as activation above
+  → Previous worker connection is closed (worker keeps running)
 ```
 
 ### Lead restart
 
 ```
-1. Lead starts with `pi --continue` → automatically loads the last active session
-2. Last active session is the lead's session for the last active repo
-3. Try to connect to <active-repo>/.pi/worker.sock
-   a. Success → reconnect, query status, surface to user
-   b. Failure → notify user: "Worker for <repo> is not running. Spawn it?"
+1. pi starts normally
+2. User runs /lead ~/repoA to resume
+3. ctx.switchSession loads ~/repoA/.pi/lead.jsonl (full history restored)
+4. Lead connects to worker (or spawns if not running)
 ```
 
 ### Worker startup
@@ -203,8 +211,14 @@ Each repo must contain:
 
 ## Resolved Design Questions
 
-1. **Custom session file path** — `pi --session <path>` is supported. Worker is spawned as `pi --session <repo>/.pi/worker.jsonl` from the repo directory.
+1. **Lead activation** — `/lead <path>` slash command activates lead mode. No special Pi startup needed; lead is a regular Pi session until activated.
 
-2. **Lead session switching** — `ctx.switchSession(sessionPath)` is exposed to extensions via the extension API. The lead switches to `<repo>/.pi/lead.jsonl` in-process on switch — no restart required.
+2. **Worker spawn path** — `pi --session <path>` supported. Paths must be fully resolved (`path.resolve`) before passing to `spawn` — shell tilde expansion does not apply.
 
-3. **Simultaneous workers** — Deferred; single active worker is sufficient for v1.
+3. **First-ever activation** — `ctx.switchSession` on a non-existent file creates a fresh session. New repos get a blank `lead.jsonl` automatically.
+
+4. **Lead session switching** — `ctx.switchSession(absolutePath)` loads the session in-process, restores full history, and updates `cwd`. No Pi restart required.
+
+5. **Worker session** — `pi --session <path>` also creates the file if absent. New worker starts with a blank session.
+
+6. **Simultaneous workers** — Deferred; single active worker is sufficient for v1.
