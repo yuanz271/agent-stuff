@@ -113,8 +113,8 @@ The socket is a persistent bidirectional connection — both lead and worker can
 User runs: /lead ~/repoA
 
 1. Call ctx.switchSession(path.resolve('~/repoA/.pi/lead.jsonl'))
-   - Creates session file if it doesn't exist (new repo)
-   - Loads full conversation history if it does (resume)
+   - Resumes existing session if lead.jsonl exists (full history restored)
+   - Creates a fresh session if lead.jsonl does not exist (first activation for this repo)
    - Updates lead's cwd to ~/repoA
 
 2. Try to connect to ~/repoA/.pi/worker.sock
@@ -215,7 +215,7 @@ Each repo must contain:
 
 2. **Worker spawn path** — `pi --session <path>` supported. Paths must be fully resolved (`path.resolve`) before passing to `spawn` — shell tilde expansion does not apply.
 
-3. **First-ever activation** — `ctx.switchSession` on a non-existent file creates a fresh session. New repos get a blank `lead.jsonl` automatically.
+3. **First-ever activation** — `ctx.switchSession` on a non-existent path creates a fresh session. All subsequent activations resume from the existing file.
 
 4. **Lead session switching** — `ctx.switchSession(absolutePath)` loads the session in-process, restores full history, and updates `cwd`. No Pi restart required.
 
