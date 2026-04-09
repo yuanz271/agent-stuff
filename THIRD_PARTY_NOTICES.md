@@ -64,3 +64,14 @@ MIT License — same terms as stated in upstream `LICENSE`.
 - **Upstream copyright**: Copyright (c) LlamaIndex 2026
 
 MIT License — same terms as stated in upstream `LICENSE`.
+
+## magic-docs Pi extension
+
+- **Source**: https://github.com/Michaelliv/pi-magic-docs
+- **Included paths in this repo**:
+  - `pi-extensions/magic-docs/*`
+- **Upstream version**: `056de30d4947` (main)
+- **Upstream license**: MIT License
+- **Upstream copyright**: Copyright (c) michaelliv
+
+MIT License — same terms as stated in upstream `package.json` (`"license": "MIT"`).
