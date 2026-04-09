@@ -121,11 +121,11 @@ User runs: /lead ~/repoA
    - Updates lead's cwd to ~/repoA
 
 3. Try to connect to ~/repoA/.pi/worker.sock
-   a. Connection succeeds → worker already running, proceed to step 3
+   a. Connection succeeds → worker already running, proceed to step 4
    b. Connection fails    → worker not running, go to spawn
 
    Spawn worker:
-   - resolve path: repoPath = path.resolve('~/repoA')
+   - repoPath = path.resolve(expandTilde('~/repoA'))  // ~ must be expanded before path.resolve
    - spawn('pi', ['--session', repoPath + '/.pi/worker.jsonl'], { cwd: repoPath, detached: true, stdio: 'ignore' }).unref()
    - Poll for worker.sock (timeout: 10s, interval: 200ms)
    - Connect once socket appears
@@ -188,7 +188,7 @@ Lead never exposes one repo's context when working in another. Worker never sees
 ### Lead Extension (`pi-extensions/lead/index.ts`)
 
 Responsibilities:
-- `/switch <repo-path>` slash command
+- `/lead <repo-path>` slash command
 - Socket client: connect, send, receive, correlation ID tracking
 - Spawn logic: start worker, wait for socket, handle stale socket
 - Per-repo session loading on switch
@@ -216,14 +216,16 @@ Each repo must contain:
 
 1. **Lead activation** — `/lead <path>` slash command activates lead mode. No special Pi startup needed; lead is a regular Pi session until activated.
 
-2. **Worker spawn path** — `pi --session <path>` supported. Paths must be fully resolved (`path.resolve`) before passing to `spawn` — shell tilde expansion does not apply.
+2. **Path validation** — `/lead <path>` reports an error and does nothing if the path does not exist. `ctx.switchSession` is never called with an invalid path.
 
-3. **Path validation** — `/lead <path>` reports an error and does nothing if the path does not exist. `ctx.switchSession` is never called with an invalid path.
+3. **Tilde expansion** — `~` must be expanded to `os.homedir()` before calling `path.resolve` — Node.js `path.resolve` does not expand tildes.
 
 4. **First-ever activation** — `ctx.switchSession` on a non-existent `lead.jsonl` creates a fresh session. All subsequent activations resume from the existing file.
 
-4. **Lead session switching** — `ctx.switchSession(absolutePath)` loads the session in-process, restores full history, and updates `cwd`. No Pi restart required.
+5. **Lead session switching** — `ctx.switchSession(absolutePath)` loads the session in-process, restores full history, and updates `cwd`. No Pi restart required.
 
-5. **Worker session** — `pi --session <path>` also creates the file if absent. New worker starts with a blank session.
+6. **Worker session** — `pi --session <path>` also creates the file if absent. New worker starts with a blank session.
 
-6. **Simultaneous workers** — Deferred; single active worker is sufficient for v1.
+7. **Blocking timeout** — Both sides enforce a 10-minute timeout on blocking calls. On timeout, the blocked call errors and the caller surfaces the failure (lead notifies user; worker reports error and may retry or abort the task).
+
+8. **Simultaneous workers** — Deferred; single active worker is sufficient for v1.
