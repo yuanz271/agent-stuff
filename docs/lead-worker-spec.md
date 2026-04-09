@@ -36,7 +36,8 @@ A multi-session Pi setup where a single **lead** session coordinates multiple pe
 
 ### Worker
 - One per repository, one-to-one with a repo path
-- Persistent until explicitly killed by the user
+- Spawned by the lead on first switch; persists until explicitly killed
+- Unexpected exits are safe — session file preserves all state and the lead respawns on reconnect
 - Does all hands-on work: reading, editing, running commands, debugging, testing
 - Communicates with the lead via Unix socket
 - Escalates blockers and reports completion via blocking requests
@@ -116,7 +117,8 @@ User: "switch to ~/repoA"
    b. Connection fails     → worker not running, go to step 2
 
 2. Spawn worker:
-   - Start detached Pi process in ~/repoA with session file ~/repoA/.pi/worker.jsonl
+   - `spawn('pi', ['--session', '~/repoA/.pi/worker.jsonl'], { cwd: '~/repoA', detached: true, stdio: 'ignore' })` then `unref()`
+   - Worker is fully independent of the lead process after spawn
    - Poll for ~/repoA/.pi/worker.sock (timeout: 10s, interval: 200ms)
    - Connect once socket appears
 
