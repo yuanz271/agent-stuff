@@ -29,11 +29,7 @@ function parseHeader(content: string): { title: string; instruction?: string } |
 
 function buildUpdateMessage(docs: TrackedDoc[]): string {
 	const list = docs
-		.map((d) => {
-			let s = `- \`${d.path}\` — "${d.title}"`;
-			if (d.instruction) s += ` (focus: ${d.instruction})`;
-			return s;
-		})
+		.map((d) => `- \`${d.path}\` — "${d.title}"${d.instruction ? ` (focus: ${d.instruction})` : ""}`)
 		.join("\n");
 
 	return (
@@ -206,20 +202,16 @@ export default function (pi: ExtensionAPI) {
 			"info",
 		);
 
-		if (!shouldUpdate) {
-			consecutiveIdleRuns = 0;
-			lastUpdateTime = Date.now();
-			return;
+		if (shouldUpdate) {
+			pi.sendMessage(
+				{
+					customType: "magic-docs-update",
+					content: buildUpdateMessage(docs),
+					display: true,
+				},
+				{ triggerTurn: true },
+			);
 		}
-
-		pi.sendMessage(
-			{
-				customType: "magic-docs-update",
-				content: buildUpdateMessage(docs),
-				display: true,
-			},
-			{ triggerTurn: true },
-		);
 
 		consecutiveIdleRuns = 0;
 		lastUpdateTime = Date.now();
