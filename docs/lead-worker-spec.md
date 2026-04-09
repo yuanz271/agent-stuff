@@ -279,7 +279,7 @@ Each repo must contain:
 
 4. **First-ever activation** — Lead creates `<repo>/.pi/` with `mkdirSync` if absent (Pi does not create parent directories). `ctx.switchSession` on a non-existent `lead.jsonl` then creates a fresh session. All subsequent activations resume from the existing file.
 
-5. **Lead session switching** — `ctx.switchSession(absolutePath)` loads the session in-process, restores full history, and updates `cwd`. No Pi restart required.
+5. **Lead session switching** — `ctx.switchSession(absolutePath)` loads the session in-process, restores full history, and updates `cwd`. No Pi restart required. The outgoing session is always current on disk — Pi appends every entry via `appendFileSync` immediately with no buffering, so no flush is needed before switching.
 
 6. **Worker session** — `pi --session <path>` also creates the file if absent. New worker starts with a blank session.
 
