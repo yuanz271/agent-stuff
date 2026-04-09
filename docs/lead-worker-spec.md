@@ -84,17 +84,20 @@ Length-prefixed JSON:
 ```ts
 interface Message {
   id: string;          // UUID, unique per message
-  type: "request" | "reply";
+  type: "request" | "reply" | "command";
   replyTo?: string;    // set on replies: ID of the originating request
-  payload: string;     // message body (task, status, question, answer)
+  payload: string;     // message body (task, status, question, answer, or command string)
 }
 ```
+
+`command` messages are fire-and-forget operational directives from lead to worker — no reply expected. Worker executes them via Pi API without involving the agent.
 
 ### Message Patterns
 
 | Pattern | Initiator | Blocking | Description |
 |---------|-----------|----------|-------------|
 | Task delegation | Lead | No | Lead sends task, continues without waiting |
+| Direct command | Lead | No | Operational directive to worker (model, thinking level) — no agent involved |
 | Status query | Lead | Yes | Lead asks worker for current state |
 | Blocker escalation | Worker | Yes | Worker asks lead for clarification |
 | Completion report | Worker | Yes | Worker reports task done, waits for next instruction |
@@ -238,7 +241,8 @@ pi-extensions/lead-worker/
 - **Lead role**: `/lead` command always available; activates on demand
 
 ### Lead responsibilities
-- `/lead <repo-path>` slash command
+- `/lead <repo-path>` — activate lead mode for a repo
+- `/worker <command>` — send operational command directly to active worker (e.g. `/worker /model claude-opus-4`, `/worker /thinking high`); bypasses the lead agent entirely
 - Socket client: connect, send, receive, correlation ID tracking
 - Persistent `data` listener — incoming worker messages call `pi.sendMessage({ triggerTurn: true })`
 - Spawn logic: start worker, poll for socket, handle stale socket, auto-respawn on unexpected close
@@ -248,7 +252,8 @@ pi-extensions/lead-worker/
 ### Worker responsibilities
 - `net.createServer` listening on `<cwd>/.pi/worker.sock`
 - Accept sequential connections from lead; survive lead disconnect
-- Inject incoming tasks via `pi.sendMessage({ triggerTurn: true })`
+- Inject incoming `request` messages via `pi.sendMessage({ triggerTurn: true })`
+- Handle `command` messages: execute Pi API calls directly (model switch, thinking level) without agent involvement
 - `lead` tool: `ask`, `reply`, `status`
 - Clean socket removal on session shutdown
 
