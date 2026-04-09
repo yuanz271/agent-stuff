@@ -169,6 +169,36 @@ If `worker.sock` exists but connection is refused (stale socket from a crashed w
 
 ---
 
+## Connection State
+
+### Worker socket server
+
+The worker runs a persistent `net.createServer` that accepts multiple sequential connections — one lead connection at a time. When the lead disconnects, the server continues listening for the next connection.
+
+### Lead disconnect
+
+When the lead switches repos or exits, it closes the socket. The worker detects the `close` event and enters **disconnected state**:
+- No new unsolicited messages are sent (they would be lost)
+- Any in-flight blocking call waiting for a lead reply is immediately rejected with an error (do not wait for the 10-minute timeout)
+- Worker resumes normal operation, waiting for the lead to reconnect
+
+### Lead reconnect
+
+When `/lead <repo>` is run again for a repo with a running worker:
+- Worker accepts the new connection
+- Lead queries status to re-orient
+- Messages sent while the lead was away are not replayed — they are lost. Worker should treat reconnect as a fresh coordination point.
+
+### In-flight calls on disconnect
+
+| Scenario | Behaviour |
+|----------|-----------|
+| Lead waiting for worker reply, lead disconnects | N/A — lead initiated, lead controls timeout |
+| Worker waiting for lead reply, lead disconnects | Worker's pending call errors immediately on socket `close` |
+| Lead waiting for worker reply, worker crashes | Lead's pending call errors on socket `close`; lead notifies user |
+
+---
+
 ## Context Isolation
 
 | Session | Visible context |
