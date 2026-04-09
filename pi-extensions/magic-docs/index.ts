@@ -185,8 +185,9 @@ export default function (pi: ExtensionAPI) {
 		// Get API key
 		const haikuModel = getModel("anthropic", "claude-haiku-4-5");
 		if (!haikuModel) return;
-		const apiKey = await ctx.modelRegistry.getApiKey(haikuModel);
-		if (!apiKey) return;
+		const auth = await (ctx.modelRegistry as any).getApiKeyAndHeaders(haikuModel);
+		if (!auth.ok || !auth.apiKey) return;
+		const apiKey = auth.apiKey;
 
 		// Get recent conversation messages for Haiku to evaluate
 		const recentMessages = ctx.sessionManager
