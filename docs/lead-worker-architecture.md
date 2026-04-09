@@ -1,3 +1,6 @@
+# MAGIC DOC: Lead–Worker Architecture
+*Focus on architecture decisions, IPC design, and component responsibilities*
+
 # Lead–Worker Architecture
 
 A multi-session Pi setup where a single **lead** session coordinates multiple persistent **worker** sessions, one per repository.
