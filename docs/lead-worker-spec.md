@@ -195,10 +195,10 @@ Each repo must contain:
 
 ---
 
-## Open Questions
+## Resolved Design Questions
 
-1. **Custom session file path** — Does Pi support `--session <path>` at startup? Required to spawn worker with `worker.jsonl` and load `lead.jsonl` on switch. Needs verification against Pi CLI.
+1. **Custom session file path** — `pi --session <path>` is supported. Worker is spawned as `pi --session <repo>/.pi/worker.jsonl` from the repo directory.
 
-2. **Lead session switching** — How does the lead load a different session file mid-process when switching repos? May require a Pi API for session replacement or a restart with the new session path.
+2. **Lead session switching** — `ctx.switchSession(sessionPath)` is exposed to extensions via the extension API. The lead switches to `<repo>/.pi/lead.jsonl` in-process on switch — no restart required.
 
-3. **Simultaneous workers** — If the lead delegates to multiple workers at once, it needs concurrent socket connections. Deferred; single active worker is sufficient for v1.
+3. **Simultaneous workers** — Deferred; single active worker is sufficient for v1.
