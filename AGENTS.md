@@ -1,5 +1,9 @@
 # Agent Notes
 
+## Git
+
+- Do not run `git push` without explicit user instruction. Commit freely, but always wait for "push" or "commit and push" before pushing to remote.
+
 ## Releases
 
 1. Run `npm version <patch|minor|major>` and verify `package.json` updates.
