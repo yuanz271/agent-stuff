@@ -196,6 +196,7 @@ When `/lead <repo>` is run again for a repo with a running worker:
 | Lead waiting for worker reply, lead disconnects | N/A — lead initiated, lead controls timeout |
 | Worker waiting for lead reply, lead disconnects | Worker's pending call errors immediately on socket `close` |
 | Lead waiting for worker reply, worker crashes | Lead's pending call errors on socket `close`; lead notifies user |
+| Worker crashes and restarts | Worker starts fresh, listens on new socket; lead must reconnect via `/lead <path>` |
 
 ---
 
@@ -220,6 +221,7 @@ Lead never exposes one repo's context when working in another. Worker never sees
 Responsibilities:
 - `/lead <repo-path>` slash command
 - Socket client: connect, send, receive, correlation ID tracking
+- Persistent `data` listener on socket — incoming worker messages call `pi.sendMessage({ triggerTurn: true })` to inject them into the lead's conversation
 - Spawn logic: start worker, wait for socket, handle stale socket
 - Per-repo session loading on switch
 - Surface worker replies to user
