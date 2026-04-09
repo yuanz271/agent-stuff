@@ -100,6 +100,8 @@ interface Message {
 
 **Blocking** calls: sender includes `id`, waits for a reply message with matching `replyTo` before returning. Timeout: 10 minutes.
 
+The socket is a persistent bidirectional connection — both lead and worker can initiate messages at any time. Lead initiates as client; worker can send unsolicited messages (escalations, completion reports) back on the same connection.
+
 ---
 
 ## Lifecycle
@@ -118,7 +120,9 @@ User: "switch to ~/repoA"
    - Poll for ~/repoA/.pi/worker.sock (timeout: 10s, interval: 200ms)
    - Connect once socket appears
 
-3. Load ~/repoA/.pi/lead.jsonl as the lead's active session
+3. Call `ctx.switchSession("~/repoA/.pi/lead.jsonl")`
+   - Loads the session file in-process (no restart)
+   - Also updates lead's cwd to ~/repoA
 
 4. Send status query to worker, surface result to user
 ```
@@ -126,8 +130,8 @@ User: "switch to ~/repoA"
 ### Lead restart
 
 ```
-1. Lead starts
-2. Determine last active repo from most recent lead session file (scan ~/.pi/ or repo paths)
+1. Lead starts with `pi --continue` → automatically loads the last active session
+2. Last active session is the lead's session for the last active repo
 3. Try to connect to <active-repo>/.pi/worker.sock
    a. Success → reconnect, query status, surface to user
    b. Failure → notify user: "Worker for <repo> is not running. Spawn it?"
