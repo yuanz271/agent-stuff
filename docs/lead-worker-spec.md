@@ -222,23 +222,34 @@ Lead never exposes one repo's context when working in another. Worker never sees
 
 ## Components
 
-### Lead Extension (`pi-extensions/lead/index.ts`)
+Single extension at `pi-extensions/lead-worker/` loaded by Pi in every session.
 
-Responsibilities:
+```
+pi-extensions/lead-worker/
+├── index.ts      — extension entry point: initialises lead and worker roles
+├── framing.ts    — shared length-prefixed JSON framing
+├── lead.ts       — /lead command, socket client, worker tool registration
+└── worker.ts     — socket server, lead tool registration
+```
+
+### Role activation
+
+- **Worker role**: activates on `session_start` only if `<cwd>/.pi/` exists — i.e. the session is running inside a repo
+- **Lead role**: `/lead` command always available; activates on demand
+
+### Lead responsibilities
 - `/lead <repo-path>` slash command
 - Socket client: connect, send, receive, correlation ID tracking
-- Persistent `data` listener on socket — incoming worker messages call `pi.sendMessage({ triggerTurn: true })` to inject them into the lead's conversation
-- Spawn logic: start worker, wait for socket, handle stale socket
-- Per-repo session loading on switch
-- Surface worker replies to user
+- Persistent `data` listener — incoming worker messages call `pi.sendMessage({ triggerTurn: true })`
+- Spawn logic: start worker, poll for socket, handle stale socket, auto-respawn on unexpected close
+- Per-repo session loading via `ctx.switchSession`
+- `worker` tool: `send`, `ask`, `reply`, `status`
 
-### Worker Extension (`pi-extensions/worker/index.ts`)
-
-Responsibilities:
-- Unix socket server: listen on `<repo>/.pi/worker.sock`
-- Accept connection from lead
-- Receive tasks, send replies
-- Blocking request support (send question, wait for reply with `replyTo`)
+### Worker responsibilities
+- `net.createServer` listening on `<cwd>/.pi/worker.sock`
+- Accept sequential connections from lead; survive lead disconnect
+- Inject incoming tasks via `pi.sendMessage({ triggerTurn: true })`
+- `lead` tool: `ask`, `reply`, `status`
 - Clean socket removal on session shutdown
 
 ### Gitignore
