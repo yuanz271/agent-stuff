@@ -1,4 +1,4 @@
-# MAGIC DOC: Lead–Worker Architecture
+# MAGIC DOC: Lead–Worker Spec
 *Focus on architecture decisions, IPC design, and component responsibilities*
 
 # Lead–Worker Architecture
