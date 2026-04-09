@@ -3,38 +3,53 @@
 
 # Lead–Worker Architecture
 
-A multi-session Pi setup where a single **lead** session coordinates multiple persistent **worker** sessions, one per repository.
+## Overview
+
+A multi-session Pi setup where a single **lead** session coordinates multiple persistent **worker** sessions, one per repository. The user communicates exclusively with the lead. Workers are isolated per repo and persist independently of the lead.
+
+---
+
+## Goals
+
+1. Single point of interaction — user talks only to the lead
+2. Full context isolation — no cross-contamination between repos or between lead and worker
+3. Worker persistence — workers survive lead restarts
+4. Deterministic recovery — lead can always reconnect to a running worker without discovery infrastructure
+
+## Non-Goals
+
+- Multi-user or multi-lead setups
+- Network communication (same machine only)
+- General-purpose N:N messaging (use pi-messenger for that)
 
 ---
 
 ## Roles
 
 ### Lead
-- The single session the user talks to
-- Switches between repos on user request
+- The single session the user interacts with
+- Switches active repo on user request
 - Delegates tasks to the active worker
 - Surfaces results back to the user
-- Never touches code directly
-- Can be quit and restarted freely — all state is in the repo
+- Never edits files or runs commands directly
+- Stateless across restarts — all durable state is in the repo
 
 ### Worker
-- One per repository, persistent until explicitly killed
-- Does all the actual work: reading, editing, running commands, debugging, testing
-- Reports back to the lead via direct Unix socket
-- Uses the socket to escalate blockers or request clarification
-- Accumulates working context in its own session
+- One per repository, one-to-one with a repo path
+- Persistent until explicitly killed by the user
+- Does all hands-on work: reading, editing, running commands, debugging, testing
+- Communicates with the lead via Unix socket
+- Escalates blockers and reports completion via blocking requests
 
 ---
 
-## Session Files
-
-Each repo contains a paired set of session files and a socket:
+## File Layout
 
 ```
 ~/repoA/.pi/
-├── lead.jsonl     ← lead's planning session for this repo
-├── worker.jsonl   ← worker's working session in this repo
-└── worker.sock    ← Unix socket: worker listens, lead connects
+├── lead.jsonl     — lead's Pi session for this repo
+├── worker.jsonl   — worker's Pi session
+└── worker.sock    — Unix socket (worker listens, lead connects)
 
 ~/repoB/.pi/
 ├── lead.jsonl
@@ -42,90 +57,148 @@ Each repo contains a paired set of session files and a socket:
 └── worker.sock
 ```
 
-- All files are repo-scoped — deleted with the repo
-- All files are gitignored (`.pi/` in each repo's `.gitignore`)
-- Lead working directory is irrelevant — everything is resolved by repo path
+### Rules
+- All `.pi/` contents are repo-scoped: deleted with the repo, not tracked in git
+- Each repo must have `.pi/` in its `.gitignore`
+- Lead working directory is irrelevant — all paths are resolved from the repo root
+- `worker.sock` is created by the worker on startup and deleted on clean exit
 
 ---
 
-## IPC: Direct Unix Socket
+## IPC Protocol
 
-No broker. Lead and worker communicate directly via a Unix socket at a deterministic path.
+### Transport
 
-**Why no broker:**
-- Lead spawns the worker — socket path is known from birth (`<repo>/.pi/worker.sock`)
-- On lead restart, socket path is still deterministic — lead tries to connect; success means worker is running, failure means it needs spawning
-- The filesystem is the discovery mechanism
+Direct Unix socket at `<repo>/.pi/worker.sock`. No broker. The socket path is deterministic so both sides can find each other without discovery.
 
-**Protocol:** length-prefixed JSON over Unix socket (4-byte length + JSON payload).
+### Framing
 
-| Pattern | Direction | Blocking |
-|---------|-----------|---------|
-| Task delegation | Lead → Worker | No |
-| Status query | Lead → Worker | Yes — waits for reply |
-| Blocker escalation | Worker → Lead | Yes — waits for reply |
-| Completion report | Worker → Lead | Yes — waits for reply |
+Length-prefixed JSON:
+```
+[4-byte big-endian uint32 length][UTF-8 JSON payload]
+```
 
-Blocking calls send a message with a correlation ID and wait for a matching reply before returning the result to the caller.
+### Message Schema
+
+```ts
+interface Message {
+  id: string;          // UUID, unique per message
+  type: "request" | "reply";
+  replyTo?: string;    // set on replies: ID of the originating request
+  payload: string;     // message body (task, status, question, answer)
+}
+```
+
+### Message Patterns
+
+| Pattern | Initiator | Blocking | Description |
+|---------|-----------|----------|-------------|
+| Task delegation | Lead | No | Lead sends task, continues without waiting |
+| Status query | Lead | Yes | Lead asks worker for current state |
+| Blocker escalation | Worker | Yes | Worker asks lead for clarification |
+| Completion report | Worker | Yes | Worker reports task done, waits for next instruction |
+
+**Blocking** calls: sender includes `id`, waits for a reply message with matching `replyTo` before returning. Timeout: 10 minutes.
 
 ---
 
 ## Lifecycle
 
 ### Switch to a repo
+
 ```
 User: "switch to ~/repoA"
-  → Lead tries to connect to ~/repoA/.pi/worker.sock
-  → Success → worker already running, reconnect
-  → Failure → spawn detached pi in ~/repoA with worker.jsonl as session
-            → wait for worker.sock to appear
-            → connect
-  → Lead loads ~/repoA/.pi/lead.jsonl as its active session
-  → Lead queries worker for current status
-  → Ready
+
+1. Lead tries to connect to ~/repoA/.pi/worker.sock
+   a. Connection succeeds  → worker already running, proceed to step 3
+   b. Connection fails     → worker not running, go to step 2
+
+2. Spawn worker:
+   - Start detached Pi process in ~/repoA with session file ~/repoA/.pi/worker.jsonl
+   - Poll for ~/repoA/.pi/worker.sock (timeout: 10s, interval: 200ms)
+   - Connect once socket appears
+
+3. Load ~/repoA/.pi/lead.jsonl as the lead's active session
+
+4. Send status query to worker, surface result to user
 ```
 
 ### Lead restart
+
 ```
-Lead starts
-  → Reads active repo from last session
-  → Tries to connect to <active-repo>/.pi/worker.sock
-  → Success → reconnect, query status
-  → Failure → notify user, offer to respawn
+1. Lead starts
+2. Determine last active repo from most recent lead session file (scan ~/.pi/ or repo paths)
+3. Try to connect to <active-repo>/.pi/worker.sock
+   a. Success → reconnect, query status, surface to user
+   b. Failure → notify user: "Worker for <repo> is not running. Spawn it?"
 ```
 
-### Worker lifecycle
-- Worker listens on `<repo>/.pi/worker.sock` on start
-- Runs until explicitly killed by the user
-- Lead quit does not affect workers
-- Socket cleaned up on worker exit
-- Multiple workers can run simultaneously (one per repo)
+### Worker startup
+
+```
+1. Worker extension initialises
+2. Creates and listens on <repo>/.pi/worker.sock
+3. Accepts connections from lead
+4. On clean shutdown: removes worker.sock
+```
+
+### Worker crash recovery
+
+If `worker.sock` exists but connection is refused (stale socket from a crashed worker):
+1. Lead detects connection refusal
+2. Lead deletes stale `worker.sock`
+3. Lead spawns fresh worker
+4. Proceeds normally
 
 ---
 
 ## Context Isolation
 
-| Layer | Sees |
-|-------|------|
-| Worker (repoA) | Only tasks delegated to it; its own repo context |
-| Worker (repoB) | Only tasks delegated to it; its own repo context |
-| Lead (repoA session) | Only planning history for repoA |
-| Lead (repoB session) | Only planning history for repoB |
-| User | Only the lead |
+| Session | Visible context |
+|---------|-----------------|
+| Worker (repoA) | Only tasks delegated to it; its own repo files and history |
+| Worker (repoB) | Only tasks delegated to it; its own repo files and history |
+| Lead (repoA session) | Only lead↔worker conversation for repoA |
+| Lead (repoB session) | Only lead↔worker conversation for repoB |
+| User | Only the lead's active session |
 
-No cross-contamination between repos at any layer.
+Lead never exposes one repo's context when working in another. Worker never sees the lead's planning conversation.
 
 ---
 
-## Components Required
+## Components
 
-1. **Lead extension** — `/switch <path>` command, spawn logic, socket client, per-repo session loading
-2. **Worker extension** — Unix socket server, message handler, reply mechanism
-3. **`.gitignore` entry** — `.pi/` in each repo
+### Lead Extension (`pi-extensions/lead/index.ts`)
+
+Responsibilities:
+- `/switch <repo-path>` slash command
+- Socket client: connect, send, receive, correlation ID tracking
+- Spawn logic: start worker, wait for socket, handle stale socket
+- Per-repo session loading on switch
+- Surface worker replies to user
+
+### Worker Extension (`pi-extensions/worker/index.ts`)
+
+Responsibilities:
+- Unix socket server: listen on `<repo>/.pi/worker.sock`
+- Accept connection from lead
+- Receive tasks, send replies
+- Blocking request support (send question, wait for reply with `replyTo`)
+- Clean socket removal on session shutdown
+
+### Gitignore
+
+Each repo must contain:
+```
+.pi/
+```
 
 ---
 
 ## Open Questions
 
-- Does Pi support specifying a custom session file path at startup? Required for spawning the worker with `worker.jsonl` and loading `lead.jsonl` on switch.
-- How does the lead handle simultaneous delegation to multiple workers?
+1. **Custom session file path** — Does Pi support `--session <path>` at startup? Required to spawn worker with `worker.jsonl` and load `lead.jsonl` on switch. Needs verification against Pi CLI.
+
+2. **Lead session switching** — How does the lead load a different session file mid-process when switching repos? May require a Pi API for session replacement or a restart with the new session path.
+
+3. **Simultaneous workers** — If the lead delegates to multiple workers at once, it needs concurrent socket connections. Deferred; single active worker is sufficient for v1.
