@@ -161,11 +161,17 @@ User runs: /lead ~/repoB
 
 ### Worker crash recovery
 
-If `worker.sock` exists but connection is refused (stale socket from a crashed worker):
-1. Lead detects connection refusal
-2. Lead deletes stale `worker.sock`
-3. Lead spawns fresh worker
-4. Proceeds normally
+**On activation** (`/lead <path>`): if `worker.sock` exists but connection is refused (stale socket):
+1. Lead deletes stale `worker.sock`
+2. Spawns fresh worker
+3. Proceeds normally
+
+**During active lead mode**: lead's socket `close` event fires unexpectedly (not lead-initiated):
+1. Lead detects unexpected close (lead did not call `socket.destroy()`)
+2. Notifies user: "Worker crashed, respawning..."
+3. Deletes stale `worker.sock`
+4. Spawns fresh worker, reconnects
+5. Resumes — no `/lead` command required
 
 ---
 
@@ -196,7 +202,7 @@ When `/lead <repo>` is run again for a repo with a running worker:
 | Lead waiting for worker reply, lead disconnects | N/A — lead initiated, lead controls timeout |
 | Worker waiting for lead reply, lead disconnects | Worker's pending call errors immediately on socket `close` |
 | Lead waiting for worker reply, worker crashes | Lead's pending call errors on socket `close`; lead notifies user |
-| Worker crashes and restarts | Worker starts fresh, listens on new socket; lead must reconnect via `/lead <path>` |
+| Worker crashes during active lead mode | Lead detects unexpected socket close, auto-respawns worker, reconnects |
 
 ---
 
