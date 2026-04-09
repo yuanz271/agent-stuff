@@ -245,7 +245,7 @@ pi-extensions/lead-worker/
 
 ### Lead responsibilities
 - `/lead <repo-path>` — activate lead mode for a repo
-- `/worker <command>` — send operational command directly to active worker (e.g. `/worker /model claude-opus-4`, `/worker /thinking high`); bypasses the lead agent entirely
+- `/worker <command>` — send operational command directly to active worker (e.g. `/worker /model claude-opus-4`, `/worker /thinking high`); bypasses the lead agent entirely. Reports error and does nothing if no worker is currently connected.
 - Socket client: connect, send, receive, correlation ID tracking
 - Persistent `data` listener — incoming worker messages call `pi.sendMessage({ triggerTurn: true })`
 - Spawn logic: start worker, poll for socket, handle stale socket, auto-respawn on unexpected close
