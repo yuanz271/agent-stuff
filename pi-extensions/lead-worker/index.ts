@@ -1743,16 +1743,31 @@ function isTerminalSupervisionEvent(eventName: string): boolean {
   return ["completed", "failed", "cancelled"].includes(eventName);
 }
 
-function enqueueSupervisionEvent(supervised: ActiveSupervisedHandoff, event: PairMessageV2): { droppedForBackpressure: boolean } {
+function enqueueSupervisionEvent(
+  supervised: ActiveSupervisedHandoff,
+  event: PairMessageV2,
+): { droppedProgressForBackpressure: boolean; preservedNonProgressOverflow: boolean } {
   const eventName = event.name ?? "";
 
   if (isTerminalSupervisionEvent(eventName)) {
-    supervised.pendingEvents = [event];
-    return { droppedForBackpressure: false };
+    const preservedContext = supervised.pendingEvents.filter((queued) => {
+      const queuedName = queued.name ?? "";
+      return queuedName !== "progress" && !isTerminalSupervisionEvent(queuedName);
+    });
+    supervised.pendingEvents = [...preservedContext, event];
+    return { droppedProgressForBackpressure: false, preservedNonProgressOverflow: false };
   }
 
   if (supervised.pendingEvents.some((queued) => isTerminalSupervisionEvent(queued.name ?? ""))) {
-    return { droppedForBackpressure: false };
+    if (eventName === "progress") {
+      return { droppedProgressForBackpressure: false, preservedNonProgressOverflow: false };
+    }
+    const terminalIndex = supervised.pendingEvents.findIndex((queued) => isTerminalSupervisionEvent(queued.name ?? ""));
+    if (terminalIndex < 0) {
+      throw new Error("Lead supervision queue entered an invalid terminal state.");
+    }
+    supervised.pendingEvents.splice(terminalIndex, 0, event);
+    return { droppedProgressForBackpressure: false, preservedNonProgressOverflow: false };
   }
 
   if (eventName === "progress") {
@@ -1762,21 +1777,20 @@ function enqueueSupervisionEvent(supervised: ActiveSupervisedHandoff, event: Pai
     } else {
       supervised.pendingEvents.push(event);
     }
-    return { droppedForBackpressure: false };
+  } else {
+    supervised.pendingEvents.push(event);
   }
 
-  supervised.pendingEvents.push(event);
   if (supervised.pendingEvents.length <= MAX_PENDING_SUPERVISION_EVENTS) {
-    return { droppedForBackpressure: false };
+    return { droppedProgressForBackpressure: false, preservedNonProgressOverflow: false };
   }
 
   const oldestProgressIndex = supervised.pendingEvents.findIndex((queued) => (queued.name ?? "") === "progress");
   if (oldestProgressIndex >= 0) {
     supervised.pendingEvents.splice(oldestProgressIndex, 1);
-  } else {
-    supervised.pendingEvents.shift();
+    return { droppedProgressForBackpressure: true, preservedNonProgressOverflow: false };
   }
-  return { droppedForBackpressure: true };
+  return { droppedProgressForBackpressure: false, preservedNonProgressOverflow: true };
 }
 
 async function resolveLeadSupervisionModel(ctx: ExtensionContext): Promise<{ model: NonNullable<ReturnType<ExtensionContext["modelRegistry"]["find"]>>; apiKey: string }> {
@@ -1943,9 +1957,12 @@ async function maybeRunLeadSupervision(pi: ExtensionAPI, ctx: ExtensionContext, 
   const eventName = event.name ?? "";
   if (!isMeaningfulSupervisionEvent(eventName)) return;
 
-  const { droppedForBackpressure } = enqueueSupervisionEvent(supervised, event);
-  if (droppedForBackpressure) {
-    notify(ctx, `lead supervision queue overflow for handoff ${supervised.id.slice(0, 8)}; dropped stale queued event to preserve backpressure.`, "warning");
+  const { droppedProgressForBackpressure, preservedNonProgressOverflow } = enqueueSupervisionEvent(supervised, event);
+  if (droppedProgressForBackpressure) {
+    notify(ctx, `lead supervision queue overflow for handoff ${supervised.id.slice(0, 8)}; dropped stale queued progress event to preserve backpressure.`, "warning");
+  }
+  if (preservedNonProgressOverflow) {
+    notify(ctx, `lead supervision queue exceeded ${MAX_PENDING_SUPERVISION_EVENTS} events for handoff ${supervised.id.slice(0, 8)}; preserving non-progress context instead of dropping blocker/clarification events.`, "warning");
   }
   if (supervised.supervisionRunning) return;
   supervised.supervisionRunning = true;
