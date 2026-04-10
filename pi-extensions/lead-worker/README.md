@@ -10,7 +10,7 @@ Settings are loaded in this order (later layers override earlier ones field-by-f
 2. Global user settings (`~/.pi/agent/lead-worker-settings.yaml`)
 3. Nearest project settings discovered from `cwd` upward (`.pi/lead-worker-settings.yaml`, walking to git root)
 
-When lead-worker mode is on, `lead-worker` keeps the `lead_worker` tool active even if lead `allowed_tools` omit it, so the paired lead and worker can communicate over the internal protocol-v2 worker socket.
+When lead-worker mode is on, `lead-worker` keeps the `lead_worker` tool active even if lead `allowed_tools` omit it, so the paired lead and worker can communicate over the internal protocol-v2 worker socket. The lead still blocks `write`/`edit` and a small core blacklist of obvious repo-mutating bash commands, but broad inspection/prep commands such as downloads, cloning reference repos, and unpacking archives are intentionally allowed.
 
 For worker settings, prefer separate `model` and `thinking` fields. Legacy combined shorthand like `model: openai/gpt-5.3-codex:off` is still accepted and normalized for backward compatibility. Runtime worker naming is fixed internally and stable per repository pair id, so the same repo reuses the same worker identity across lead reconnects.
 

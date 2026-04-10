@@ -10,7 +10,7 @@ The whole point of the extension is to let the worker run autonomously. `/worker
 ## Architecture
 
 ### Roles
-- **lead** — read-only session; holds the spec, initiates delegation, and steers the worker (may operate autonomously during supervised worker execution)
+- **lead** — inspection-oriented session; holds the spec, initiates delegation, and steers the worker while avoiding direct repo edits (may operate autonomously during supervised worker execution)
 - **worker** — persistent tmux-backed session; executes tasks; emits typed progress events
 
 ### Why worker-owned socket

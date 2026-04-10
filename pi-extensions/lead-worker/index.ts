@@ -50,12 +50,10 @@ const MAX_SUPERVISED_RECENT_EVENTS = 10;
 const MAX_PENDING_SUPERVISION_EVENTS = 8;
 const SOCKET_WAIT_TIMEOUT_MS = 10_000;
 const SOCKET_WAIT_INTERVAL_MS = 100;
-const MUTATING_BASH_PATTERNS = [
+const CORE_BLOCKED_BASH_PATTERNS = [
   /\brm\b/i,
   /\brmdir\b/i,
   /\bmv\b/i,
-  /\bcp\b/i,
-  /\bmkdir\b/i,
   /\btouch\b/i,
   /\bchmod\b/i,
   /\bchown\b/i,
@@ -71,58 +69,11 @@ const MUTATING_BASH_PATTERNS = [
   /\bpnpm\s+(add|remove|install|publish|build)\b/i,
   /\bpip\s+(install|uninstall)\b/i,
   /\buv\s+(add|remove|sync|pip\s+install)\b/i,
-  /\bgit\s+(add|commit|push|pull|merge|rebase|reset|checkout|stash|cherry-pick|revert|tag)\b/i,
+  /\bgit\s+(add|commit|push|pull|merge|rebase|reset|restore|clean|stash|cherry-pick|revert|apply|am|tag)\b/i,
   /\bsudo\b/i,
   /\bbash\b/i,
   /\bsh\b/i,
   /\bzsh\b/i,
-];
-const SAFE_BASH_PREFIXES = [
-  /^\s*cat\b/,
-  /^\s*head\b/,
-  /^\s*tail\b/,
-  /^\s*less\b/,
-  /^\s*more\b/,
-  /^\s*grep\b/,
-  /^\s*find\b/,
-  /^\s*ls\b/,
-  /^\s*pwd\b/,
-  /^\s*echo\b/,
-  /^\s*printf\b/,
-  /^\s*wc\b/,
-  /^\s*sort\b/,
-  /^\s*uniq\b/,
-  /^\s*diff\b/,
-  /^\s*file\b/,
-  /^\s*stat\b/,
-  /^\s*du\b/,
-  /^\s*df\b/,
-  /^\s*tree\b/,
-  /^\s*which\b/,
-  /^\s*whereis\b/,
-  /^\s*type\b/,
-  /^\s*env\b/,
-  /^\s*printenv\b/,
-  /^\s*uname\b/,
-  /^\s*whoami\b/,
-  /^\s*id\b/,
-  /^\s*date\b/,
-  /^\s*uptime\b/,
-  /^\s*ps\b/,
-  /^\s*top\b/,
-  /^\s*htop\b/,
-  /^\s*free\b/,
-  /^\s*nvidia-smi\b/i,
-  /^\s*git\s+(status|log|diff|show|branch|remote|config\s+--get|ls-)\b/i,
-  /^\s*npm\s+(list|ls|view|info|search|outdated|audit)\b/i,
-  /^\s*yarn\s+(list|info|why|audit)\b/i,
-  /^\s*node\s+--version\b/i,
-  /^\s*python\s+--version\b/i,
-  /^\s*jq\b/,
-  /^\s*sed\s+-n\b/i,
-  /^\s*rg\b/,
-  /^\s*fd\b/,
-  /^\s*bat\b/,
 ];
 
 type LeadWorkerControlAction = "start" | "on" | "status" | "off" | "stop";
@@ -331,17 +282,9 @@ function stripBenignRedirects(command: string): string {
     .replace(/(^|[\s;|&])(?:[12]?>&[12])(?=$|[\s;|&])/g, "$1");
 }
 
-function isSafeReadOnlyFind(command: string): boolean {
-  return !/(?:^|\s)-(?:delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)(?:\s|$)/i.test(command);
-}
-
 function isSafeLeadBash(command: string): boolean {
   const commandForMutatingChecks = stripBenignRedirects(command);
-  const destructive = MUTATING_BASH_PATTERNS.some((pattern) => pattern.test(commandForMutatingChecks));
-  const safe = SAFE_BASH_PREFIXES.some((pattern) => pattern.test(command));
-  if (!safe || destructive) return false;
-  if (/^\s*find\b/i.test(command)) return isSafeReadOnlyFind(commandForMutatingChecks);
-  return true;
+  return !CORE_BLOCKED_BASH_PATTERNS.some((pattern) => pattern.test(commandForMutatingChecks));
 }
 
 function requireCurrentSettings(): LeadWorkerSettingsLoadResult {
@@ -571,7 +514,7 @@ function formatStatusMarkdown(status: LeadWorkerStatus): string {
     "",
     `- message: ${status.message}`,
     `- lead mode: ${status.modeEnabled ? "on" : "off"}`,
-    `- lead behavior: ${status.leadReadOnly ? "lead (read-only)" : "normal"}`,
+    `- lead behavior: ${status.leadReadOnly ? "lead (no direct repo edits)" : "normal"}`,
     `- lead model: ${status.leadModel ?? "unknown"}`,
     `- lead thinking: ${status.leadThinkingLevel}`,
     `- configured lead model: ${status.configuredLeadModel}`,
@@ -1179,7 +1122,7 @@ async function enableMode(pi: ExtensionAPI, ctx: ExtensionContext, settings: Lea
 
   return buildStatus(
     "on",
-    `Lead-worker mode enabled. Lead is now read-only. ${switchMessage}. ${worker.message}`,
+    `Lead-worker mode enabled. Lead now avoids direct repo edits. ${switchMessage}. ${worker.message}`,
     worker,
     pi,
   );
@@ -2025,7 +1968,7 @@ function buildHandoffText(ctx: ExtensionContext, extraInstructions: string, hand
 
   const lines = [
     `Lead handoff from session ${ctx.sessionManager.getSessionId()} in ${ctx.cwd ?? process.cwd()}.`,
-    "Implement the agreed plan in the repo-scoped worker. The lead remains read-only.",
+    "Implement the agreed plan in the repo-scoped worker. The lead should avoid direct repo edits.",
     `handoff_id: ${handoffId}`,
     'Direct paired communication is available through lead_worker({ action: "message", name: "progress", message: "..." }) and lead_worker({ action: "reply", replyTo: "...", message: "..." }).',
     "",
@@ -2262,7 +2205,7 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
     description:
       "Manage lead-worker mode and the current repo-scoped worker configured by lead-worker-settings.yaml. " +
       "Actions: start, on, status, off, stop, message, ask, command, reply. " +
-      "start spawns the worker without changing mode; on enables read-only lead mode, switches the lead to the configured planning model, and starts the worker if needed; off restores normal lead behavior and restores the previous model/thinking while leaving the worker alone; stop forcibly terminates the worker and, if lead-worker mode is on, also returns the lead to normal mode; message sends a one-way paired event from either side; ask sends a blocking paired request from the lead or an attached worker; command sends a blocking operational command from the lead to the worker; reply answers a pending paired request. For lead-side worker inspection and direct worker slash commands, use /worker.",
+      "start spawns the worker without changing mode; on enables no-direct-repo-edit lead mode, switches the lead to the configured planning model, and starts the worker if needed; off restores normal lead behavior and restores the previous model/thinking while leaving the worker alone; stop forcibly terminates the worker and, if lead-worker mode is on, also returns the lead to normal mode; message sends a one-way paired event from either side; ask sends a blocking paired request from the lead or an attached worker; command sends a blocking operational command from the lead to the worker; reply answers a pending paired request. For lead-side worker inspection and direct worker slash commands, use /worker.",
     parameters: Type.Object({
       action: StringEnum(["start", "on", "status", "off", "stop", "message", "ask", "command", "reply"] as const, {
         description: "Lead-worker control or communication action",
@@ -2415,13 +2358,13 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
     if (!rt.modeEnabled) return;
 
     if (event.toolName === "write" || event.toolName === "edit") {
-      return { block: true, reason: `lead-worker mode is on: the lead is read-only. Use /worker build to delegate execution to ${workerSessionReference()}.` };
+      return { block: true, reason: `lead-worker mode is on: the lead should avoid direct repo edits. Use /worker build to delegate execution to ${workerSessionReference()}.` };
     }
 
     if (event.toolName === "bash") {
       const command = typeof event.input.command === "string" ? event.input.command : "";
       if (!isSafeLeadBash(command)) {
-        return { block: true, reason: `lead-worker mode is on: mutating bash is blocked for the lead. Use /worker build to delegate execution to ${workerSessionReference()}.\nCommand: ${command}` };
+        return { block: true, reason: `lead-worker mode is on: obvious repo-mutating bash is blocked for the lead. Use /worker build to delegate execution to ${workerSessionReference()}.\nCommand: ${command}` };
       }
     }
 
@@ -2451,8 +2394,8 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
       "You are the lead half of a lead→worker workflow.",
       "",
       "Lead rules:",
-      "- Stay read-only. Do not modify files directly.",
-      "- Do not use mutating bash commands.",
+      "- Do not directly edit repository files from the lead.",
+      "- Bash is available for broad inspection/prep work, but avoid obvious repo-mutating commands.",
       "- Focus on understanding the codebase, producing plans, reviewing results, and preparing precise worker instructions.",
       "- Send intent/spec to the worker, not implementation code. Do not send concrete code snippets, patches, or copy-paste-ready blocks.",
       "- When the user wants execution, they will run /worker build to delegate the current plan to the repo-scoped worker.",
