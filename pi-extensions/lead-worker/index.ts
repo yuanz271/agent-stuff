@@ -1489,7 +1489,8 @@ async function handleIncomingMessage(pi: ExtensionAPI, message: PairMessageV2, s
       notify(ctx, `lead-worker stale reply ignored: ${message.replyTo}`, "warning");
       return;
     }
-    throw new Error(`Unexpected reply for unknown request id '${message.replyTo ?? ""}'.`);
+    notify(ctx, `lead-worker unknown reply ignored: ${message.replyTo ?? "(none)"}`, "warning");
+    return;
   }
 
   if (message.type === "event") {
