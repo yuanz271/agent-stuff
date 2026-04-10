@@ -206,6 +206,8 @@ type ActiveSupervisedHandoff = {
   outcome: string;
   steerCount: number;
   recentEvents: PairMessageV2[];
+  pendingEvents: PairMessageV2[];
+  supervisionRunning: boolean;
 };
 
 interface LeadWorkerRuntime {
@@ -1732,124 +1734,129 @@ async function synthesizeOutcome(
   }
 }
 
+function isMeaningfulSupervisionEvent(eventName: string): boolean {
+  return ["progress", "blocker", "clarification_needed", "completed", "failed", "cancelled"].includes(eventName);
+}
+
+function isTerminalSupervisionEvent(eventName: string): boolean {
+  return ["completed", "failed", "cancelled"].includes(eventName);
+}
+
+async function resolveLeadSupervisionModel(ctx: ExtensionContext): Promise<{ model: NonNullable<ReturnType<ExtensionContext["modelRegistry"]["find"]>>; apiKey: string }> {
+  const provider = rt.lastObservedLeadModel.provider ?? ctx.model?.provider;
+  const modelId = rt.lastObservedLeadModel.modelId ?? ctx.model?.id;
+  if (!provider || !modelId) {
+    throw new Error("Lead supervision requires an active lead model, but none is currently selected.");
+  }
+
+  const model = ctx.modelRegistry.find(provider, modelId);
+  if (!model) {
+    throw new Error(`Lead supervision requires the active lead model ${provider}/${modelId} to be present in the local registry.`);
+  }
+
+  const auth = await (ctx.modelRegistry as any).getApiKeyAndHeaders(model);
+  if (!auth?.ok || !auth.apiKey) {
+    throw new Error(`Lead supervision requires API credentials for the active lead model ${provider}/${modelId}.`);
+  }
+
+  return { model, apiKey: auth.apiKey };
+}
+
 async function analyzeWorkerEvent(
-  ctx: ExtensionContext,
+  model: NonNullable<ReturnType<ExtensionContext["modelRegistry"]["find"]>>,
   supervised: ActiveSupervisedHandoff,
   apiKey: string,
 ): Promise<SupervisorDecision> {
-  const model = ctx.model
-    ? ctx.modelRegistry.find(ctx.model.provider, ctx.model.id) ?? getModel(SUPERVISOR_MODEL_PROVIDER, SUPERVISOR_MODEL_ID)
-    : getModel(SUPERVISOR_MODEL_PROVIDER, SUPERVISOR_MODEL_ID);
-  if (!model) return { action: "continue", confidence: 0, reasoning: "no model available" };
-
   const stagnating = supervised.steerCount >= MAX_SUPERVISED_STEERS;
   const recentEventText = supervised.recentEvents
     .slice(-MAX_SUPERVISED_RECENT_EVENTS)
     .map((e) => `[${e.name ?? e.type}] ${e.body ?? ""}`)
     .join("\n");
 
-  try {
-    const response = await complete(
-      model,
-      {
-        systemPrompt: [
-          "You are the lead-side supervisor for a lead-worker coding session.",
-          "Analyze the worker's progress against the stated outcome and decide what to do.",
-          stagnating ? `The worker has been steered ${supervised.steerCount} times without completing. Lean toward escalate.` : "",
-          "You MUST call the report_supervisor_decision tool.",
-        ].filter(Boolean).join(" "),
-        messages: [
-          {
-            role: "user" as const,
-            content: [
-              {
-                type: "text" as const,
-                text: [
-                  `Outcome: ${supervised.outcome}`,
-                  "",
-                  "Handoff spec:",
-                  supervised.spec,
-                  "",
-                  "Recent worker events:",
-                  recentEventText || "(none yet)",
-                ].join("\n"),
-              },
-            ],
-            timestamp: Date.now(),
-          },
-        ],
-        tools: [SUPERVISOR_DECISION_TOOL],
-      },
-      { apiKey },
-    );
+  const response = await complete(
+    model,
+    {
+      systemPrompt: [
+        "You are the lead-side supervisor for a lead-worker coding session.",
+        "Analyze the worker's progress against the stated outcome and decide what to do.",
+        stagnating ? `The worker has been steered ${supervised.steerCount} times without completing. Lean toward escalate.` : "",
+        "You MUST call the report_supervisor_decision tool.",
+      ].filter(Boolean).join(" "),
+      messages: [
+        {
+          role: "user" as const,
+          content: [
+            {
+              type: "text" as const,
+              text: [
+                `Outcome: ${supervised.outcome}`,
+                "",
+                "Handoff spec:",
+                supervised.spec,
+                "",
+                "Recent worker events:",
+                recentEventText || "(none yet)",
+              ].join("\n"),
+            },
+          ],
+          timestamp: Date.now(),
+        },
+      ],
+      tools: [SUPERVISOR_DECISION_TOOL],
+    },
+    { apiKey },
+  );
 
-    const toolCall = response.content.find((c: any) => c.type === "toolCall" && c.name === SUPERVISOR_DECISION_TOOL.name);
-    if (!toolCall || toolCall.type !== "toolCall") {
-      return { action: "continue", confidence: 0, reasoning: "no tool call" };
-    }
-    const args = toolCall.arguments as Record<string, unknown>;
-    return {
-      action: (args.action as SupervisorDecision["action"]) ?? "continue",
-      message: typeof args.message === "string" ? args.message : undefined,
-      confidence: typeof args.confidence === "number" ? args.confidence : 0,
-      reasoning: typeof args.reasoning === "string" ? args.reasoning : "",
-    };
-  } catch {
-    return { action: "continue", confidence: 0, reasoning: "analysis failed" };
+  const toolCall = response.content.find((c: any) => c.type === "toolCall" && c.name === SUPERVISOR_DECISION_TOOL.name);
+  if (!toolCall || toolCall.type !== "toolCall") {
+    throw new Error("Lead supervision analysis did not return a report_supervisor_decision tool call.");
   }
+  const args = toolCall.arguments as Record<string, unknown>;
+  return {
+    action: (args.action as SupervisorDecision["action"]) ?? "continue",
+    message: typeof args.message === "string" ? args.message : undefined,
+    confidence: typeof args.confidence === "number" ? args.confidence : 0,
+    reasoning: typeof args.reasoning === "string" ? args.reasoning : "",
+  };
 }
 
-async function maybeRunLeadSupervision(pi: ExtensionAPI, ctx: ExtensionContext, event: PairMessageV2): Promise<void> {
-  if (currentPairRole() !== "lead") return;
-  const supervised = rt.activeSupervisedHandoff;
-  if (!supervised) return;
-  if (event.handoffId && event.handoffId !== supervised.id) return;
-
-  const eventName = event.name ?? "";
-  const isMeaningful = ["progress", "blocker", "clarification_needed", "completed", "failed", "cancelled"].includes(eventName);
-  if (!isMeaningful) return;
-
+async function processLeadSupervisionEvent(pi: ExtensionAPI, ctx: ExtensionContext, supervised: ActiveSupervisedHandoff, event: PairMessageV2): Promise<void> {
   supervised.recentEvents.push(event);
   if (supervised.recentEvents.length > MAX_SUPERVISED_RECENT_EVENTS * 2) {
     supervised.recentEvents = supervised.recentEvents.slice(-MAX_SUPERVISED_RECENT_EVENTS);
   }
 
-  const isTerminal = ["completed", "failed", "cancelled"].includes(eventName);
-  const haikuModel = getModel(SUPERVISOR_MODEL_PROVIDER, SUPERVISOR_MODEL_ID);
-  if (!haikuModel) {
-    if (isTerminal) rt.activeSupervisedHandoff = undefined;
-    return;
-  }
-  const auth = await (ctx.modelRegistry as any).getApiKeyAndHeaders(haikuModel);
-  if (!auth.ok || !auth.apiKey) {
-    if (isTerminal) rt.activeSupervisedHandoff = undefined;
-    return;
-  }
+  const eventName = event.name ?? "";
+  const isTerminal = isTerminalSupervisionEvent(eventName);
+  const { model, apiKey } = await resolveLeadSupervisionModel(ctx);
 
   let decision: SupervisorDecision;
   if (isTerminal) {
-    decision = await analyzeWorkerEvent(ctx, supervised, auth.apiKey);
+    decision = await analyzeWorkerEvent(model, supervised, apiKey);
     rt.activeSupervisedHandoff = undefined;
   } else if (supervised.steerCount >= MAX_SUPERVISED_STEERS) {
     decision = { action: "escalate", confidence: 1, reasoning: "stagnation threshold reached" };
     rt.activeSupervisedHandoff = undefined;
   } else {
-    decision = await analyzeWorkerEvent(ctx, supervised, auth.apiKey);
+    decision = await analyzeWorkerEvent(model, supervised, apiKey);
   }
 
   if (decision.action === "continue") return;
 
   if (decision.action === "steer" && decision.message) {
     supervised.steerCount++;
-    await sendOneWayEvent(pi, ctx, {
-      name: "steer",
-      body: decision.message,
-      handoffId: supervised.id,
-      autoStart: false,
-      failIfUnavailable: false,
-    }).catch((err) => {
-      notify(ctx, `lead supervisor steer failed: ${err instanceof Error ? err.message : String(err)}`, "warning");
-    });
+    try {
+      await sendOneWayEvent(pi, ctx, {
+        name: "steer",
+        body: decision.message,
+        handoffId: supervised.id,
+        autoStart: false,
+        failIfUnavailable: false,
+      });
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      throw new Error(`Lead supervision failed to deliver steer message: ${err.message}`);
+    }
     return;
   }
 
@@ -1883,7 +1890,38 @@ async function maybeRunLeadSupervision(pi: ExtensionAPI, ctx: ExtensionContext, 
       { deliverAs: "followUp" },
     );
     rt.activeSupervisedHandoff = undefined;
-    return;
+  }
+}
+
+async function maybeRunLeadSupervision(pi: ExtensionAPI, ctx: ExtensionContext, event: PairMessageV2): Promise<void> {
+  if (currentPairRole() !== "lead") return;
+  const supervised = rt.activeSupervisedHandoff;
+  if (!supervised) return;
+  if (event.handoffId && event.handoffId !== supervised.id) return;
+
+  const eventName = event.name ?? "";
+  if (!isMeaningfulSupervisionEvent(eventName)) return;
+
+  supervised.pendingEvents.push(event);
+  if (supervised.supervisionRunning) return;
+  supervised.supervisionRunning = true;
+
+  try {
+    while (rt.activeSupervisedHandoff === supervised && supervised.pendingEvents.length > 0) {
+      const nextEvent = supervised.pendingEvents.shift();
+      if (!nextEvent) continue;
+      await processLeadSupervisionEvent(pi, ctx, supervised, nextEvent);
+    }
+  } catch (error) {
+    if (rt.activeSupervisedHandoff === supervised) {
+      rt.activeSupervisedHandoff = undefined;
+    }
+    const err = error instanceof Error ? error : new Error(String(error));
+    throw new Error(`Lead supervision failed for handoff ${supervised.id}: ${err.message}`);
+  } finally {
+    if (rt.activeSupervisedHandoff === supervised) {
+      supervised.supervisionRunning = false;
+    }
   }
 }
 
@@ -1991,6 +2029,8 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
     outcome,
     steerCount: 0,
     recentEvents: [],
+    pendingEvents: [],
+    supervisionRunning: false,
   };
 
   emitInfo(pi, formatBuildQueuedMarkdown(worker, connection.pairId, handoffId), BUILD_HANDOFF_MESSAGE_TYPE);

@@ -151,8 +151,10 @@ The lead analyzes incoming worker events against the handoff spec:
 
 - input: handoff spec + recent worker events
 - model: **current lead model** — heavier, context-aware, appropriate for cross-run goal validation
+- auth/availability: if the active lead model is unavailable or lacks credentials, supervision fails fast and surfaces an explicit error rather than silently downgrading to unsupervised execution
 - output: `{ action: "continue" | "steer" | "done" | "escalate", message?, confidence, reasoning }`
 - trigger: on every meaningful worker event (`progress`, `blocker`, `clarification_needed`, terminal)
+- concurrency: events are analyzed serially per handoff so bursts of `progress` updates cannot race into duplicate steering or premature escalation
 
 Actions:
 - `continue` → stay silent
