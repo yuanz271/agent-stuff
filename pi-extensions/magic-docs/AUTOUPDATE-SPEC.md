@@ -8,12 +8,13 @@ Restore automatic magic-doc updates without injecting maintenance turns into the
 ## Summary
 
 `magic-docs` splits into:
-- **foreground coordinator** — track session-local magic docs, decide when to update, launch updater, report one-line result
+- **foreground coordinator + judge** — track session-local magic docs, run the Haiku necessity check, launch updater, report one-line result
 - **background updater** — run a separate one-shot Pi session that re-reads and updates the tracked docs, then exits
 
 Why:
 - the old auto-trigger policy was useful
 - the old execution path polluted the main agent context
+- the cheap necessity check can stay foreground, but the rewrite must not
 - this feature needs a detached maintenance job, not a general subagent framework
 
 ## Scope
@@ -21,6 +22,7 @@ Why:
 ### In scope
 - tracking magic docs from this session's `read` / `write` / `edit` results
 - restoring idle-triggered autoupdate
+- foreground Haiku necessity checks
 - detached updater execution outside the main agent context
 - one active updater job at a time
 - one-line completion/failure reporting
@@ -40,30 +42,32 @@ Autoupdate fires only when:
 - cooldown has elapsed
 - no updater job is already running
 
-Recommended rule:
+Current rule:
 - reset idle counter after a tool-active run
 - increment on idle `agent_end`
 - launch when:
   - `trackedDocs.size > 0`
   - `consecutiveIdleRuns >= 2`
-  - `now - lastLaunchAt >= 5 minutes`
+  - `now - lastJudgeAt >= 5 minutes`
   - no active lock
 
-A lightweight model check may still decide whether an update is worthwhile, but it must not trigger a main-session rewrite turn.
+The foreground Haiku judge decides whether an update is worthwhile. If it says no, remain silent.
 
 ## Architecture
 
-### Foreground coordinator
+### Foreground coordinator + judge
 Responsibilities:
 - detect and restore tracked docs
 - maintain idle counters and cooldown
-- build a fixed update snapshot
+- run the Haiku necessity check against recent conversation
+- build a fixed rewrite request only when the judge says an update is needed
 - launch a detached updater job
 - observe completion and emit one terse result line
 
 ### Background updater
 Responsibilities:
-- load the snapshot
+- load the rewrite request
+- treat the rewrite request as authoritative for whether rewriting should happen
 - re-read each target doc from disk
 - update only the listed docs
 - skip docs that changed after snapshot
@@ -77,7 +81,7 @@ Use a repo-local runtime directory:
 <repo>/.pi/magic-docs/
 ```
 
-Suggested contents:
+Runtime contents:
 
 ```text
 state.json
@@ -87,22 +91,27 @@ latest-result.json
 updater-session.jsonl
 updater.log
 launch-updater.sh
+updater-system-prompt.md
 ```
 
-## Snapshot contract
+## Rewrite request contract
 
-The updater must receive a fixed request snapshot rather than reading live foreground state.
+The detached updater receives a fixed rewrite request rather than live foreground state.
 
 Required fields:
 - `requestId`
 - `projectRoot`
 - launch timestamp
 - tracked docs: `path`, `title`, optional `instruction`, optional fingerprint (`mtimeMs`, `size`)
-- recent conversation slice: `role`, `text`, optional `timestamp`
+- foreground judge output: sanitized `reason`
+
+Not included:
+- raw recent conversation
 
 Why:
 - deterministic input
 - no dependence on mutable foreground state
+- prevents the detached rewrite worker from inheriting temporary foreground conversational constraints such as “do not edit in this response”
 - supports race detection before edit
 
 ## Locking semantics
@@ -111,9 +120,10 @@ At most one updater job may run at a time per repo.
 
 Lock tracks:
 - `requestId`
+- `pid`
 - start time
-- optional `pid`
-- optional session file
+- project root
+- session file
 
 Rules:
 - live lock blocks new launches
@@ -122,7 +132,7 @@ Rules:
 
 ## Race policy
 
-Before editing a doc, compare its current fingerprint to the snapshot.
+Before editing a doc, compare its current fingerprint to the rewrite request.
 
 If changed:
 - skip that doc
@@ -149,12 +159,14 @@ Required properties:
 ## Updater prompt contract
 
 The detached updater should:
+- treat the rewrite request as authoritative; the foreground judge has already decided an update is needed
 - update only the listed magic docs
 - re-read each target doc before editing
 - be terse and high signal
 - document architecture and WHY, not code trivia
 - delete stale sections
 - skip docs whose fingerprints changed after snapshot
+- ignore raw foreground conversational control wording because that does not appear in the rewrite request
 - write a compact result artifact and exit
 
 ## Result contract
@@ -170,7 +182,9 @@ Result artifact must record:
 
 ## Reporting policy
 
-The main session receives one terse result line only.
+The main session stays silent when the foreground judge decides no update is needed.
+
+It receives one terse result line only when a detached rewrite job finishes or fails.
 
 Examples:
 
@@ -203,20 +217,24 @@ Not allowed:
 
 Required checks:
 1. tracked docs are discovered from session-local tool results
-2. idle trigger launches an updater job when eligible
-3. updater runs in a separate session and exits cleanly
-4. main session receives no injected maintenance turn
-5. one-line completion/failure report appears
-6. overlapping updater launches are suppressed by the lock
-7. docs changed after snapshot are skipped predictably
-8. malformed request/result artifacts fail visibly
+2. idle trigger runs the foreground judge when eligible
+3. no-op judge outcomes stay silent
+4. updater runs in a separate session and exits cleanly
+5. main session receives no injected maintenance turn
+6. one-line completion/failure report appears
+7. overlapping updater launches are suppressed by the lock
+8. docs changed after snapshot are skipped predictably
+9. malformed request/result artifacts fail visibly
+10. detached rewrite does not inherit raw foreground conversational no-edit wording
 
 ## Decision summary
 
 - restore autoupdate triggering
-- move updates into a detached background Pi session
+- keep the Haiku necessity judge in the foreground
+- move rewrites into a detached background Pi session
 - keep the main agent context clean
 - do not import a subagent extension
 - allow only one updater job at a time
-- use fixed snapshots and per-doc race skipping
+- pass only sanitized judge output, not raw recent conversation, to the detached rewrite worker
+- use fixed rewrite requests and per-doc race skipping
 - report back with one terse completion/failure line
