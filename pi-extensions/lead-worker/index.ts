@@ -41,7 +41,6 @@ const PAIR_MESSAGE_TYPE = "lead-worker-pair-message";
 const MAX_CONTEXT_MESSAGE_CHARS = 4_000;
 const MAX_HANDOFF_CHARS = 32_000;
 const WORKER_RELAY_DEDUP_WINDOW_MS = 60_000;
-const WORKER_AUTO_REPORT_SUMMARY_MAX_CHARS = 3_000;
 const MAX_TRACKED_REPORTED_HANDOFF_IDS = 256;
 const MAX_SUPERVISED_STEERS = 5;
 const SUPERVISOR_MODEL_PROVIDER = "anthropic";
@@ -173,7 +172,7 @@ interface LeadWorkerRuntime {
   pendingWorkerHandoff: PendingWorkerHandoff | undefined;
   lastWorkerRelayFingerprint: string | undefined;
   lastWorkerRelayAtMs: number | undefined;
-  reportedWorkerHandoffIds: Set<string>;
+  reportedWorkerEventKeys: Set<string>;
   pendingRpc: Map<string, PendingRpc>;
   expiredRpcIds: Set<string>;
   pendingInboundRequests: Map<string, PendingInboundRequest>;
@@ -198,7 +197,7 @@ const rt: LeadWorkerRuntime = {
   pendingWorkerHandoff: undefined,
   lastWorkerRelayFingerprint: undefined,
   lastWorkerRelayAtMs: undefined,
-  reportedWorkerHandoffIds: new Set<string>(),
+  reportedWorkerEventKeys: new Set<string>(),
   pendingRpc: new Map<string, PendingRpc>(),
   expiredRpcIds: new Set<string>(),
   pendingInboundRequests: new Map<string, PendingInboundRequest>(),
@@ -946,24 +945,19 @@ function inferWorkerEventName(text: string, pendingHandoff: PendingWorkerHandoff
   return pendingHandoff ? "progress" : "message";
 }
 
-function rememberReportedWorkerHandoff(handoffId: string): void {
-  rt.reportedWorkerHandoffIds.add(handoffId);
-  if (rt.reportedWorkerHandoffIds.size <= MAX_TRACKED_REPORTED_HANDOFF_IDS) return;
-  const oldest = rt.reportedWorkerHandoffIds.values().next().value;
-  if (oldest) rt.reportedWorkerHandoffIds.delete(oldest);
+function workerRelayDedupKey(message: PairMessageV2): string | undefined {
+  const handoffId = message.handoffId?.trim();
+  if (!handoffId) return undefined;
+  const eventName = message.name ?? "event";
+  const relayClass = isTerminalSupervisionEvent(eventName) ? "terminal" : eventName;
+  return `${handoffId}:${relayClass}`;
 }
 
-function latestAssistantText(ctx: ExtensionContext): string {
-  const branch = ctx.sessionManager.getBranch();
-  for (let i = branch.length - 1; i >= 0; i--) {
-    const entry = branch[i];
-    if (entry.type !== "message") continue;
-    const msg = entry.message;
-    if (!("role" in msg) || msg.role !== "assistant") continue;
-    const text = extractTextContent(msg.content).trim();
-    if (text) return text;
-  }
-  return "";
+function rememberReportedWorkerEventKey(key: string): void {
+  rt.reportedWorkerEventKeys.add(key);
+  if (rt.reportedWorkerEventKeys.size <= MAX_TRACKED_REPORTED_HANDOFF_IDS) return;
+  const oldest = rt.reportedWorkerEventKeys.values().next().value;
+  if (oldest) rt.reportedWorkerEventKeys.delete(oldest);
 }
 
 function formatIncomingProtocolMessage(message: PairMessageV2): string {
@@ -1015,7 +1009,8 @@ function maybeRelayWorkerEventToUser(pi: ExtensionAPI, message: PairMessageV2): 
   if (!["completed", "failed", "cancelled", "blocker", "clarification_needed"].includes(message.name ?? "")) return;
 
   const handoffId = message.handoffId;
-  if (handoffId && rt.reportedWorkerHandoffIds.has(handoffId)) return;
+  const relayKey = workerRelayDedupKey(message);
+  if (relayKey && rt.reportedWorkerEventKeys.has(relayKey)) return;
 
   const now = Date.now();
   const fingerprint = pairRelayFingerprint(message);
@@ -1024,7 +1019,7 @@ function maybeRelayWorkerEventToUser(pi: ExtensionAPI, message: PairMessageV2): 
 
   rt.lastWorkerRelayFingerprint = fingerprint;
   rt.lastWorkerRelayAtMs = now;
-  if (handoffId) rememberReportedWorkerHandoff(handoffId);
+  if (relayKey) rememberReportedWorkerEventKey(relayKey);
 
   const relayPrompt = [
     "Worker sent an execution update.",
@@ -1039,38 +1034,10 @@ function maybeRelayWorkerEventToUser(pi: ExtensionAPI, message: PairMessageV2): 
   pi.sendUserMessage(relayPrompt, { deliverAs: "followUp" });
 }
 
-async function maybeAutoReportWorkerCompletion(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+function maybeAutoReportWorkerCompletion(): void {
   if (currentPairRole() !== "worker") return;
   const pending = rt.pendingWorkerHandoff;
-  if (!pending) return;
-  if (pending.terminalEventSentAtMs) {
-    rt.pendingWorkerHandoff = undefined;
-    return;
-  }
-
-  const summary = latestAssistantText(ctx);
-  if (!summary) return;
-
-  const runtime = await resolveRuntimeContext(pi, ctx);
-  const message = createMessage({
-    type: "event",
-    from: "worker",
-    to: "lead",
-    pairId: pending.pairId,
-    name: "completed",
-    handoffId: pending.id,
-    body: [
-      "Worker terminal update (auto):",
-      `- handoff_id: ${pending.id}`,
-      "- status: completed",
-      "- files changed: see latest worker response and diffs",
-      "- validation: see latest worker response",
-      "- details:",
-      truncate(summary, WORKER_AUTO_REPORT_SUMMARY_MAX_CHARS),
-    ].join("\n"),
-  });
-
-  await deliverWorkerEvent(runtime.protocolDir, rt.activeLeadSocket, message);
+  if (!pending?.terminalEventSentAtMs) return;
   rt.pendingWorkerHandoff = undefined;
 }
 
@@ -1195,6 +1162,10 @@ async function stopOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: LeadW
 }
 
 async function runControlAction(pi: ExtensionAPI, ctx: ExtensionContext, action: LeadWorkerControlAction): Promise<LeadWorkerStatus> {
+  if (currentPairRole() !== "lead") {
+    throw new Error(`Lead-worker control action '${action}' is only available from the lead session.`);
+  }
+
   const { settings } = await refreshSettings(ctx.cwd ?? process.cwd());
   switch (action) {
     case "start": return startOnly(pi, ctx, settings);
@@ -1233,6 +1204,70 @@ function formatWorkerStatusReply(pi: ExtensionAPI, ctx: ExtensionContext): strin
     `- thinking: ${pi.getThinkingLevel()}`,
     ...(rt.pendingWorkerHandoff ? [`- pending handoff id: ${rt.pendingWorkerHandoff.id}`] : []),
   ].join("\n");
+}
+
+function formatPassiveWorkerStatusMarkdown(worker: WorkerStatus, note?: string): string {
+  const lines = [
+    "**worker status**",
+    "",
+    `- running: ${worker.running ? "yes" : "no"}`,
+    `- name: ${worker.agentName}`,
+    `- pair id: ${worker.pairId}`,
+    `- model: ${worker.model}`,
+    `- thinking: ${worker.thinking}`,
+    `- tmux session: ${worker.tmuxSession}`,
+    `- session file: ${worker.sessionFile}`,
+    `- log file: ${worker.logFile}`,
+    `- socket path: ${worker.socketPath}`,
+  ];
+
+  if (note) lines.push(`- note: ${note}`);
+  if (worker.leadSessionId) lines.push(`- last lead session id: ${worker.leadSessionId}`);
+  if (worker.leadSessionFile) lines.push(`- last lead session file: ${worker.leadSessionFile}`);
+  if (worker.startedAt) lines.push(`- started: ${worker.startedAt}`);
+  if (worker.lastStoppedAt) lines.push(`- last stopped: ${worker.lastStoppedAt}`);
+
+  if (worker.warnings.length > 0) {
+    lines.push("", "**warnings**", "");
+    for (const warning of worker.warnings) lines.push(`- ${warning}`);
+  }
+
+  if (worker.backlog.length > 0) {
+    lines.push("", "**recent worker output**", "", "```text", ...worker.backlog, "```");
+  }
+
+  return lines.join("\n");
+}
+
+async function queryWorkerStatusPassive(pi: ExtensionAPI, ctx: ExtensionContext): Promise<string> {
+  const cwd = ctx.cwd ?? process.cwd();
+  const { settings } = await refreshSettings(cwd);
+  const worker = await getWorkerStatus(pi, cwd, settings, getLeadSessionBinding(ctx));
+  if (!worker.running) {
+    return formatPassiveWorkerStatusMarkdown(worker, "worker is not running; direct protocol status unavailable.");
+  }
+
+  try {
+    const connection = await ensureLeadConnection(pi, ctx, { autoStart: false, failIfUnavailable: false });
+    const message = createMessage({
+      type: "command",
+      from: "lead",
+      to: "worker",
+      pairId: connection.pairId,
+      name: "status",
+      body: "",
+    });
+    const reply = await startRpc(message, connection.socket);
+    if (!reply.ok) throw new Error(reply.error ?? reply.body ?? "Worker status command failed.");
+    return [
+      "**worker status**",
+      "",
+      ...(reply.body ? [reply.body] : [JSON.stringify({ ok: true, reply }, null, 2)]),
+    ].join("\n");
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    return formatPassiveWorkerStatusMarkdown(worker, `passive status only; direct protocol status unavailable: ${err.message}`);
+  }
 }
 
 async function resolveModelSelection(ctx: ExtensionContext, ref: string) {
@@ -2022,7 +2057,9 @@ function formatBuildQueuedMarkdown(worker: WorkerStatus, pairId: string, handoff
 }
 
 async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, args: string): Promise<void> {
-  if (!rt.modeEnabled) return;
+  if (!rt.modeEnabled) {
+    throw new Error("lead-worker mode is off. Run /lead on before using /worker build.");
+  }
   if (!ctx.isIdle() || ctx.hasPendingMessages()) {
     ctx.hasUI && ctx.ui.notify("Wait for the lead to finish its current turn before delegating with /worker build.", "warning");
     return;
@@ -2214,7 +2251,7 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
     description:
       "Manage lead-worker mode and the current repo-scoped worker configured by lead-worker-settings.yaml. " +
       "Actions: start, on, status, off, stop, message, ask, command, reply. " +
-      "start spawns the worker without changing mode; on enables no-direct-repo-edit lead mode, switches the lead to the configured planning model, and starts the worker if needed; off restores normal lead behavior and restores the previous model/thinking while leaving the worker alone; stop forcibly terminates the worker and, if lead-worker mode is on, also returns the lead to normal mode; message sends a one-way paired event from either side; ask sends a blocking paired request from the lead or an attached worker; command sends a blocking operational command from the lead to the worker; reply answers a pending paired request. For lead-side worker inspection and direct worker slash commands, use /worker.",
+      "Control actions start/on/status/off/stop are lead-only: start spawns the worker without changing mode; on enables no-direct-repo-edit lead mode, switches the lead to the configured planning model, and starts the worker if needed; off restores normal lead behavior and restores the previous model/thinking while leaving the worker alone; stop forcibly terminates the worker and, if lead-worker mode is on, also returns the lead to normal mode; message sends a one-way paired event from either side; ask sends a blocking paired request from the lead or an attached worker; command sends a blocking operational command from the lead to the worker; reply answers a pending paired request. For lead-side worker inspection and direct worker slash commands, use /worker.",
     parameters: Type.Object({
       action: StringEnum(["start", "on", "status", "off", "stop", "message", "ask", "command", "reply"] as const, {
         description: "Lead-worker control or communication action",
@@ -2258,6 +2295,11 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
   });
 
   async function handleControlCommand(args: string, ctx: ExtensionContext, usage: string) {
+    if (currentPairRole() !== "lead") {
+      ctx.hasUI && ctx.ui.notify("/lead is only available from the lead session.", "error");
+      return;
+    }
+
     let action: LeadWorkerControlAction | null = null;
     try {
       action = await resolveCommandAction(args);
@@ -2295,17 +2337,7 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
 
     try {
       if (trimmed === "status") {
-        const result = await sendCommandAction(pi, ctx, "status", "");
-        const reply = (result as { reply?: PairMessageV2 }).reply;
-        emitInfo(
-          pi,
-          [
-            "**worker status**",
-            "",
-            ...(reply?.body ? [reply.body] : [JSON.stringify(result, null, 2)]),
-          ].join("\n"),
-          BUILD_HANDOFF_MESSAGE_TYPE,
-        );
+        emitInfo(pi, await queryWorkerStatusPassive(pi, ctx), BUILD_HANDOFF_MESSAGE_TYPE);
         return;
       }
 
@@ -2450,6 +2482,6 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
 
   pi.on("turn_end", async (_event, ctx) => {
     rt.latestPairContext = ctx;
-    await maybeAutoReportWorkerCompletion(pi, ctx);
+    maybeAutoReportWorkerCompletion();
   });
 }

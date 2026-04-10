@@ -187,13 +187,13 @@ This keeps supervision observable and attributable:
 
 ### Slash commands
 - `/lead [start|on|status|off|stop]` — lead mode control
-- `/worker status` — direct worker status query
+- `/worker status` — passive worker status query; uses direct protocol status when available but never auto-starts the worker
 - `/worker build [instructions]` — supervised task delegation
 - `/worker /<command>` — escape hatch for worker-local slash commands
 
 ### Tool
 `lead_worker(...)` actions:
-- control: `start`, `on`, `status`, `off`, `stop`
+- control (lead-only): `start`, `on`, `status`, `off`, `stop`
 - communication: `message`, `ask`, `command`, `reply`
 
 ---
