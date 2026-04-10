@@ -665,6 +665,31 @@ function isRetryableWorkerSocketError(error: Error): boolean {
   return code === "ENOENT" || code === "ECONNREFUSED" || code === "ECONNRESET";
 }
 
+async function waitForSocketConnect(socket: Socket): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
+      socket.removeListener("connect", onConnect);
+      socket.removeListener("error", onError);
+    };
+    const onConnect = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
+    };
+    const onError = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+
+    socket.once("connect", onConnect);
+    socket.once("error", onError);
+  });
+}
+
 async function connectToWorkerSocket(socketPath: string, timeoutMs = SOCKET_WAIT_TIMEOUT_MS): Promise<Socket> {
   const deadline = Date.now() + timeoutMs;
   let lastError: Error | undefined;
@@ -672,28 +697,7 @@ async function connectToWorkerSocket(socketPath: string, timeoutMs = SOCKET_WAIT
   while (Date.now() < deadline) {
     const socket = createConnection(socketPath);
     try {
-      await new Promise<void>((resolve, reject) => {
-        let settled = false;
-        const cleanup = () => {
-          socket.removeListener("connect", onConnect);
-          socket.removeListener("error", onError);
-        };
-        const onConnect = () => {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          resolve();
-        };
-        const onError = (error: Error) => {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          reject(error);
-        };
-
-        socket.once("connect", onConnect);
-        socket.once("error", onError);
-      });
+      await waitForSocketConnect(socket);
       return socket;
     } catch (error) {
       socket.destroy();
@@ -787,6 +791,28 @@ async function flushQueuedWorkerEvents(protocolDir: string, socket: Socket, pair
   await saveQueuedWorkerEvents(protocolDir, []);
 }
 
+async function deliverWorkerEvent(protocolDir: string, socket: Socket | undefined, message: PairMessageV2): Promise<boolean> {
+  if (!socket || socket.destroyed) {
+    await enqueueWorkerEvent(protocolDir, message);
+    return true;
+  }
+
+  sendProtocolMessage(socket, message);
+  return false;
+}
+
+function createAttachMessage(pairId: string, leadSessionId: string): PairMessageV2 {
+  return createMessage({
+    type: "command",
+    from: "lead",
+    to: "worker",
+    pairId,
+    name: "attach",
+    payload: { leadSessionId },
+    body: `Attach lead session ${leadSessionId}`,
+  });
+}
+
 function onConnectionClosed(reason: string): void {
   rejectAllPendingRpc(reason);
   if (rt.activeConnection) {
@@ -865,16 +891,7 @@ async function ensureLeadConnection(
     rt.connectionError = undefined;
 
     try {
-      const attach = createMessage({
-        type: "command",
-        from: "lead",
-        to: "worker",
-        pairId: runtime.pairId,
-        name: "attach",
-        payload: { leadSessionId: leadSession.sessionId },
-        body: `Attach lead session ${leadSession.sessionId}`,
-      });
-      const attachReply = await startRpc(attach, socket);
+      const attachReply = await startRpc(createAttachMessage(runtime.pairId, leadSession.sessionId), socket);
       if (!attachReply.ok) {
         throw new Error(attachReply.error ?? attachReply.body ?? "Failed to attach lead connection.");
       }
@@ -1054,11 +1071,7 @@ async function maybeAutoReportWorkerCompletion(pi: ExtensionAPI, ctx: ExtensionC
     ].join("\n"),
   });
 
-  if (!rt.activeLeadSocket || rt.activeLeadSocket.destroyed) {
-    await enqueueWorkerEvent(runtime.protocolDir, message);
-  } else {
-    sendProtocolMessage(rt.activeLeadSocket, message);
-  }
+  await deliverWorkerEvent(runtime.protocolDir, rt.activeLeadSocket, message);
   rt.pendingWorkerHandoff = undefined;
 }
 
@@ -1536,8 +1549,10 @@ async function sendOneWayEvent(
     throw new Error("Worker is not currently attached to an active lead connection.");
   }
 
-  sendProtocolMessage(socket, message);
-  return { ok: true, action: "message", pairId: runtime.pairId, to: message.to, name: params.name, handoffId: params.handoffId };
+  const queued = role === "worker"
+    ? await deliverWorkerEvent(runtime.protocolDir, socket, message)
+    : (sendProtocolMessage(socket, message), false);
+  return { ok: true, action: "message", pairId: runtime.pairId, to: message.to, name: params.name, handoffId: params.handoffId, ...(queued ? { queued: true } : {}) };
 }
 
 async function sendAskAction(pi: ExtensionAPI, ctx: ExtensionContext, name: string | undefined, text: string): Promise<unknown> {
