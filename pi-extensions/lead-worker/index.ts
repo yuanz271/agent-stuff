@@ -143,6 +143,7 @@ type PendingWorkerHandoff = {
   id: string;
   receivedAtMs: number;
   pairId: string;
+  terminalEventSentAtMs?: number;
 };
 
 type SupervisorDecision = {
@@ -170,7 +171,6 @@ interface LeadWorkerRuntime {
   currentSettings: LeadWorkerSettingsLoadResult | undefined;
   latestPairContext: ExtensionContext | undefined;
   pendingWorkerHandoff: PendingWorkerHandoff | undefined;
-  lastOutboundProtocolAtMs: number | undefined;
   lastWorkerRelayFingerprint: string | undefined;
   lastWorkerRelayAtMs: number | undefined;
   reportedWorkerHandoffIds: Set<string>;
@@ -196,7 +196,6 @@ const rt: LeadWorkerRuntime = {
   currentSettings: undefined,
   latestPairContext: undefined,
   pendingWorkerHandoff: undefined,
-  lastOutboundProtocolAtMs: undefined,
   lastWorkerRelayFingerprint: undefined,
   lastWorkerRelayAtMs: undefined,
   reportedWorkerHandoffIds: new Set<string>(),
@@ -606,9 +605,18 @@ function activeSocketForRole(role: PairRole): Socket | undefined {
   return role === "lead" ? rt.activeConnection?.socket : rt.activeLeadSocket;
 }
 
+function markPendingWorkerHandoffTerminalEvent(message: PairMessageV2): void {
+  const pending = rt.pendingWorkerHandoff;
+  if (!pending) return;
+  if (message.from !== "worker" || message.type !== "event") return;
+  if (!isTerminalSupervisionEvent(message.name ?? "")) return;
+  if (message.handoffId !== pending.id) return;
+  pending.terminalEventSentAtMs = Date.now();
+}
+
 function sendProtocolMessage(socket: Socket, message: PairMessageV2): void {
   writeMessage(socket, message);
-  rt.lastOutboundProtocolAtMs = Date.now();
+  markPendingWorkerHandoffTerminalEvent(message);
 }
 
 async function resolveRuntimeContext(pi: ExtensionAPI, ctx: ExtensionContext): Promise<{
@@ -756,6 +764,7 @@ async function enqueueWorkerEvent(protocolDir: string, message: PairMessageV2): 
     queued.push(message);
     await saveQueuedWorkerEvents(protocolDir, queued);
   });
+  markPendingWorkerHandoffTerminalEvent(message);
 }
 
 async function flushQueuedWorkerEvents(protocolDir: string, socket: Socket, pairId: string): Promise<void> {
@@ -1034,7 +1043,7 @@ async function maybeAutoReportWorkerCompletion(pi: ExtensionAPI, ctx: ExtensionC
   if (currentPairRole() !== "worker") return;
   const pending = rt.pendingWorkerHandoff;
   if (!pending) return;
-  if ((rt.lastOutboundProtocolAtMs ?? 0) >= pending.receivedAtMs) {
+  if (pending.terminalEventSentAtMs) {
     rt.pendingWorkerHandoff = undefined;
     return;
   }

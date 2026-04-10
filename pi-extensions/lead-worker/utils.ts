@@ -2,6 +2,7 @@ import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import type { LeadWorkerSettings } from "./settings.js";
 
@@ -15,6 +16,7 @@ const CONTROL_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
 const WORKER_BASE_NAME = "worker";
 const DEFAULT_WORKER_SLOT = "default";
 const PAIR_ID_PATH_CHARS = 16;
+const SOCKET_RUNTIME_BASE_DIR = join(homedir(), ".pi", "lead-worker-sockets");
 
 export type LeadWorkerAction = "start" | "status" | "stop";
 
@@ -151,11 +153,19 @@ function tmuxSessionName(projectRoot: string, pairId: string): string {
   return `lead-worker-${projectBase}-${pairId.slice(0, 10)}`;
 }
 
+function buildProtocolPaths(pairId: string): { protocolDir: string; socketPath: string } {
+  const protocolDir = join(SOCKET_RUNTIME_BASE_DIR, pairIdTag(pairId), "protocol-v2");
+  return {
+    protocolDir,
+    socketPath: join(protocolDir, "worker.sock"),
+  };
+}
+
 function buildPaths(projectRoot: string, settings: LeadWorkerSettings): Paths {
   const pairId = computePairId(projectRoot);
   const workerAgentName = getWorkerAgentName(settings, pairId);
   const runtimeDir = join(projectRoot, ".pi", "lead-worker", pairIdTag(pairId));
-  const protocolDir = join(runtimeDir, "protocol-v2");
+  const { protocolDir, socketPath } = buildProtocolPaths(pairId);
 
   return {
     pairId,
@@ -168,7 +178,7 @@ function buildPaths(projectRoot: string, settings: LeadWorkerSettings): Paths {
     systemPromptFile: join(runtimeDir, "worker-system-prompt.md"),
     startupPromptFile: join(runtimeDir, "worker-startup.md"),
     sessionFile: join(projectRoot, ".pi", "sessions", `${workerAgentName}.jsonl`),
-    socketPath: join(protocolDir, "worker.sock"),
+    socketPath,
     tmuxSession: tmuxSessionName(projectRoot, pairId),
   };
 }
@@ -217,13 +227,13 @@ export async function resolvePairRuntimePaths(pi: ExtensionAPI, cwd: string): Pr
   const projectRoot = await resolveProjectRoot(pi, cwd);
   const pairId = computePairId(projectRoot);
   const runtimeDir = join(projectRoot, ".pi", "lead-worker", pairIdTag(pairId));
-  const protocolDir = join(runtimeDir, "protocol-v2");
+  const { protocolDir, socketPath } = buildProtocolPaths(pairId);
   return {
     pairId,
     projectRoot,
     runtimeDir,
     protocolDir,
-    socketPath: join(protocolDir, "worker.sock"),
+    socketPath,
   };
 }
 
@@ -243,8 +253,12 @@ async function loadState(stateFile: string): Promise<WorkerState | null> {
   let raw: string;
   try {
     raw = await fs.readFile(stateFile, "utf8");
-  } catch {
-    return null;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ENOENT") {
+      return null;
+    }
+    throw new Error(`Failed to read worker state ${stateFile}: ${error instanceof Error ? error.message : String(error)}`);
   }
   try {
     return JSON.parse(raw) as WorkerState;

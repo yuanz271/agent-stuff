@@ -28,8 +28,10 @@ The whole point of the extension is to let the worker run autonomously. `/worker
 ### Socket location
 
 ```text
-<repo>/.pi/lead-worker/<pair-id>/protocol-v2/worker.sock
+~/.pi/lead-worker-sockets/<pair-id-prefix>/protocol-v2/worker.sock
 ```
+
+The worker socket uses a short user-scoped runtime path so deep repository roots cannot exceed AF_UNIX path limits.
 
 `pair-id = sha256(realpath(projectRoot) + ":default")`  
 Full hash is protocol identity; filesystem paths use a short prefix.
