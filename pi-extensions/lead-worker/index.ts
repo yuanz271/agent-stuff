@@ -947,10 +947,9 @@ function inferWorkerEventName(text: string, pendingHandoff: PendingWorkerHandoff
 
 function workerRelayDedupKey(message: PairMessageV2): string | undefined {
   const handoffId = message.handoffId?.trim();
-  if (!handoffId) return undefined;
   const eventName = message.name ?? "event";
-  const relayClass = isTerminalSupervisionEvent(eventName) ? "terminal" : eventName;
-  return `${handoffId}:${relayClass}`;
+  if (!handoffId || !isTerminalSupervisionEvent(eventName)) return undefined;
+  return `${handoffId}:terminal`;
 }
 
 function rememberReportedWorkerEventKey(key: string): void {
@@ -1041,6 +1040,11 @@ function maybeAutoReportWorkerCompletion(): void {
   rt.pendingWorkerHandoff = undefined;
 }
 
+async function maybePrimeLeadConnection(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+  if (currentPairRole() !== "lead") return;
+  await ensureLeadConnection(pi, ctx, { autoStart: false, failIfUnavailable: false }).catch(() => undefined);
+}
+
 async function restoreModeState(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
   await refreshSettings(ctx.cwd ?? process.cwd());
 
@@ -1052,7 +1056,7 @@ async function restoreModeState(pi: ExtensionAPI, ctx: ExtensionContext): Promis
   if (rt.modeEnabled) {
     applyLeadMode(pi);
     const warning = await applyLeadSelection(pi, ctx, getConfiguredLeadSelection());
-    if (warning && ctx.hasUI) ctx.ui.notify(`lead-worker: ${warning}`, "warning");
+    if (warning) notify(ctx, `lead-worker: ${warning}`, "warning");
   }
 
   const worker = await getWorkerStatus(
@@ -1067,9 +1071,7 @@ async function restoreModeState(pi: ExtensionAPI, ctx: ExtensionContext): Promis
 async function startOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: LeadWorkerSettings): Promise<LeadWorkerStatus> {
   const worker = await startWorker(pi, ctx.cwd ?? process.cwd(), settings, getLeadSessionBinding(ctx));
   updateStatusLine(ctx, worker);
-  if (currentPairRole() === "lead") {
-    await ensureLeadConnection(pi, ctx, { autoStart: false, failIfUnavailable: false }).catch(() => undefined);
-  }
+  await maybePrimeLeadConnection(pi, ctx);
   return buildStatus("start", worker.message, worker, pi);
 }
 
@@ -1089,7 +1091,7 @@ async function enableMode(pi: ExtensionAPI, ctx: ExtensionContext, settings: Lea
   applyLeadMode(pi);
   persistModeState(pi);
   updateStatusLine(ctx, worker);
-  await ensureLeadConnection(pi, ctx, { autoStart: false, failIfUnavailable: false }).catch(() => undefined);
+  await maybePrimeLeadConnection(pi, ctx);
 
   const configuredModelLabel = formatLeadModel(configuredSelection) ?? settings.lead.model;
   const switchMessage = switchWarning
@@ -2324,6 +2326,7 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
   }
 
   async function handleWorkerSlashCommand(args: string, ctx: ExtensionContext) {
+    const usage = "Usage: /worker status | /worker build [instructions] | /worker /<command> [args]";
     if (currentPairRole() !== "lead") {
       ctx.hasUI && ctx.ui.notify("/worker is only available from the lead session.", "error");
       return;
@@ -2331,7 +2334,7 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
 
     const trimmed = args.trim();
     if (!trimmed) {
-      ctx.hasUI && ctx.ui.notify("Usage: /worker status | /worker build [instructions] | /worker /<command> [args]", "error");
+      ctx.hasUI && ctx.ui.notify(usage, "error");
       return;
     }
 
@@ -2348,7 +2351,7 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
       }
 
       if (!trimmed.startsWith("/")) {
-        ctx.hasUI && ctx.ui.notify("Usage: /worker status | /worker build [instructions] | /worker /<command> [args]", "error");
+        ctx.hasUI && ctx.ui.notify(usage, "error");
         return;
       }
 
@@ -2470,7 +2473,7 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
         notify(ctx, `lead-worker worker server failed: ${err instanceof Error ? err.message : String(err)}`, "error");
       });
     } else {
-      await ensureLeadConnection(pi, ctx, { autoStart: false, failIfUnavailable: false }).catch(() => undefined);
+      await maybePrimeLeadConnection(pi, ctx);
     }
   };
 
