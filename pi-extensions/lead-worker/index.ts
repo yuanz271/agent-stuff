@@ -930,10 +930,10 @@ function pairRelayFingerprint(message: PairMessageV2): string {
 
 function inferWorkerEventName(text: string, pendingHandoff: PendingWorkerHandoff | undefined): string {
   const normalized = normalizeWhitespaceLower(text);
-  if (/\bstatus\s*:\s*(done|completed)\b/i.test(text)) return "completed";
-  if (/\bstatus\s*:\s*(failed|cancelled)\b/i.test(text)) return "failed";
-  if (/\bstatus\s*:\s*blocked\b/i.test(text)) return "blocker";
-  if (/\bclarification\b/i.test(normalized)) return "clarification_needed";
+  if (/\bstatus\s*:\s*(done|completed)\b/.test(normalized)) return "completed";
+  if (/\bstatus\s*:\s*(failed|cancelled)\b/.test(normalized)) return "failed";
+  if (/\bstatus\s*:\s*blocked\b/.test(normalized)) return "blocker";
+  if (/\bclarification\b/.test(normalized)) return "clarification_needed";
   return pendingHandoff ? "progress" : "message";
 }
 
@@ -1672,7 +1672,7 @@ async function synthesizeOutcome(
   apiKey: string,
 ): Promise<string> {
   const model = getModel(SUPERVISOR_MODEL_PROVIDER, SUPERVISOR_MODEL_ID);
-  if (!model) return truncate(handoffSpec, 120);
+  if (!model) return truncate(handoffSpec, 500);
 
   try {
     const response = await complete(
@@ -1695,13 +1695,13 @@ async function synthesizeOutcome(
       .map((c: any) => String(c.text ?? ""))
       .join("")
       .trim();
-    return text || truncate(handoffSpec, 120);
+    return text || truncate(handoffSpec, 500);
   } catch (error) {
     // Intentional fallback: outcome synthesis is best-effort. Supervision viability is
     // validated separately in resolveLeadSupervisionModel; a truncated handoff spec is an
     // acceptable degraded outcome string. Log for debugging visibility.
     console.warn("[lead-worker] synthesizeOutcome failed:", error instanceof Error ? error.message : String(error));
-    return truncate(handoffSpec, 120);
+    return truncate(handoffSpec, 500);
   }
 }
 
@@ -2039,7 +2039,7 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
   const supervised: ActiveSupervisedHandoff = {
     id: handoffId,
     spec: handoff,
-    outcome: truncate(handoff, 120),
+    outcome: truncate(handoff, 500),
     steerCount: 0,
     recentEvents: [],
     pendingEvents: [],
@@ -2419,9 +2419,15 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
   const restore = async (_event: unknown, ctx: ExtensionContext) => {
     rt.latestPairContext = ctx;
     rt.lastObservedLeadModel = { provider: ctx.model?.provider, modelId: ctx.model?.id };
-    await restoreModeState(pi, ctx).catch((err) => console.warn("[lead-worker] restoreModeState failed:", err));
+    await restoreModeState(pi, ctx).catch((err) => {
+      console.warn("[lead-worker] restoreModeState failed:", err);
+      notify(ctx, `lead-worker restore failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+    });
     if (currentPairRole() === "worker") {
-      await ensureWorkerServer(pi, ctx).catch((err) => console.warn("[lead-worker] ensureWorkerServer failed:", err));
+      await ensureWorkerServer(pi, ctx).catch((err) => {
+        console.warn("[lead-worker] ensureWorkerServer failed:", err);
+        notify(ctx, `lead-worker worker server failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+      });
     } else {
       await ensureLeadConnection(pi, ctx, { autoStart: false, failIfUnavailable: false }).catch(() => undefined);
     }

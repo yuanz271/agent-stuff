@@ -246,7 +246,11 @@ async function loadState(stateFile: string): Promise<WorkerState | null> {
   } catch {
     return null;
   }
-  return JSON.parse(raw) as WorkerState;
+  try {
+    return JSON.parse(raw) as WorkerState;
+  } catch (error) {
+    throw new Error(`Corrupt worker state ${stateFile}: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 async function saveState(stateFile: string, state: WorkerState): Promise<void> {
