@@ -7,14 +7,14 @@ import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { z } from "zod";
 
-export const PLAN_BUILD_SETTINGS_FILE_NAME = "lead-worker-settings.yaml";
-const PLAN_BUILD_PROJECT_DIR_NAME = ".pi";
+export const LEAD_WORKER_SETTINGS_FILE_NAME = "lead-worker-settings.yaml";
+const LEAD_WORKER_PROJECT_DIR_NAME = ".pi";
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 
-export type PlanBuildSourceKind = "bundled" | "global" | "project";
+export type LeadWorkerSourceKind = "bundled" | "global" | "project";
 
-export interface PlanBuildSource {
-  kind: PlanBuildSourceKind;
+export interface LeadWorkerSource {
+  kind: LeadWorkerSourceKind;
   path: string;
 }
 
@@ -32,35 +32,35 @@ export interface WorkerSettings {
   startup_prompt_append?: string;
 }
 
-export interface PlanBuildSettings {
+export interface LeadWorkerSettings {
   version: number;
   lead: LeadSettings;
   worker: WorkerSettings;
 }
 
-export interface PlanBuildSettingsStats {
-  loaded_sources: PlanBuildSource[];
-  skipped_sources: Array<{ source: PlanBuildSource; reason: string }>;
+export interface LeadWorkerSettingsStats {
+  loaded_sources: LeadWorkerSource[];
+  skipped_sources: Array<{ source: LeadWorkerSource; reason: string }>;
   invalid_field_count: number;
 }
 
-export interface PlanBuildSettingsLoadResult {
-  settings: PlanBuildSettings;
+export interface LeadWorkerSettingsLoadResult {
+  settings: LeadWorkerSettings;
   warnings: string[];
-  stats: PlanBuildSettingsStats;
+  stats: LeadWorkerSettingsStats;
 }
 
 type PartialLeadSettings = Partial<LeadSettings>;
 type PartialWorkerSettings = Partial<WorkerSettings>;
-type PartialPlanBuildSettings = {
+type PartialLeadWorkerSettings = {
   version?: number;
   lead?: PartialLeadSettings;
   worker?: PartialWorkerSettings;
 };
 
 const TOP_LEVEL_KEYS = new Set(["version", "lead", "worker"]);
-const PLANNER_KEYS = new Set(["model", "thinking", "allowed_tools", "prompt_append"]);
-const BUILDER_KEYS = new Set(["model", "thinking", "system_prompt_append", "startup_prompt_append"]);
+const LEAD_KEYS = new Set(["model", "thinking", "allowed_tools", "prompt_append"]);
+const WORKER_KEYS = new Set(["model", "thinking", "system_prompt_append", "startup_prompt_append"]);
 
 const raw_settings_schema = z
   .object({
@@ -91,23 +91,23 @@ const raw_worker_schema = z
 const thinking_level_schema = z.enum(THINKING_LEVELS);
 
 interface ParseSourceResult {
-  partial: PartialPlanBuildSettings;
+  partial: PartialLeadWorkerSettings;
   warnings: string[];
   invalid_field_count: number;
   error?: string;
 }
 
-export async function loadPlanBuildSettings(cwd: string, importMetaUrl: string): Promise<PlanBuildSettingsLoadResult> {
-  const bundled_source: PlanBuildSource = {
+export async function loadLeadWorkerSettings(cwd: string, importMetaUrl: string): Promise<LeadWorkerSettingsLoadResult> {
+  const bundled_source: LeadWorkerSource = {
     kind: "bundled",
     path: getBundledSettingsPath(importMetaUrl),
   };
-  const global_source: PlanBuildSource = {
+  const global_source: LeadWorkerSource = {
     kind: "global",
-    path: path.join(getAgentDir(), PLAN_BUILD_SETTINGS_FILE_NAME),
+    path: path.join(getAgentDir(), LEAD_WORKER_SETTINGS_FILE_NAME),
   };
   const discovered_project_path = findProjectSettingsPath(cwd);
-  const project_source: PlanBuildSource | undefined = discovered_project_path
+  const project_source: LeadWorkerSource | undefined = discovered_project_path
     ? {
         kind: "project",
         path: discovered_project_path,
@@ -119,10 +119,10 @@ export async function loadPlanBuildSettings(cwd: string, importMetaUrl: string):
     throw new Error(`required bundled lead-worker settings failed (${bundled_source.path}): ${bundled.error}`);
   }
 
-  let settings = finalizePlanBuildSettings(bundled.partial, `bundled lead-worker settings (${bundled_source.path})`);
+  let settings = finalizeLeadWorkerSettings(bundled.partial, `bundled lead-worker settings (${bundled_source.path})`);
   const warnings: string[] = [...bundled.warnings];
-  const skipped_sources: Array<{ source: PlanBuildSource; reason: string }> = [];
-  const loaded_sources: PlanBuildSource[] = [bundled_source];
+  const skipped_sources: Array<{ source: LeadWorkerSource; reason: string }> = [];
+  const loaded_sources: LeadWorkerSource[] = [bundled_source];
   let invalid_field_count = bundled.invalid_field_count;
 
   for (const source of [global_source, ...(project_source ? [project_source] : [])]) {
@@ -135,8 +135,8 @@ export async function loadPlanBuildSettings(cwd: string, importMetaUrl: string):
       continue;
     }
 
-    settings = finalizePlanBuildSettings(
-      mergePlanBuildSettings(settings, parsed.partial),
+    settings = finalizeLeadWorkerSettings(
+      mergeLeadWorkerSettings(settings, parsed.partial),
       `lead-worker settings after applying ${source.kind} overrides`,
     );
     loaded_sources.push(source);
@@ -155,7 +155,7 @@ export async function loadPlanBuildSettings(cwd: string, importMetaUrl: string):
   };
 }
 
-async function parseSettingsSource(source: PlanBuildSource): Promise<ParseSourceResult> {
+async function parseSettingsSource(source: LeadWorkerSource): Promise<ParseSourceResult> {
   const empty: ParseSourceResult = {
     partial: {},
     warnings: [],
@@ -188,7 +188,7 @@ async function parseSettingsSource(source: PlanBuildSource): Promise<ParseSource
 
   const warnings: string[] = [];
   let invalid_field_count = 0;
-  const partial: PartialPlanBuildSettings = {};
+  const partial: PartialLeadWorkerSettings = {};
 
   for (const key of Object.keys(parsed)) {
     if (!TOP_LEVEL_KEYS.has(key)) {
@@ -232,7 +232,7 @@ async function parseSettingsSource(source: PlanBuildSource): Promise<ParseSource
 
 function normalizeLeadSettings(
   rawPlanner: unknown,
-  source: PlanBuildSource,
+  source: LeadWorkerSource,
 ): { settings?: PartialLeadSettings; warnings: string[]; invalid_field_count: number } {
   const parsedPlanner = raw_lead_schema.safeParse(rawPlanner ?? {});
   if (!parsedPlanner.success) {
@@ -248,7 +248,7 @@ function normalizeLeadSettings(
   const settings: PartialLeadSettings = {};
 
   for (const key of Object.keys(lead)) {
-    if (!PLANNER_KEYS.has(key)) {
+    if (!LEAD_KEYS.has(key)) {
       warnings.push(`${source.kind}: ignoring unknown lead key '${key}' in ${source.path}`);
     }
   }
@@ -315,7 +315,7 @@ function normalizeLeadSettings(
 
 function normalizeWorkerSettings(
   rawBuilder: unknown,
-  source: PlanBuildSource,
+  source: LeadWorkerSource,
 ): { settings?: PartialWorkerSettings; warnings: string[]; invalid_field_count: number } {
   const parsedBuilder = raw_worker_schema.safeParse(rawBuilder ?? {});
   if (!parsedBuilder.success) {
@@ -332,7 +332,7 @@ function normalizeWorkerSettings(
   let shorthandThinking: ThinkingLevel | undefined;
 
   for (const key of Object.keys(worker)) {
-    if (!BUILDER_KEYS.has(key)) {
+    if (!WORKER_KEYS.has(key)) {
       warnings.push(`${source.kind}: ignoring unknown worker key '${key}' in ${source.path}`);
     }
   }
@@ -397,7 +397,7 @@ function normalizeWorkerSettings(
   };
 }
 
-function mergePlanBuildSettings(base: PlanBuildSettings, partial: PartialPlanBuildSettings): PlanBuildSettings {
+function mergeLeadWorkerSettings(base: LeadWorkerSettings, partial: PartialLeadWorkerSettings): LeadWorkerSettings {
   // hasOwnProperty distinguishes "field absent" (keep base value) from
   // "field explicitly set to undefined" (clear the value).  This matters
   // for optional text fields that a project layer may want to remove.
@@ -422,7 +422,7 @@ function mergePlanBuildSettings(base: PlanBuildSettings, partial: PartialPlanBui
   };
 }
 
-function finalizePlanBuildSettings(settings: PartialPlanBuildSettings, context: string): PlanBuildSettings {
+function finalizeLeadWorkerSettings(settings: PartialLeadWorkerSettings, context: string): LeadWorkerSettings {
   const missing: string[] = [];
   const version = settings.version;
   const lead = settings.lead;
@@ -499,7 +499,7 @@ function isProviderModelRef(value: string): boolean {
 
 function getBundledSettingsPath(importMetaUrl: string): string {
   const filePath = fileURLToPath(importMetaUrl);
-  return path.join(path.dirname(filePath), PLAN_BUILD_SETTINGS_FILE_NAME);
+  return path.join(path.dirname(filePath), LEAD_WORKER_SETTINGS_FILE_NAME);
 }
 
 function findProjectSettingsPath(cwd: string): string | undefined {
@@ -509,7 +509,7 @@ function findProjectSettingsPath(cwd: string): string | undefined {
 
   let current = startDir;
   while (true) {
-    const candidate = path.join(current, PLAN_BUILD_PROJECT_DIR_NAME, PLAN_BUILD_SETTINGS_FILE_NAME);
+    const candidate = path.join(current, LEAD_WORKER_PROJECT_DIR_NAME, LEAD_WORKER_SETTINGS_FILE_NAME);
     if (existsSync(candidate)) {
       return candidate;
     }

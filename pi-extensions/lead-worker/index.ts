@@ -6,13 +6,13 @@ import { randomUUID } from "node:crypto";
 import { promises as fs, watch, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import {
-  loadPlanBuildSettings,
-  type PlanBuildSettings,
-  type PlanBuildSettingsLoadResult,
-  type PlanBuildSource,
+  loadLeadWorkerSettings,
+  type LeadWorkerSettings,
+  type LeadWorkerSettingsLoadResult,
+  type LeadWorkerSource,
 } from "./settings.js";
-import { getBuilderStatus, resolvePairChannelPaths, startBuilder, stopBuilder } from "./utils.js";
-import type { BuilderStatus, PlannerSessionBinding } from "./utils.js";
+import { getWorkerStatus, resolvePairChannelPaths, startWorker, stopWorker } from "./utils.js";
+import type { WorkerStatus, LeadSessionBinding } from "./utils.js";
 
 const STATUS_KEY = "lead-worker";
 const TOOL_NAME = "lead_worker";
@@ -22,8 +22,8 @@ const BUILD_HANDOFF_MESSAGE_TYPE = "lead-worker-handoff";
 const PAIR_MESSAGE_TYPE = "lead-worker-pair-message";
 const MAX_CONTEXT_MESSAGE_CHARS = 4_000;
 const MAX_HANDOFF_CHARS = 32_000;
-const BUILDER_RELAY_DEDUP_WINDOW_MS = 60_000;
-const BUILDER_AUTO_REPORT_SUMMARY_MAX_CHARS = 3_000;
+const WORKER_RELAY_DEDUP_WINDOW_MS = 60_000;
+const WORKER_AUTO_REPORT_SUMMARY_MAX_CHARS = 3_000;
 const MAX_TRACKED_REPORTED_HANDOFF_IDS = 256;
 const MUTATING_BASH_PATTERNS = [
   /\brm\b/i,
@@ -100,18 +100,18 @@ const SAFE_BASH_PREFIXES = [
   /^\s*bat\b/,
 ];
 
-type PlanBuildControlAction = "start" | "on" | "status" | "off" | "stop";
+type LeadWorkerControlAction = "start" | "on" | "status" | "off" | "stop";
 
-type PlannerSelection = {
+type LeadSelection = {
   provider?: string;
   modelId?: string;
   thinkingLevel?: ThinkingLevel;
 };
 
-type PersistedPlanBuildState = {
+type PersistedLeadWorkerState = {
   enabled: boolean;
   previousActiveTools?: string[];
-  previousPlannerSelection?: PlannerSelection;
+  previousLeadSelection?: LeadSelection;
   updatedAt: string;
 };
 
@@ -121,45 +121,45 @@ type ExtractedMessage = {
   timestamp: number;
 };
 
-type PairRole = "planner" | "builder";
+type PairRole = "lead" | "worker";
 
 type PairChannelMessage = {
   id: string;
   from: PairRole;
   to: PairRole;
-  plannerSessionId: string;
+  leadSessionId: string;
   timestamp: string;
   kind: "handoff" | "message";
   text: string;
   handoffId?: string;
 };
 
-type PlanBuildStatus = {
+type LeadWorkerStatus = {
   ok: true;
-  action: PlanBuildControlAction;
+  action: LeadWorkerControlAction;
   modeEnabled: boolean;
-  plannerReadOnly: boolean;
+  leadReadOnly: boolean;
   message: string;
   activeTools: string[];
   previousActiveTools?: string[];
-  plannerModel?: string;
-  plannerThinkingLevel: ThinkingLevel;
-  configuredPlannerModel: string;
-  configuredPlannerThinkingLevel: ThinkingLevel;
-  previousPlannerModel?: string;
-  previousPlannerThinkingLevel?: ThinkingLevel;
-  settingsSources: PlanBuildSource[];
+  leadModel?: string;
+  leadThinkingLevel: ThinkingLevel;
+  configuredLeadModel: string;
+  configuredLeadThinkingLevel: ThinkingLevel;
+  previousLeadModel?: string;
+  previousLeadThinkingLevel?: ThinkingLevel;
+  settingsSources: LeadWorkerSource[];
   settingsWarnings: string[];
   settingsInvalidFieldCount: number;
-  worker: BuilderStatus;
+  worker: WorkerStatus;
 };
 
-interface PlanBuildRuntime {
+interface LeadWorkerRuntime {
   modeEnabled: boolean;
   previousActiveTools: string[] | undefined;
-  previousPlannerSelection: PlannerSelection | undefined;
-  lastObservedPlannerModel: { provider?: string; modelId?: string };
-  currentSettings: PlanBuildSettingsLoadResult | undefined;
+  previousLeadSelection: LeadSelection | undefined;
+  lastObservedLeadModel: { provider?: string; modelId?: string };
+  currentSettings: LeadWorkerSettingsLoadResult | undefined;
   pairInboxWatcher: FSWatcher | null;
   pairInboxPath: string | undefined;
   pairInboxDebounceTimer: ReturnType<typeof setTimeout> | null;
@@ -167,20 +167,20 @@ interface PlanBuildRuntime {
   pairMessageProcessing: boolean;
   pairMessageNeedsRecheck: boolean;
   latestPairContext: ExtensionContext | undefined;
-  pendingBuilderHandoff:
-    | { id: string; receivedAtMs: number; plannerSessionId: string }
+  pendingWorkerHandoff:
+    | { id: string; receivedAtMs: number; leadSessionId: string }
     | undefined;
   lastOutboundPairMessageAtMs: number | undefined;
-  lastBuilderRelayFingerprint: string | undefined;
-  lastBuilderRelayAtMs: number | undefined;
-  reportedBuilderHandoffIds: Set<string>;
+  lastWorkerRelayFingerprint: string | undefined;
+  lastWorkerRelayAtMs: number | undefined;
+  reportedWorkerHandoffIds: Set<string>;
 }
 
-const rt: PlanBuildRuntime = {
+const rt: LeadWorkerRuntime = {
   modeEnabled: false,
   previousActiveTools: undefined,
-  previousPlannerSelection: undefined,
-  lastObservedPlannerModel: {},
+  previousLeadSelection: undefined,
+  lastObservedLeadModel: {},
   currentSettings: undefined,
   pairInboxWatcher: null,
   pairInboxPath: undefined,
@@ -189,14 +189,14 @@ const rt: PlanBuildRuntime = {
   pairMessageProcessing: false,
   pairMessageNeedsRecheck: false,
   latestPairContext: undefined,
-  pendingBuilderHandoff: undefined,
+  pendingWorkerHandoff: undefined,
   lastOutboundPairMessageAtMs: undefined,
-  lastBuilderRelayFingerprint: undefined,
-  lastBuilderRelayAtMs: undefined,
-  reportedBuilderHandoffIds: new Set<string>(),
+  lastWorkerRelayFingerprint: undefined,
+  lastWorkerRelayAtMs: undefined,
+  reportedWorkerHandoffIds: new Set<string>(),
 };
 
-function normalizeControlAction(raw: string): PlanBuildControlAction | null {
+function normalizeControlAction(raw: string): LeadWorkerControlAction | null {
   const value = raw.trim().toLowerCase();
   if (value === "") return null;
   if (value === "start") return "start";
@@ -266,29 +266,29 @@ function stripBenignRedirects(command: string): string {
     .replace(/(^|[\s;|&])(?:[12]?>&[12])(?=$|[\s;|&])/g, "$1");
 }
 
-function isSafePlannerBash(command: string): boolean {
+function isSafeLeadBash(command: string): boolean {
   const commandForMutatingChecks = stripBenignRedirects(command);
   const destructive = MUTATING_BASH_PATTERNS.some((pattern) => pattern.test(commandForMutatingChecks));
   const safe = SAFE_BASH_PREFIXES.some((pattern) => pattern.test(command));
   return safe && !destructive;
 }
 
-function requireCurrentSettings(): PlanBuildSettingsLoadResult {
+function requireCurrentSettings(): LeadWorkerSettingsLoadResult {
   if (!rt.currentSettings) {
     throw new Error("lead-worker settings are not loaded");
   }
   return rt.currentSettings;
 }
 
-function builderSessionReference(): string {
+function workerSessionReference(): string {
   return "the paired worker session";
 }
 
-function leadConfig(): PlanBuildSettings["lead"] {
+function leadConfig(): LeadWorkerSettings["lead"] {
   return requireCurrentSettings().settings.lead;
 }
 
-function getConfiguredPlannerSelection(settings: PlanBuildSettings = requireCurrentSettings().settings): PlannerSelection | undefined {
+function getConfiguredLeadSelection(settings: LeadWorkerSettings = requireCurrentSettings().settings): LeadSelection | undefined {
   const ref = settings.lead.model.trim();
   const separator = ref.indexOf("/");
   if (separator <= 0 || separator >= ref.length - 1) return undefined;
@@ -299,23 +299,23 @@ function getConfiguredPlannerSelection(settings: PlanBuildSettings = requireCurr
   };
 }
 
-async function refreshSettings(cwd: string): Promise<PlanBuildSettingsLoadResult> {
-  rt.currentSettings = await loadPlanBuildSettings(cwd, import.meta.url);
+async function refreshSettings(cwd: string): Promise<LeadWorkerSettingsLoadResult> {
+  rt.currentSettings = await loadLeadWorkerSettings(cwd, import.meta.url);
   return rt.currentSettings;
 }
 
 function currentPairRole(): PairRole {
-  return process.env.PI_PLAN_MODE_ROLE === "builder" ? "builder" : "planner";
+  return process.env.PI_LEAD_WORKER_ROLE === "worker" ? "worker" : "lead";
 }
 
 function pairedRole(role: PairRole): PairRole {
-  return role === "planner" ? "builder" : "planner";
+  return role === "lead" ? "worker" : "lead";
 }
 
-function getPlannerSessionBinding(ctx: ExtensionContext): PlannerSessionBinding {
-  const builderPlannerSessionId = process.env.PI_PLAN_BUILD_PLANNER_SESSION_ID?.trim();
-  if (currentPairRole() === "builder" && builderPlannerSessionId) {
-    return { sessionId: builderPlannerSessionId };
+function getLeadSessionBinding(ctx: ExtensionContext): LeadSessionBinding {
+  const workerLeadSessionId = process.env.PI_LEAD_WORKER_LEAD_SESSION_ID?.trim();
+  if (currentPairRole() === "worker" && workerLeadSessionId) {
+    return { sessionId: workerLeadSessionId };
   }
   return {
     sessionId: ctx.sessionManager.getSessionId(),
@@ -327,7 +327,7 @@ function validToolNames(pi: ExtensionAPI): Set<string> {
   return new Set(pi.getAllTools().map((tool) => tool.name));
 }
 
-function filterPlannerTools(pi: ExtensionAPI, sourceTools: string[]): string[] {
+function filterLeadTools(pi: ExtensionAPI, sourceTools: string[]): string[] {
   const valid = validToolNames(pi);
   const allowed = new Set(leadConfig().allowed_tools);
   if (valid.has(TOOL_NAME)) {
@@ -344,7 +344,7 @@ function normalizeToolList(pi: ExtensionAPI, sourceTools: string[] | undefined):
   return sourceTools.filter((name, index) => sourceTools.indexOf(name) === index && valid.has(name));
 }
 
-function normalizePlannerSelection(selection: PlannerSelection | undefined): PlannerSelection | undefined {
+function normalizeLeadSelection(selection: LeadSelection | undefined): LeadSelection | undefined {
   if (!selection) return undefined;
   const provider = typeof selection.provider === "string" && selection.provider.trim() ? selection.provider.trim() : undefined;
   const modelId = typeof selection.modelId === "string" && selection.modelId.trim() ? selection.modelId.trim() : undefined;
@@ -353,25 +353,25 @@ function normalizePlannerSelection(selection: PlannerSelection | undefined): Pla
   return { provider, modelId, thinkingLevel };
 }
 
-function formatPlannerModel(selection: PlannerSelection | undefined): string | undefined {
+function formatLeadModel(selection: LeadSelection | undefined): string | undefined {
   if (!selection?.provider || !selection.modelId) return undefined;
   return `${selection.provider}/${selection.modelId}`;
 }
 
-function getCurrentPlannerSelection(pi: ExtensionAPI, ctx: ExtensionContext): PlannerSelection {
+function getCurrentLeadSelection(pi: ExtensionAPI, ctx: ExtensionContext): LeadSelection {
   return {
-    provider: rt.lastObservedPlannerModel.provider ?? ctx.model?.provider,
-    modelId: rt.lastObservedPlannerModel.modelId ?? ctx.model?.id,
+    provider: rt.lastObservedLeadModel.provider ?? ctx.model?.provider,
+    modelId: rt.lastObservedLeadModel.modelId ?? ctx.model?.id,
     thinkingLevel: pi.getThinkingLevel(),
   };
 }
 
-async function applyPlannerSelection(
+async function applyLeadSelection(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
-  selection: PlannerSelection | undefined,
+  selection: LeadSelection | undefined,
 ): Promise<string | undefined> {
-  const normalized = normalizePlannerSelection(selection);
+  const normalized = normalizeLeadSelection(selection);
   if (!normalized) return undefined;
 
   let warning: string | undefined;
@@ -385,7 +385,7 @@ async function applyPlannerSelection(
       if (!ok) {
         warning = `No API key available for ${normalized.provider}/${normalized.modelId}.`;
       } else {
-        rt.lastObservedPlannerModel = { provider: normalized.provider, modelId: normalized.modelId };
+        rt.lastObservedLeadModel = { provider: normalized.provider, modelId: normalized.modelId };
       }
     }
   }
@@ -398,25 +398,25 @@ async function applyPlannerSelection(
 }
 
 function persistModeState(pi: ExtensionAPI): void {
-  pi.appendEntry<PersistedPlanBuildState>(STATE_ENTRY_TYPE, {
+  pi.appendEntry<PersistedLeadWorkerState>(STATE_ENTRY_TYPE, {
     enabled: rt.modeEnabled,
     previousActiveTools: rt.previousActiveTools,
-    previousPlannerSelection: rt.previousPlannerSelection,
+    previousLeadSelection: rt.previousLeadSelection,
     updatedAt: new Date().toISOString(),
   });
 }
 
-function restorePersistedState(ctx: ExtensionContext): PersistedPlanBuildState | undefined {
+function restorePersistedState(ctx: ExtensionContext): PersistedLeadWorkerState | undefined {
   const branch = ctx.sessionManager.getBranch();
   for (let i = branch.length - 1; i >= 0; i--) {
     const entry = branch[i];
     if (entry.type !== "custom" || entry.customType !== STATE_ENTRY_TYPE) continue;
-    const data = entry.data as PersistedPlanBuildState | undefined;
+    const data = entry.data as PersistedLeadWorkerState | undefined;
     if (!data || typeof data.enabled !== "boolean") continue;
     return {
       enabled: data.enabled,
       previousActiveTools: Array.isArray(data.previousActiveTools) ? data.previousActiveTools.filter((name) => typeof name === "string") : undefined,
-      previousPlannerSelection: normalizePlannerSelection(data.previousPlannerSelection),
+      previousLeadSelection: normalizeLeadSelection(data.previousLeadSelection),
       updatedAt: typeof data.updatedAt === "string" ? data.updatedAt : new Date().toISOString(),
     };
   }
@@ -430,12 +430,12 @@ function restoreNormalTools(pi: ExtensionAPI, savedTools: string[] | undefined):
   }
 }
 
-function applyPlannerMode(pi: ExtensionAPI): void {
+function applyLeadMode(pi: ExtensionAPI): void {
   if (!rt.modeEnabled) return;
   if (!rt.previousActiveTools || rt.previousActiveTools.length === 0) {
     rt.previousActiveTools = pi.getActiveTools();
   }
-  pi.setActiveTools(filterPlannerTools(pi, rt.previousActiveTools));
+  pi.setActiveTools(filterLeadTools(pi, rt.previousActiveTools));
 }
 
 async function restoreModeState(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
@@ -444,33 +444,33 @@ async function restoreModeState(pi: ExtensionAPI, ctx: ExtensionContext): Promis
   const restored = restorePersistedState(ctx);
   rt.modeEnabled = restored?.enabled ?? false;
   rt.previousActiveTools = rt.modeEnabled ? restored?.previousActiveTools ?? pi.getActiveTools() : undefined;
-  rt.previousPlannerSelection = rt.modeEnabled ? restored?.previousPlannerSelection : undefined;
+  rt.previousLeadSelection = rt.modeEnabled ? restored?.previousLeadSelection : undefined;
 
   if (rt.modeEnabled) {
-    applyPlannerMode(pi);
-    const warning = await applyPlannerSelection(pi, ctx, getConfiguredPlannerSelection());
+    applyLeadMode(pi);
+    const warning = await applyLeadSelection(pi, ctx, getConfiguredLeadSelection());
     if (warning && ctx.hasUI) {
       ctx.ui.notify(`lead-worker: ${warning}`, "warning");
     }
   }
 
-  const worker = await getBuilderStatus(
+  const worker = await getWorkerStatus(
     pi,
     ctx.cwd ?? process.cwd(),
     requireCurrentSettings().settings,
-    getPlannerSessionBinding(ctx),
+    getLeadSessionBinding(ctx),
   ).catch(() => undefined);
   if (worker) updateStatusLine(ctx, worker);
 }
 
-function renderSummary(worker: BuilderStatus): string | undefined {
+function renderSummary(worker: WorkerStatus): string | undefined {
   if (!rt.modeEnabled && !worker.running) return undefined;
-  const builderPart = worker.running ? `${worker.agentName}:on (${worker.tmuxSession})` : `${worker.agentName}:off`;
-  if (!rt.modeEnabled) return builderPart;
-  return `lead:on | ${builderPart}`;
+  const workerPart = worker.running ? `${worker.agentName}:on (${worker.tmuxSession})` : `${worker.agentName}:off`;
+  if (!rt.modeEnabled) return workerPart;
+  return `lead:on | ${workerPart}`;
 }
 
-function updateStatusLine(ctx: ExtensionContext, worker: BuilderStatus): void {
+function updateStatusLine(ctx: ExtensionContext, worker: WorkerStatus): void {
   if (!ctx.hasUI) return;
   const summary = renderSummary(worker);
   if (!summary) {
@@ -480,42 +480,42 @@ function updateStatusLine(ctx: ExtensionContext, worker: BuilderStatus): void {
 
   const theme = ctx.ui.theme;
   if (rt.modeEnabled) {
-    const plannerPart = theme.fg("warning", "lead:on");
-    const builderPart = worker.running
+    const leadPart = theme.fg("warning", "lead:on");
+    const workerPart = worker.running
       ? theme.fg("accent", `${worker.agentName}:on (${worker.tmuxSession})`)
       : theme.fg("muted", `${worker.agentName}:off`);
-    ctx.ui.setStatus(STATUS_KEY, `${plannerPart} | ${builderPart}`);
+    ctx.ui.setStatus(STATUS_KEY, `${leadPart} | ${workerPart}`);
     return;
   }
 
-  const builderPart = worker.running
+  const workerPart = worker.running
     ? theme.fg("accent", `${worker.agentName}:on (${worker.tmuxSession})`)
     : theme.fg("muted", `${worker.agentName}:off`);
-  ctx.ui.setStatus(STATUS_KEY, builderPart);
+  ctx.ui.setStatus(STATUS_KEY, workerPart);
 }
 
-function buildStatus(action: PlanBuildControlAction, message: string, worker: BuilderStatus, pi: ExtensionAPI): PlanBuildStatus {
-  const plannerModel = formatPlannerModel({
-    provider: rt.lastObservedPlannerModel.provider,
-    modelId: rt.lastObservedPlannerModel.modelId,
+function buildStatus(action: LeadWorkerControlAction, message: string, worker: WorkerStatus, pi: ExtensionAPI): LeadWorkerStatus {
+  const leadModel = formatLeadModel({
+    provider: rt.lastObservedLeadModel.provider,
+    modelId: rt.lastObservedLeadModel.modelId,
   });
-  const previousPlannerModel = formatPlannerModel(rt.previousPlannerSelection);
+  const previousLeadModel = formatLeadModel(rt.previousLeadSelection);
   const loadedSettings = requireCurrentSettings();
 
   return {
     ok: true,
     action,
     modeEnabled: rt.modeEnabled,
-    plannerReadOnly: rt.modeEnabled,
+    leadReadOnly: rt.modeEnabled,
     message,
     activeTools: pi.getActiveTools(),
     previousActiveTools: rt.previousActiveTools,
-    plannerModel,
-    plannerThinkingLevel: pi.getThinkingLevel(),
-    configuredPlannerModel: loadedSettings.settings.lead.model,
-    configuredPlannerThinkingLevel: loadedSettings.settings.lead.thinking,
-    previousPlannerModel,
-    previousPlannerThinkingLevel: rt.previousPlannerSelection?.thinkingLevel,
+    leadModel,
+    leadThinkingLevel: pi.getThinkingLevel(),
+    configuredLeadModel: loadedSettings.settings.lead.model,
+    configuredLeadThinkingLevel: loadedSettings.settings.lead.thinking,
+    previousLeadModel,
+    previousLeadThinkingLevel: rt.previousLeadSelection?.thinkingLevel,
     settingsSources: loadedSettings.stats.loaded_sources,
     settingsWarnings: loadedSettings.warnings,
     settingsInvalidFieldCount: loadedSettings.stats.invalid_field_count,
@@ -523,25 +523,25 @@ function buildStatus(action: PlanBuildControlAction, message: string, worker: Bu
   };
 }
 
-function formatStatusMarkdown(status: PlanBuildStatus): string {
+function formatStatusMarkdown(status: LeadWorkerStatus): string {
   const lines = [
     `**lead-worker ${status.action}**`,
     "",
     `- message: ${status.message}`,
     `- lead mode: ${status.modeEnabled ? "on" : "off"}`,
-    `- lead behavior: ${status.plannerReadOnly ? "lead (read-only)" : "normal"}`,
-    `- lead model: ${status.plannerModel ?? "unknown"}`,
-    `- lead thinking: ${status.plannerThinkingLevel}`,
-    `- configured plan model: ${status.configuredPlannerModel}`,
-    `- configured plan thinking: ${status.configuredPlannerThinkingLevel}`,
+    `- lead behavior: ${status.leadReadOnly ? "lead (read-only)" : "normal"}`,
+    `- lead model: ${status.leadModel ?? "unknown"}`,
+    `- lead thinking: ${status.leadThinkingLevel}`,
+    `- configured lead model: ${status.configuredLeadModel}`,
+    `- configured lead thinking: ${status.configuredLeadThinkingLevel}`,
     `- active tools: ${status.activeTools.length > 0 ? status.activeTools.join(", ") : "(none)"}`,
   ];
 
-  if (status.previousPlannerModel) {
-    lines.push(`- restore model on off: ${status.previousPlannerModel}`);
+  if (status.previousLeadModel) {
+    lines.push(`- restore model on off: ${status.previousLeadModel}`);
   }
-  if (status.previousPlannerThinkingLevel) {
-    lines.push(`- restore thinking on off: ${status.previousPlannerThinkingLevel}`);
+  if (status.previousLeadThinkingLevel) {
+    lines.push(`- restore thinking on off: ${status.previousLeadThinkingLevel}`);
   }
 
   lines.push(
@@ -551,20 +551,20 @@ function formatStatusMarkdown(status: PlanBuildStatus): string {
     `- loaded sources: ${status.settingsSources.map((source) => `${source.kind}:${source.path}`).join(", ")}`,
     `- invalid fields ignored: ${status.settingsInvalidFieldCount}`,
     "",
-    "**builder**",
+    "**worker**",
     "",
     `- running: ${status.worker.running ? "yes" : "no"}`,
     `- name: ${status.worker.agentName}`,
     `- model: ${status.worker.model}`,
     `- thinking: ${status.worker.thinking}`,
-    `- lead session id: ${status.worker.plannerSessionId}`,
+    `- lead session id: ${status.worker.leadSessionId}`,
     `- tmux session: ${status.worker.tmuxSession}`,
     `- session file: ${status.worker.sessionFile}`,
     `- log file: ${status.worker.logFile}`,
     `- launch script: ${status.worker.launchScript}`,
   );
 
-  if (status.worker.plannerSessionFile) lines.push(`- lead session file: ${status.worker.plannerSessionFile}`);
+  if (status.worker.leadSessionFile) lines.push(`- lead session file: ${status.worker.leadSessionFile}`);
   if (status.worker.startedAt) lines.push(`- started: ${status.worker.startedAt}`);
   if (status.worker.lastStoppedAt) lines.push(`- last stopped: ${status.worker.lastStoppedAt}`);
   if (status.worker.alreadyRunning) lines.push(`- note: existing ${status.worker.agentName} session reused`);
@@ -597,111 +597,111 @@ function emitInfo(pi: ExtensionAPI, markdown: string, customType = BUILD_HANDOFF
   );
 }
 
-async function startOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: PlanBuildSettings): Promise<PlanBuildStatus> {
-  const worker = await startBuilder(pi, ctx.cwd ?? process.cwd(), settings, getPlannerSessionBinding(ctx));
+async function startOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: LeadWorkerSettings): Promise<LeadWorkerStatus> {
+  const worker = await startWorker(pi, ctx.cwd ?? process.cwd(), settings, getLeadSessionBinding(ctx));
   updateStatusLine(ctx, worker);
   return buildStatus("start", worker.message, worker, pi);
 }
 
-async function enableMode(pi: ExtensionAPI, ctx: ExtensionContext, settings: PlanBuildSettings): Promise<PlanBuildStatus> {
+async function enableMode(pi: ExtensionAPI, ctx: ExtensionContext, settings: LeadWorkerSettings): Promise<LeadWorkerStatus> {
   const capturedTools = rt.modeEnabled ? rt.previousActiveTools : pi.getActiveTools();
-  const capturedSelection = rt.modeEnabled ? rt.previousPlannerSelection : getCurrentPlannerSelection(pi, ctx);
-  const worker = await startBuilder(pi, ctx.cwd ?? process.cwd(), settings, getPlannerSessionBinding(ctx));
-  const configuredSelection = getConfiguredPlannerSelection(settings);
+  const capturedSelection = rt.modeEnabled ? rt.previousLeadSelection : getCurrentLeadSelection(pi, ctx);
+  const worker = await startWorker(pi, ctx.cwd ?? process.cwd(), settings, getLeadSessionBinding(ctx));
+  const configuredSelection = getConfiguredLeadSelection(settings);
 
   rt.modeEnabled = true;
   rt.previousActiveTools = normalizeToolList(pi, capturedTools);
   if (rt.previousActiveTools.length === 0) {
     rt.previousActiveTools = pi.getActiveTools();
   }
-  rt.previousPlannerSelection = normalizePlannerSelection(capturedSelection);
+  rt.previousLeadSelection = normalizeLeadSelection(capturedSelection);
 
-  const switchWarning = await applyPlannerSelection(pi, ctx, configuredSelection);
+  const switchWarning = await applyLeadSelection(pi, ctx, configuredSelection);
 
-  applyPlannerMode(pi);
+  applyLeadMode(pi);
   persistModeState(pi);
   updateStatusLine(ctx, worker);
 
-  const configuredModelLabel = formatPlannerModel(configuredSelection) ?? settings.lead.model;
+  const configuredModelLabel = formatLeadModel(configuredSelection) ?? settings.lead.model;
   const switchMessage = switchWarning
-    ? `Planner remained on ${formatPlannerModel(getCurrentPlannerSelection(pi, ctx)) ?? "the current model"} (${switchWarning})`
-    : `Planner switched to ${configuredModelLabel} (${settings.lead.thinking})`;
+    ? `Lead remained on ${formatLeadModel(getCurrentLeadSelection(pi, ctx)) ?? "the current model"} (${switchWarning})`
+    : `Lead switched to ${configuredModelLabel} (${settings.lead.thinking})`;
 
   return buildStatus(
     "on",
-    `Lead-worker mode enabled. Planner is now read-only. ${switchMessage}. ${worker.message}`,
+    `Lead-worker mode enabled. Lead is now read-only. ${switchMessage}. ${worker.message}`,
     worker,
     pi,
   );
 }
 
-async function restorePlannerMode(
+async function restoreLeadMode(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
-  worker: BuilderStatus,
+  worker: WorkerStatus,
 ): Promise<string> {
   const toolsToRestore = rt.previousActiveTools;
-  const plannerToRestore = rt.previousPlannerSelection;
+  const leadToRestore = rt.previousLeadSelection;
 
   rt.modeEnabled = false;
   restoreNormalTools(pi, toolsToRestore);
 
-  const restoreWarning = await applyPlannerSelection(pi, ctx, plannerToRestore);
+  const restoreWarning = await applyLeadSelection(pi, ctx, leadToRestore);
 
   rt.previousActiveTools = undefined;
-  rt.previousPlannerSelection = undefined;
+  rt.previousLeadSelection = undefined;
   persistModeState(pi);
   updateStatusLine(ctx, worker);
 
-  const restoreTarget = formatPlannerModel(plannerToRestore);
+  const restoreTarget = formatLeadModel(leadToRestore);
   return restoreWarning
-    ? `Planner model restore was skipped (${restoreWarning})`
+    ? `Lead model restore was skipped (${restoreWarning})`
     : restoreTarget
-      ? `Planner restored to ${restoreTarget}${plannerToRestore?.thinkingLevel ? ` (${plannerToRestore.thinkingLevel})` : ""}`
-      : "Planner returned to its prior model state";
+      ? `Lead restored to ${restoreTarget}${leadToRestore?.thinkingLevel ? ` (${leadToRestore.thinkingLevel})` : ""}`
+      : "Lead returned to its prior model state";
 }
 
-async function disableMode(pi: ExtensionAPI, ctx: ExtensionContext, settings: PlanBuildSettings): Promise<PlanBuildStatus> {
-  const worker = await getBuilderStatus(pi, ctx.cwd ?? process.cwd(), settings, getPlannerSessionBinding(ctx));
-  const restoreMessage = await restorePlannerMode(pi, ctx, worker);
+async function disableMode(pi: ExtensionAPI, ctx: ExtensionContext, settings: LeadWorkerSettings): Promise<LeadWorkerStatus> {
+  const worker = await getWorkerStatus(pi, ctx.cwd ?? process.cwd(), settings, getLeadSessionBinding(ctx));
+  const restoreMessage = await restoreLeadMode(pi, ctx, worker);
 
   return buildStatus(
     "off",
-    `Lead-worker mode disabled. Planner returned to normal mode. ${restoreMessage}. ${worker.running ? `Builder ${worker.agentName} is still running.` : `Builder ${worker.agentName} is not running.`}`,
+    `Lead-worker mode disabled. Lead returned to normal mode. ${restoreMessage}. ${worker.running ? `Worker ${worker.agentName} is still running.` : `Worker ${worker.agentName} is not running.`}`,
     worker,
     pi,
   );
 }
 
-async function statusOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: PlanBuildSettings): Promise<PlanBuildStatus> {
-  const worker = await getBuilderStatus(pi, ctx.cwd ?? process.cwd(), settings, getPlannerSessionBinding(ctx));
+async function statusOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: LeadWorkerSettings): Promise<LeadWorkerStatus> {
+  const worker = await getWorkerStatus(pi, ctx.cwd ?? process.cwd(), settings, getLeadSessionBinding(ctx));
   updateStatusLine(ctx, worker);
   return buildStatus(
     "status",
-    `Lead-worker mode is ${rt.modeEnabled ? "on" : "off"}. Planner model is ${formatPlannerModel(getCurrentPlannerSelection(pi, ctx)) ?? "unknown"}. Builder ${worker.agentName} is ${worker.running ? "running" : "not running"}.`,
+    `Lead-worker mode is ${rt.modeEnabled ? "on" : "off"}. Lead model is ${formatLeadModel(getCurrentLeadSelection(pi, ctx)) ?? "unknown"}. Worker ${worker.agentName} is ${worker.running ? "running" : "not running"}.`,
     worker,
     pi,
   );
 }
 
-async function stopOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: PlanBuildSettings): Promise<PlanBuildStatus> {
-  const worker = await stopBuilder(pi, ctx.cwd ?? process.cwd(), settings, getPlannerSessionBinding(ctx));
+async function stopOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: LeadWorkerSettings): Promise<LeadWorkerStatus> {
+  const worker = await stopWorker(pi, ctx.cwd ?? process.cwd(), settings, getLeadSessionBinding(ctx));
 
   if (rt.modeEnabled) {
-    const restoreMessage = await restorePlannerMode(pi, ctx, worker);
+    const restoreMessage = await restoreLeadMode(pi, ctx, worker);
     return buildStatus(
       "stop",
-      `Builder ${worker.agentName} forcibly terminated. Lead-worker mode disabled. ${restoreMessage}.`,
+      `Worker ${worker.agentName} forcibly terminated. Lead-worker mode disabled. ${restoreMessage}.`,
       worker,
       pi,
     );
   }
 
   updateStatusLine(ctx, worker);
-  return buildStatus("stop", `Builder ${worker.agentName} forcibly terminated.`, worker, pi);
+  return buildStatus("stop", `Worker ${worker.agentName} forcibly terminated.`, worker, pi);
 }
 
-async function runControlAction(pi: ExtensionAPI, ctx: ExtensionContext, action: PlanBuildControlAction): Promise<PlanBuildStatus> {
+async function runControlAction(pi: ExtensionAPI, ctx: ExtensionContext, action: LeadWorkerControlAction): Promise<LeadWorkerStatus> {
   const { settings } = await refreshSettings(ctx.cwd ?? process.cwd());
 
   switch (action) {
@@ -718,7 +718,7 @@ async function runControlAction(pi: ExtensionAPI, ctx: ExtensionContext, action:
   }
 }
 
-async function resolveCommandAction(raw: string): Promise<PlanBuildControlAction | null> {
+async function resolveCommandAction(raw: string): Promise<LeadWorkerControlAction | null> {
   const explicit = normalizeControlAction(raw);
   if (explicit) return explicit;
   if (raw.trim() !== "") return null;
@@ -727,18 +727,18 @@ async function resolveCommandAction(raw: string): Promise<PlanBuildControlAction
 
 async function resolvePairMessageContext(pi: ExtensionAPI, ctx: ExtensionContext): Promise<{
   role: PairRole;
-  plannerSession: PlannerSessionBinding;
+  leadSession: LeadSessionBinding;
   inboxPath: string;
   targetInboxPath: string;
 }> {
   const role = currentPairRole();
-  const plannerSession = getPlannerSessionBinding(ctx);
-  const paths = await resolvePairChannelPaths(pi, ctx.cwd ?? process.cwd(), plannerSession);
+  const leadSession = getLeadSessionBinding(ctx);
+  const paths = await resolvePairChannelPaths(pi, ctx.cwd ?? process.cwd(), leadSession);
   return {
     role,
-    plannerSession,
-    inboxPath: role === "planner" ? paths.plannerInbox : paths.builderInbox,
-    targetInboxPath: role === "planner" ? paths.builderInbox : paths.plannerInbox,
+    leadSession,
+    inboxPath: role === "lead" ? paths.leadInbox : paths.workerInbox,
+    targetInboxPath: role === "lead" ? paths.workerInbox : paths.leadInbox,
   };
 }
 
@@ -747,9 +747,9 @@ function isPairChannelMessage(value: unknown): value is PairChannelMessage {
   const message = value as Record<string, unknown>;
   return (
     typeof message.id === "string" &&
-    (message.from === "planner" || message.from === "builder") &&
-    (message.to === "planner" || message.to === "builder") &&
-    typeof message.plannerSessionId === "string" &&
+    (message.from === "lead" || message.from === "worker") &&
+    (message.to === "lead" || message.to === "worker") &&
+    typeof message.leadSessionId === "string" &&
     typeof message.timestamp === "string" &&
     (message.kind === "handoff" || message.kind === "message") &&
     typeof message.text === "string" &&
@@ -777,7 +777,7 @@ function formatIncomingPairMessage(message: PairChannelMessage): string {
   return [
     heading,
     "",
-    `- lead session id: ${message.plannerSessionId}`,
+    `- lead session id: ${message.leadSessionId}`,
     ...(handoffId ? [`- handoff id: ${handoffId}`] : []),
     "",
     message.text,
@@ -790,11 +790,11 @@ function normalizeWhitespaceLower(text: string): string {
 
 function pairRelayFingerprint(message: PairChannelMessage): string {
   const handoffId = getMessageHandoffId(message) ?? "";
-  return `${message.from}|${message.to}|${message.kind}|${message.plannerSessionId}|${handoffId}|${normalizeWhitespaceLower(message.text)}`;
+  return `${message.from}|${message.to}|${message.kind}|${message.leadSessionId}|${handoffId}|${normalizeWhitespaceLower(message.text)}`;
 }
 
-function isBuilderCompletionMessage(message: PairChannelMessage): boolean {
-  if (message.from !== "builder" || message.kind !== "message") return false;
+function isWorkerCompletionMessage(message: PairChannelMessage): boolean {
+  if (message.from !== "worker" || message.kind !== "message") return false;
 
   const normalized = normalizeWhitespaceLower(message.text);
   if (normalized.startsWith("worker completion report")) return true;
@@ -805,38 +805,38 @@ function isBuilderCompletionMessage(message: PairChannelMessage): boolean {
   return hasStatus && hasFiles && hasValidation;
 }
 
-function rememberReportedBuilderHandoff(handoffId: string): void {
-  rt.reportedBuilderHandoffIds.add(handoffId);
-  if (rt.reportedBuilderHandoffIds.size <= MAX_TRACKED_REPORTED_HANDOFF_IDS) return;
+function rememberReportedWorkerHandoff(handoffId: string): void {
+  rt.reportedWorkerHandoffIds.add(handoffId);
+  if (rt.reportedWorkerHandoffIds.size <= MAX_TRACKED_REPORTED_HANDOFF_IDS) return;
 
-  const oldest = rt.reportedBuilderHandoffIds.values().next().value;
-  if (oldest) rt.reportedBuilderHandoffIds.delete(oldest);
+  const oldest = rt.reportedWorkerHandoffIds.values().next().value;
+  if (oldest) rt.reportedWorkerHandoffIds.delete(oldest);
 }
 
-function maybeRelayBuilderMessageToUser(pi: ExtensionAPI, message: PairChannelMessage): void {
-  if (currentPairRole() !== "planner") return;
-  if (!isBuilderCompletionMessage(message)) return;
+function maybeRelayWorkerMessageToUser(pi: ExtensionAPI, message: PairChannelMessage): void {
+  if (currentPairRole() !== "lead") return;
+  if (!isWorkerCompletionMessage(message)) return;
 
   const handoffId = getMessageHandoffId(message);
-  if (handoffId && rt.reportedBuilderHandoffIds.has(handoffId)) return;
+  if (handoffId && rt.reportedWorkerHandoffIds.has(handoffId)) return;
 
   const now = Date.now();
   const fingerprint = pairRelayFingerprint(message);
-  const withinWindow = (rt.lastBuilderRelayAtMs ?? 0) > now - BUILDER_RELAY_DEDUP_WINDOW_MS;
-  if (withinWindow && rt.lastBuilderRelayFingerprint === fingerprint) return;
+  const withinWindow = (rt.lastWorkerRelayAtMs ?? 0) > now - WORKER_RELAY_DEDUP_WINDOW_MS;
+  if (withinWindow && rt.lastWorkerRelayFingerprint === fingerprint) return;
 
-  rt.lastBuilderRelayFingerprint = fingerprint;
-  rt.lastBuilderRelayAtMs = now;
-  if (handoffId) rememberReportedBuilderHandoff(handoffId);
+  rt.lastWorkerRelayFingerprint = fingerprint;
+  rt.lastWorkerRelayAtMs = now;
+  if (handoffId) rememberReportedWorkerHandoff(handoffId);
 
   const relayPrompt = [
-    "Builder sent a completion update.",
+    "Worker sent a completion update.",
     "Reply to the USER now with a concise status update.",
     "Include: (1) done/blocked, (2) files changed, (3) validation result, (4) next step.",
     "Do not ask the worker to repeat the same report unless critical information is missing.",
     ...(handoffId ? ["", `handoff_id: ${handoffId}`] : []),
     "",
-    `Builder message (${message.kind}):`,
+    `Worker message (${message.kind}):`,
     message.text,
   ].join("\n");
 
@@ -853,7 +853,7 @@ function deliverPairMessage(pi: ExtensionAPI, message: PairChannelMessage): void
     },
     { triggerTurn: true, deliverAs: "steer" },
   );
-  maybeRelayBuilderMessageToUser(pi, message);
+  maybeRelayWorkerMessageToUser(pi, message);
 }
 
 function latestAssistantText(ctx: ExtensionContext): string {
@@ -869,14 +869,14 @@ function latestAssistantText(ctx: ExtensionContext): string {
   return "";
 }
 
-async function maybeAutoReportBuilderCompletion(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
-  if (currentPairRole() !== "builder") return;
-  const pending = rt.pendingBuilderHandoff;
+async function maybeAutoReportWorkerCompletion(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+  if (currentPairRole() !== "worker") return;
+  const pending = rt.pendingWorkerHandoff;
   if (!pending) return;
 
-  // Builder already sent a manual paired message for this handoff.
+  // Worker already sent a manual paired message for this handoff.
   if ((rt.lastOutboundPairMessageAtMs ?? 0) >= pending.receivedAtMs) {
-    rt.pendingBuilderHandoff = undefined;
+    rt.pendingWorkerHandoff = undefined;
     return;
   }
 
@@ -884,17 +884,17 @@ async function maybeAutoReportBuilderCompletion(pi: ExtensionAPI, ctx: Extension
   if (!summary) return;
 
   const report = [
-    "Builder completion report (auto):",
+    "Worker completion report (auto):",
     `- handoff_id: ${pending.id}`,
     "- status: done",
     "- files changed: see latest worker response and diffs",
     "- validation: see latest worker response",
     "- details:",
-    truncate(summary, BUILDER_AUTO_REPORT_SUMMARY_MAX_CHARS),
+    truncate(summary, WORKER_AUTO_REPORT_SUMMARY_MAX_CHARS),
   ].join("\n");
 
   await queuePairedMessage(pi, ctx, report, "message", { handoffId: pending.id });
-  rt.pendingBuilderHandoff = undefined;
+  rt.pendingWorkerHandoff = undefined;
 }
 
 async function processPendingPairMessages(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
@@ -906,7 +906,7 @@ async function processPendingPairMessages(pi: ExtensionAPI, ctx: ExtensionContex
 
   rt.pairMessageProcessing = true;
   try {
-    const { inboxPath, plannerSession, role } = await resolvePairMessageContext(pi, ctx);
+    const { inboxPath, leadSession, role } = await resolvePairMessageContext(pi, ctx);
     await fs.mkdir(inboxPath, { recursive: true });
     const files = (await fs.readdir(inboxPath)).filter((file) => file.endsWith(".json")).sort();
 
@@ -924,17 +924,17 @@ async function processPendingPairMessages(pi: ExtensionAPI, ctx: ExtensionContex
         await fs.unlink(messagePath).catch(() => {});
         continue;
       }
-      if (parsed.to !== role || parsed.plannerSessionId !== plannerSession.sessionId) {
+      if (parsed.to !== role || parsed.leadSessionId !== leadSession.sessionId) {
         await fs.unlink(messagePath).catch(() => {});
         continue;
       }
       // Delivery errors propagate so a valid message is never silently lost.
       deliverPairMessage(pi, parsed);
-      if (role === "builder" && parsed.kind === "handoff") {
-        rt.pendingBuilderHandoff = {
+      if (role === "worker" && parsed.kind === "handoff") {
+        rt.pendingWorkerHandoff = {
           id: getMessageHandoffId(parsed) ?? parsed.id,
           receivedAtMs: Date.parse(parsed.timestamp) || Date.now(),
-          plannerSessionId: parsed.plannerSessionId,
+          leadSessionId: parsed.leadSessionId,
         };
       }
       await fs.unlink(messagePath).catch(() => {});
@@ -1011,20 +1011,20 @@ async function queuePairedMessage(
   text: string,
   kind: PairChannelMessage["kind"],
   opts?: { handoffId?: string },
-): Promise<{ queuedPath: string; plannerSessionId: string; to: PairRole; handoffId?: string }> {
+): Promise<{ queuedPath: string; leadSessionId: string; to: PairRole; handoffId?: string }> {
   const trimmed = text.trim();
   if (!trimmed) {
     throw new Error("message text is required");
   }
 
-  const { plannerSession, role, targetInboxPath } = await resolvePairMessageContext(pi, ctx);
+  const { leadSession, role, targetInboxPath } = await resolvePairMessageContext(pi, ctx);
   await fs.mkdir(targetInboxPath, { recursive: true });
 
   const message: PairChannelMessage = {
     id: randomUUID(),
     from: role,
     to: pairedRole(role),
-    plannerSessionId: plannerSession.sessionId,
+    leadSessionId: leadSession.sessionId,
     timestamp: new Date().toISOString(),
     kind,
     text: trimmed,
@@ -1037,7 +1037,7 @@ async function queuePairedMessage(
 
   return {
     queuedPath,
-    plannerSessionId: plannerSession.sessionId,
+    leadSessionId: leadSession.sessionId,
     to: message.to,
     handoffId: message.handoffId,
   };
@@ -1047,16 +1047,16 @@ async function sendPairMessageAction(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   rawMessage: string | undefined,
-): Promise<{ ok: true; action: "message"; role: PairRole; to: PairRole; plannerSessionId: string; queuedPath: string; handoffId?: string }> {
+): Promise<{ ok: true; action: "message"; role: PairRole; to: PairRole; leadSessionId: string; queuedPath: string; handoffId?: string }> {
   const role = currentPairRole();
-  const handoffId = role === "builder" ? rt.pendingBuilderHandoff?.id : undefined;
+  const handoffId = role === "worker" ? rt.pendingWorkerHandoff?.id : undefined;
   const queued = await queuePairedMessage(pi, ctx, rawMessage ?? "", "message", { handoffId });
   return {
     ok: true,
     action: "message",
     role,
     to: queued.to,
-    plannerSessionId: queued.plannerSessionId,
+    leadSessionId: queued.leadSessionId,
     queuedPath: queued.queuedPath,
     handoffId: queued.handoffId,
   };
@@ -1068,7 +1068,7 @@ function buildHandoffText(ctx: ExtensionContext, extraInstructions: string, hand
   if (recent.length === 0 && !trimmedExtra) return null;
 
   const lines = [
-    `Planner handoff from session ${ctx.sessionManager.getSessionId()} in ${ctx.cwd ?? process.cwd()}.`,
+    `Lead handoff from session ${ctx.sessionManager.getSessionId()} in ${ctx.cwd ?? process.cwd()}.`,
     `Implement the agreed plan in the worker dedicated to this lead session. The lead remains read-only.`,
     `handoff_id: ${handoffId}`,
     'Direct paired communication is available through lead_worker({ action: "message", message: "..." }).',
@@ -1082,7 +1082,7 @@ function buildHandoffText(ctx: ExtensionContext, extraInstructions: string, hand
   if (recent.length > 0) {
     lines.push("Recent lead exchange:", "");
     for (const message of recent) {
-      const role = message.role === "user" ? "User" : "Planner";
+      const role = message.role === "user" ? "User" : "Lead";
       lines.push(`${role}:`, message.content, "");
     }
   }
@@ -1090,7 +1090,7 @@ function buildHandoffText(ctx: ExtensionContext, extraInstructions: string, hand
   lines.push(
     "Execution expectations:",
     "- send intent/spec only: goal, relevant files, implementation steps, constraints, and validation criteria",
-    "- do not send concrete code snippets, patches, or copy-paste-ready implementation blocks to the builder",
+    "- do not send concrete code snippets, patches, or copy-paste-ready implementation blocks to the worker",
     "- implement the requested change in the worker session",
     "- run the smallest relevant validation",
     '- send exactly one completion message to the lead for this handoff via lead_worker({ action: "message", message: "..." }) including handoff_id, status, files changed, and validation results',
@@ -1102,12 +1102,12 @@ function buildHandoffText(ctx: ExtensionContext, extraInstructions: string, hand
   return joined.length <= MAX_HANDOFF_CHARS ? joined : joined.slice(0, MAX_HANDOFF_CHARS - 1) + "…";
 }
 
-function formatBuildQueuedMarkdown(worker: BuilderStatus, queuedPath: string, handoffId: string): string {
+function formatBuildQueuedMarkdown(worker: WorkerStatus, queuedPath: string, handoffId: string): string {
   const lines = [
     `**build delegated**`,
     "",
     `- lead mode: ${rt.modeEnabled ? "on" : "off"}`,
-    `- lead session id: ${worker.plannerSessionId}`,
+    `- lead session id: ${worker.leadSessionId}`,
     `- worker name: ${worker.agentName}`,
     `- worker running: ${worker.running ? "yes" : "no"}`,
     `- worker session: ${worker.tmuxSession}`,
@@ -1136,10 +1136,10 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
     return;
   }
 
-  const plannerSession = getPlannerSessionBinding(ctx);
-  let worker = await getBuilderStatus(pi, ctx.cwd ?? process.cwd(), settings, plannerSession);
+  const leadSession = getLeadSessionBinding(ctx);
+  let worker = await getWorkerStatus(pi, ctx.cwd ?? process.cwd(), settings, leadSession);
   if (!worker.running) {
-    worker = await startBuilder(pi, ctx.cwd ?? process.cwd(), settings, plannerSession);
+    worker = await startWorker(pi, ctx.cwd ?? process.cwd(), settings, leadSession);
     updateStatusLine(ctx, worker);
   }
 
@@ -1147,18 +1147,18 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
   emitInfo(pi, formatBuildQueuedMarkdown(worker, queued.queuedPath, handoffId), BUILD_HANDOFF_MESSAGE_TYPE);
 }
 
-type BuilderInterruptState = {
+type WorkerInterruptState = {
   tmuxSession: string;
   tmuxPaneId?: string;
   agentName?: string;
 };
 
-type BuilderInterruptResolution = {
+type WorkerInterruptResolution = {
   cwd: string;
-  state: BuilderInterruptState;
+  state: WorkerInterruptState;
 };
 
-function isBuilderInterruptState(value: unknown): value is BuilderInterruptState {
+function isWorkerInterruptState(value: unknown): value is WorkerInterruptState {
   if (typeof value !== "object" || value === null) return false;
   const state = value as Record<string, unknown>;
   return typeof state.tmuxSession === "string" && (state.tmuxPaneId === undefined || typeof state.tmuxPaneId === "string");
@@ -1168,13 +1168,13 @@ function tmuxExecSucceeded(result: { code?: number | null }): boolean {
   return (result.code ?? 1) === 0;
 }
 
-async function resolveBuilderInterruptState(pi: ExtensionAPI, ctx: ExtensionContext): Promise<BuilderInterruptResolution | null> {
-  if (!rt.modeEnabled || currentPairRole() !== "planner") return null;
+async function resolveWorkerInterruptState(pi: ExtensionAPI, ctx: ExtensionContext): Promise<WorkerInterruptResolution | null> {
+  if (!rt.modeEnabled || currentPairRole() !== "lead") return null;
 
   const cwd = ctx.cwd ?? process.cwd();
-  const plannerSession = getPlannerSessionBinding(ctx);
-  const paths = await resolvePairChannelPaths(pi, cwd, plannerSession);
-  const statePath = join(paths.runtimeDir, "builder-state.json");
+  const leadSession = getLeadSessionBinding(ctx);
+  const paths = await resolvePairChannelPaths(pi, cwd, leadSession);
+  const statePath = join(paths.runtimeDir, "worker-state.json");
 
   let raw: string;
   try {
@@ -1186,7 +1186,7 @@ async function resolveBuilderInterruptState(pi: ExtensionAPI, ctx: ExtensionCont
   }
 
   const parsed: unknown = JSON.parse(raw);
-  if (!isBuilderInterruptState(parsed)) {
+  if (!isWorkerInterruptState(parsed)) {
     throw new Error(`Invalid worker state file ${statePath}: missing tmuxSession`);
   }
 
@@ -1199,8 +1199,8 @@ async function resolveBuilderInterruptState(pi: ExtensionAPI, ctx: ExtensionCont
   return { cwd, state: parsed };
 }
 
-async function interruptBuilderIfRunning(pi: ExtensionAPI, ctx: ExtensionContext): Promise<boolean> {
-  const resolved = await resolveBuilderInterruptState(pi, ctx);
+async function interruptWorkerIfRunning(pi: ExtensionAPI, ctx: ExtensionContext): Promise<boolean> {
+  const resolved = await resolveWorkerInterruptState(pi, ctx);
   if (!resolved) return false;
 
   const { cwd, state } = resolved;
@@ -1213,7 +1213,7 @@ async function interruptBuilderIfRunning(pi: ExtensionAPI, ctx: ExtensionContext
     throw new Error(sent.stderr?.trim() || sent.stdout?.trim() || `Failed to interrupt worker pane ${target}`);
   }
 
-  const agentName = state.agentName?.trim() || "builder";
+  const agentName = state.agentName?.trim() || "worker";
   ctx.hasUI && ctx.ui.notify(`Sent interrupt to ${agentName} (${target}).`, "warning");
   return true;
 }
@@ -1258,7 +1258,7 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
   });
 
   async function handleControlCommand(args: string, ctx: ExtensionContext, usage: string) {
-    let action: PlanBuildControlAction | null = null;
+    let action: LeadWorkerControlAction | null = null;
     try {
       action = await resolveCommandAction(args);
     } catch (error) {
@@ -1304,7 +1304,7 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
       "Abort the current lead turn, or when lead-worker mode is on and the worker is running, send Ctrl+C to the paired worker's active tmux pane.",
     handler: async (_args, ctx) => {
       try {
-        if (await interruptBuilderIfRunning(pi, ctx)) {
+        if (await interruptWorkerIfRunning(pi, ctx)) {
           return;
         }
       } catch (error) {
@@ -1312,7 +1312,7 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
         ctx.hasUI && ctx.ui.notify(`worker interrupt failed during /abort: ${message}; aborting lead turn instead.`, "error");
       }
 
-      // Always retain planner-side abort path, even if worker interrupt fails.
+      // Always retain lead-side abort path, even if worker interrupt fails.
       await ctx.abort();
     },
   });
@@ -1323,16 +1323,16 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
     if (event.toolName === "write" || event.toolName === "edit") {
       return {
         block: true,
-        reason: `lead-worker mode is on: the lead is read-only. Use /build to delegate execution to ${builderSessionReference()}.`,
+        reason: `lead-worker mode is on: the lead is read-only. Use /build to delegate execution to ${workerSessionReference()}.`,
       };
     }
 
     if (event.toolName === "bash") {
       const command = typeof event.input.command === "string" ? event.input.command : "";
-      if (!isSafePlannerBash(command)) {
+      if (!isSafeLeadBash(command)) {
         return {
           block: true,
-          reason: `lead-worker mode is on: mutating bash is blocked for the lead. Use /build to delegate execution to ${builderSessionReference()}.\nCommand: ${command}`,
+          reason: `lead-worker mode is on: mutating bash is blocked for the lead. Use /build to delegate execution to ${workerSessionReference()}.\nCommand: ${command}`,
         };
       }
     }
@@ -1376,9 +1376,9 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
       "- Prefer concise worker handoff packets with: goal, relevant files, implementation steps, and validation.",
     ];
 
-    const plannerPromptAppend = leadConfig().prompt_append;
-    if (plannerPromptAppend) {
-      lines.push("", plannerPromptAppend);
+    const leadPromptAppend = leadConfig().prompt_append;
+    if (leadPromptAppend) {
+      lines.push("", leadPromptAppend);
     }
 
     return {
@@ -1391,7 +1391,7 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
   });
 
   const restore = async (_event: unknown, ctx: ExtensionContext) => {
-    rt.lastObservedPlannerModel = { provider: ctx.model?.provider, modelId: ctx.model?.id };
+    rt.lastObservedLeadModel = { provider: ctx.model?.provider, modelId: ctx.model?.id };
     await restoreModeState(pi, ctx).catch((err) => {
       console.warn("[lead-worker] restoreModeState failed:", err);
     });
@@ -1403,10 +1403,10 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
   pi.on("session_start", restore);
   pi.on("session_tree", restore);
   pi.on("model_select", async (event) => {
-    rt.lastObservedPlannerModel = { provider: event.model.provider, modelId: event.model.id };
+    rt.lastObservedLeadModel = { provider: event.model.provider, modelId: event.model.id };
   });
 
   pi.on("turn_end", async (_event, ctx) => {
-    await maybeAutoReportBuilderCompletion(pi, ctx);
+    await maybeAutoReportWorkerCompletion(pi, ctx);
   });
 }

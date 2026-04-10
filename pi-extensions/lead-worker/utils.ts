@@ -3,7 +3,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import type { PlanBuildSettings } from "./settings.js";
+import type { LeadWorkerSettings } from "./settings.js";
 
 const STATE_VERSION = 1;
 const CAPTURE_LINES = 40;
@@ -14,18 +14,18 @@ const ANSI_OSC_RE = /\x1b\][^\x07]*(?:\x07|\x1b\\)/g;
 const CONTROL_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
 const WORKER_BASE_NAME = "worker";
 
-export type PlanBuildAction = "start" | "status" | "stop";
+export type LeadWorkerAction = "start" | "status" | "stop";
 
-export type PlannerSessionBinding = {
+export type LeadSessionBinding = {
   sessionId: string;
   sessionFile?: string;
 };
 
-export type BuilderState = {
+export type WorkerState = {
   version: number;
   projectRoot: string;
-  plannerSessionId: string;
-  plannerSessionFile?: string;
+  leadSessionId: string;
+  leadSessionFile?: string;
   tmuxSession: string;
   tmuxSessionId?: string;
   tmuxWindowId?: string;
@@ -42,15 +42,15 @@ export type BuilderState = {
   lastStoppedAt?: string;
 };
 
-export type BuilderStatus = {
+export type WorkerStatus = {
   ok: true;
-  action: PlanBuildAction;
+  action: LeadWorkerAction;
   running: boolean;
   alreadyRunning?: boolean;
   message: string;
   projectRoot: string;
-  plannerSessionId: string;
-  plannerSessionFile?: string;
+  leadSessionId: string;
+  leadSessionFile?: string;
   tmuxSession: string;
   tmuxSessionId?: string;
   tmuxWindowId?: string;
@@ -72,8 +72,8 @@ export type BuilderStatus = {
 export type PairChannelPaths = {
   projectRoot: string;
   runtimeDir: string;
-  plannerInbox: string;
-  builderInbox: string;
+  leadInbox: string;
+  workerInbox: string;
 };
 
 type Paths = {
@@ -110,70 +110,70 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
-export function plannerSessionTag(plannerSession: PlannerSessionBinding): string {
-  return createHash("sha1").update(plannerSession.sessionId).digest("hex").slice(0, 10);
+export function leadSessionTag(leadSession: LeadSessionBinding): string {
+  return createHash("sha1").update(leadSession.sessionId).digest("hex").slice(0, 10);
 }
 
-function getBuilderAgentName(_settings: PlanBuildSettings, plannerSession: PlannerSessionBinding): string {
-  return `${WORKER_BASE_NAME}-${plannerSessionTag(plannerSession)}`;
+function getWorkerAgentName(_settings: LeadWorkerSettings, leadSession: LeadSessionBinding): string {
+  return `${WORKER_BASE_NAME}-${leadSessionTag(leadSession)}`;
 }
 
-function getBuilderModel(settings: PlanBuildSettings): string {
+function getWorkerModel(settings: LeadWorkerSettings): string {
   return settings.worker.model;
 }
 
-function getBuilderThinking(settings: PlanBuildSettings): ThinkingLevel {
+function getWorkerThinking(settings: LeadWorkerSettings): ThinkingLevel {
   return settings.worker.thinking;
 }
 
-function tmuxSessionName(projectRoot: string, builderAgentName: string): string {
+function tmuxSessionName(projectRoot: string, workerAgentName: string): string {
   const projectBase = basename(projectRoot)
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 18) || "project";
-  const agentBase = builderAgentName
+  const agentBase = workerAgentName
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 12) || "builder";
-  const suffix = createHash("sha1").update(`${projectRoot}:${builderAgentName}`).digest("hex").slice(0, 8);
+    .slice(0, 12) || "worker";
+  const suffix = createHash("sha1").update(`${projectRoot}:${workerAgentName}`).digest("hex").slice(0, 8);
   return `lead-worker-${agentBase}-${projectBase}-${suffix}`;
 }
 
-function buildPaths(projectRoot: string, settings: PlanBuildSettings, plannerSession: PlannerSessionBinding): Paths {
-  const sessionTag = plannerSessionTag(plannerSession);
+function buildPaths(projectRoot: string, settings: LeadWorkerSettings, leadSession: LeadSessionBinding): Paths {
+  const sessionTag = leadSessionTag(leadSession);
   const runtimeDir = join(projectRoot, ".pi", "lead-worker", sessionTag);
-  const builderAgentName = getBuilderAgentName(settings, plannerSession);
+  const workerAgentName = getWorkerAgentName(settings, leadSession);
 
   return {
     projectRoot,
     runtimeDir,
-    stateFile: join(runtimeDir, "builder-state.json"),
+    stateFile: join(runtimeDir, "worker-state.json"),
     logFile: join(runtimeDir, "worker.log"),
     launchScript: join(runtimeDir, "launch-worker.sh"),
-    systemPromptFile: join(runtimeDir, "builder-system-prompt.md"),
-    startupPromptFile: join(runtimeDir, "builder-startup.md"),
-    sessionFile: join(projectRoot, ".pi", "sessions", `${builderAgentName}.jsonl`),
-    tmuxSession: tmuxSessionName(projectRoot, builderAgentName),
+    systemPromptFile: join(runtimeDir, "worker-system-prompt.md"),
+    startupPromptFile: join(runtimeDir, "worker-startup.md"),
+    sessionFile: join(projectRoot, ".pi", "sessions", `${workerAgentName}.jsonl`),
+    tmuxSession: tmuxSessionName(projectRoot, workerAgentName),
   };
 }
 
-function baseState(paths: Paths, settings: PlanBuildSettings, plannerSession: PlannerSessionBinding): BuilderState {
+function baseState(paths: Paths, settings: LeadWorkerSettings, leadSession: LeadSessionBinding): WorkerState {
   return {
     version: STATE_VERSION,
     projectRoot: paths.projectRoot,
-    plannerSessionId: plannerSession.sessionId,
-    ...(plannerSession.sessionFile ? { plannerSessionFile: plannerSession.sessionFile } : {}),
+    leadSessionId: leadSession.sessionId,
+    ...(leadSession.sessionFile ? { leadSessionFile: leadSession.sessionFile } : {}),
     tmuxSession: paths.tmuxSession,
     sessionFile: paths.sessionFile,
     logFile: paths.logFile,
     launchScript: paths.launchScript,
     systemPromptFile: paths.systemPromptFile,
     startupPromptFile: paths.startupPromptFile,
-    agentName: getBuilderAgentName(settings, plannerSession),
-    model: getBuilderModel(settings),
-    thinking: getBuilderThinking(settings),
+    agentName: getWorkerAgentName(settings, leadSession),
+    model: getWorkerModel(settings),
+    thinking: getWorkerThinking(settings),
   };
 }
 
@@ -200,15 +200,15 @@ export async function resolveProjectRoot(pi: ExtensionAPI, cwd: string): Promise
 export async function resolvePairChannelPaths(
   pi: ExtensionAPI,
   cwd: string,
-  plannerSession: PlannerSessionBinding,
+  leadSession: LeadSessionBinding,
 ): Promise<PairChannelPaths> {
   const projectRoot = await resolveProjectRoot(pi, cwd);
-  const runtimeDir = join(projectRoot, ".pi", "lead-worker", plannerSessionTag(plannerSession));
+  const runtimeDir = join(projectRoot, ".pi", "lead-worker", leadSessionTag(leadSession));
   return {
     projectRoot,
     runtimeDir,
-    plannerInbox: join(runtimeDir, "planner-inbox"),
-    builderInbox: join(runtimeDir, "builder-inbox"),
+    leadInbox: join(runtimeDir, "lead-inbox"),
+    workerInbox: join(runtimeDir, "worker-inbox"),
   };
 }
 
@@ -224,7 +224,7 @@ async function tmuxSessionExists(pi: ExtensionAPI, session: string, cwd: string)
   return result.code === 0;
 }
 
-async function loadState(stateFile: string): Promise<BuilderState | null> {
+async function loadState(stateFile: string): Promise<WorkerState | null> {
   let raw: string;
   try {
     raw = await fs.readFile(stateFile, "utf8");
@@ -234,10 +234,10 @@ async function loadState(stateFile: string): Promise<BuilderState | null> {
   }
   // Let JSON.parse throw on corrupt data so callers see the failure
   // instead of silently losing temporal metadata and tmux pane IDs.
-  return JSON.parse(raw) as BuilderState;
+  return JSON.parse(raw) as WorkerState;
 }
 
-async function saveState(stateFile: string, state: BuilderState): Promise<void> {
+async function saveState(stateFile: string, state: WorkerState): Promise<void> {
   await fs.mkdir(dirname(stateFile), { recursive: true });
   await fs.writeFile(stateFile, JSON.stringify(state, null, 2) + "\n", "utf8");
 }
@@ -261,7 +261,7 @@ async function readTailFromFile(path: string): Promise<string[]> {
   }
 }
 
-async function captureBacklog(pi: ExtensionAPI, cwd: string, state: BuilderState): Promise<string[]> {
+async function captureBacklog(pi: ExtensionAPI, cwd: string, state: WorkerState): Promise<string[]> {
   const target = state.tmuxPaneId?.trim() || `${state.tmuxSession}:0.0`;
   const captured = await exec(pi, "tmux", ["capture-pane", "-p", "-J", "-t", target, "-S", `-${CAPTURE_LINES}`], cwd);
   if (captured.code === 0 && captured.stdout.trim()) {
@@ -301,11 +301,11 @@ function getPiInvocation(): { command: string; argsPrefix: string[] } {
   };
 }
 
-function buildSystemPrompt(settings: PlanBuildSettings, plannerSession: PlannerSessionBinding): string {
-  const builderAgentName = getBuilderAgentName(settings, plannerSession);
+function buildSystemPrompt(settings: LeadWorkerSettings, leadSession: LeadSessionBinding): string {
+  const workerAgentName = getWorkerAgentName(settings, leadSession);
   const lines = [
-    `You are ${builderAgentName}, the persistent worker session for this project.`,
-    `You are dedicated to lead session ${plannerSession.sessionId}.`,
+    `You are ${workerAgentName}, the persistent worker session for this project.`,
+    `You are dedicated to lead session ${leadSession.sessionId}.`,
     "",
     "Role:",
     "- You are the write-enabled worker counterpart to the lead session.",
@@ -328,14 +328,14 @@ function buildSystemPrompt(settings: PlanBuildSettings, plannerSession: PlannerS
   return lines.join("\n");
 }
 
-function buildStartupPrompt(settings: PlanBuildSettings, plannerSession: PlannerSessionBinding): string {
-  const builderAgentName = getBuilderAgentName(settings, plannerSession);
+function buildStartupPrompt(settings: LeadWorkerSettings, leadSession: LeadSessionBinding): string {
+  const workerAgentName = getWorkerAgentName(settings, leadSession);
   const lines = [
-    `You are booting as ${builderAgentName}, the persistent worker session for this project.`,
-    `This worker is reserved for lead session ${plannerSession.sessionId}.`,
+    `You are booting as ${workerAgentName}, the persistent worker session for this project.`,
+    `This worker is reserved for lead session ${leadSession.sessionId}.`,
     "",
     "Startup checklist:",
-    `1. Reply with a short readiness note that explicitly says you are paired with lead session ${plannerSession.sessionId} and ready for direct paired lead-worker messages.`,
+    `1. Reply with a short readiness note that explicitly says you are paired with lead session ${leadSession.sessionId} and ready for direct paired lead-worker messages.`,
     '2. If you need to contact the lead later, use lead_worker({ action: "message", message: "..." }).',
     '3. For every delegated handoff, send exactly one completion message back to the lead with: handoff_id, status, files changed, validation result, and blockers/next action (if any).',
     "4. Then wait for further instructions.",
@@ -350,23 +350,23 @@ function buildStartupPrompt(settings: PlanBuildSettings, plannerSession: Planner
   return lines.join("\n");
 }
 
-async function writeRuntimeFiles(paths: Paths, settings: PlanBuildSettings, plannerSession: PlannerSessionBinding): Promise<void> {
+async function writeRuntimeFiles(paths: Paths, settings: LeadWorkerSettings, leadSession: LeadSessionBinding): Promise<void> {
   const invocation = getPiInvocation();
-  const builderAgentName = getBuilderAgentName(settings, plannerSession);
-  const systemPrompt = buildSystemPrompt(settings, plannerSession);
-  const startupPrompt = buildStartupPrompt(settings, plannerSession);
+  const workerAgentName = getWorkerAgentName(settings, leadSession);
+  const systemPrompt = buildSystemPrompt(settings, leadSession);
+  const startupPrompt = buildStartupPrompt(settings, leadSession);
   const startupBannerLines = [
-    `[lead-worker] ${builderAgentName} paired with lead session ${plannerSession.sessionId}`,
-    ...(plannerSession.sessionFile ? [`[lead-worker] lead session file ${plannerSession.sessionFile}`] : []),
+    `[lead-worker] ${workerAgentName} paired with lead session ${leadSession.sessionId}`,
+    ...(leadSession.sessionFile ? [`[lead-worker] lead session file ${leadSession.sessionFile}`] : []),
   ];
   const fullArgs = [
     ...invocation.argsPrefix,
     "--session",
     paths.sessionFile,
     "--model",
-    getBuilderModel(settings),
+    getWorkerModel(settings),
     "--thinking",
-    getBuilderThinking(settings),
+    getWorkerThinking(settings),
     "--append-system-prompt",
     paths.systemPromptFile,
     startupPrompt,
@@ -376,7 +376,7 @@ async function writeRuntimeFiles(paths: Paths, settings: PlanBuildSettings, plan
     "set -euo pipefail",
     `cd ${shellQuote(paths.projectRoot)}`,
     ...startupBannerLines.map((line) => `printf '%s\\n' ${shellQuote(line)}`),
-    `exec env PI_AGENT_NAME=${shellQuote(builderAgentName)} PI_PLAN_MODE_ROLE=${shellQuote("builder")} PI_PLAN_BUILD_PLANNER_SESSION_ID=${shellQuote(plannerSession.sessionId)} ${shellQuote(invocation.command)} ${fullArgs
+    `exec env PI_AGENT_NAME=${shellQuote(workerAgentName)} PI_LEAD_WORKER_ROLE=${shellQuote("worker")} PI_LEAD_WORKER_LEAD_SESSION_ID=${shellQuote(leadSession.sessionId)} ${shellQuote(invocation.command)} ${fullArgs
       .map(shellQuote)
       .join(" ")}`,
     "",
@@ -401,15 +401,15 @@ function parseNewSessionMetadata(stdout: string): { sessionId?: string; windowId
 
 function withStateOverrides(
   paths: Paths,
-  settings: PlanBuildSettings,
-  plannerSession: PlannerSessionBinding,
-  state: BuilderState | null,
-  patch: Partial<BuilderState>,
-): BuilderState {
+  settings: LeadWorkerSettings,
+  leadSession: LeadSessionBinding,
+  state: WorkerState | null,
+  patch: Partial<WorkerState>,
+): WorkerState {
   // Start from config-derived defaults, then selectively preserve temporal/
   // runtime fields from the existing persisted state, then apply the patch.
   return {
-    ...baseState(paths, settings, plannerSession),
+    ...baseState(paths, settings, leadSession),
     // Preserve only temporal and runtime fields from persisted state:
     ...(state
       ? {
@@ -427,35 +427,35 @@ function withStateOverrides(
 async function resolveState(
   pi: ExtensionAPI,
   cwd: string,
-  settings: PlanBuildSettings,
-  plannerSession: PlannerSessionBinding,
-): Promise<{ paths: Paths; state: BuilderState; warnings: string[] }> {
+  settings: LeadWorkerSettings,
+  leadSession: LeadSessionBinding,
+): Promise<{ paths: Paths; state: WorkerState; warnings: string[] }> {
   const projectRoot = await resolveProjectRoot(pi, cwd);
-  const paths = buildPaths(projectRoot, settings, plannerSession);
+  const paths = buildPaths(projectRoot, settings, leadSession);
   const existing = await loadState(paths.stateFile);
-  const state = withStateOverrides(paths, settings, plannerSession, existing, {});
+  const state = withStateOverrides(paths, settings, leadSession, existing, {});
   const warnings: string[] = [];
   return { paths, state, warnings };
 }
 
-function describeAction(action: PlanBuildAction, agentName: string, running: boolean, alreadyRunning?: boolean): string {
+function describeAction(action: LeadWorkerAction, agentName: string, running: boolean, alreadyRunning?: boolean): string {
   if (action === "start") {
-    return alreadyRunning ? `Builder ${agentName} is already running.` : `Started worker ${agentName} in a detached tmux session.`;
+    return alreadyRunning ? `Worker ${agentName} is already running.` : `Started worker ${agentName} in a detached tmux session.`;
   }
   if (action === "stop") {
-    return running ? `Builder ${agentName} is still running.` : `Stopped worker ${agentName}.`;
+    return running ? `Worker ${agentName} is still running.` : `Stopped worker ${agentName}.`;
   }
-  return running ? `Builder ${agentName} is running.` : `Builder ${agentName} is not running.`;
+  return running ? `Worker ${agentName} is running.` : `Worker ${agentName} is not running.`;
 }
 
 async function buildStatus(
   pi: ExtensionAPI,
   cwd: string,
-  action: PlanBuildAction,
-  state: BuilderState,
+  action: LeadWorkerAction,
+  state: WorkerState,
   warnings: string[],
   alreadyRunning?: boolean,
-): Promise<BuilderStatus> {
+): Promise<WorkerStatus> {
   const running = await tmuxSessionExists(pi, state.tmuxSession, cwd);
   const backlog = running ? await captureBacklog(pi, cwd, state) : await readTailFromFile(state.logFile);
 
@@ -466,8 +466,8 @@ async function buildStatus(
     alreadyRunning,
     message: describeAction(action, state.agentName, running, alreadyRunning),
     projectRoot: state.projectRoot,
-    plannerSessionId: state.plannerSessionId,
-    plannerSessionFile: state.plannerSessionFile,
+    leadSessionId: state.leadSessionId,
+    leadSessionFile: state.leadSessionFile,
     tmuxSession: state.tmuxSession,
     tmuxSessionId: state.tmuxSessionId,
     tmuxWindowId: state.tmuxWindowId,
@@ -487,21 +487,21 @@ async function buildStatus(
   };
 }
 
-export async function startBuilder(
+export async function startWorker(
   pi: ExtensionAPI,
   cwd: string,
-  settings: PlanBuildSettings,
-  plannerSession: PlannerSessionBinding,
-): Promise<BuilderStatus> {
+  settings: LeadWorkerSettings,
+  leadSession: LeadSessionBinding,
+): Promise<WorkerStatus> {
   await ensureTmuxAvailable(pi, cwd);
-  const { paths, state, warnings } = await resolveState(pi, cwd, settings, plannerSession);
+  const { paths, state, warnings } = await resolveState(pi, cwd, settings, leadSession);
 
   if (await tmuxSessionExists(pi, state.tmuxSession, cwd)) {
     await saveState(paths.stateFile, state);
     return buildStatus(pi, cwd, "start", state, warnings, true);
   }
 
-  await writeRuntimeFiles(paths, settings, plannerSession);
+  await writeRuntimeFiles(paths, settings, leadSession);
 
   const started = await exec(
     pi,
@@ -526,7 +526,7 @@ export async function startBuilder(
   }
 
   const metadata = parseNewSessionMetadata(started.stdout);
-  const nextState = withStateOverrides(paths, settings, plannerSession, state, {
+  const nextState = withStateOverrides(paths, settings, leadSession, state, {
     tmuxSessionId: metadata.sessionId,
     tmuxWindowId: metadata.windowId,
     tmuxPaneId: metadata.paneId,
@@ -556,24 +556,24 @@ export async function startBuilder(
   );
 }
 
-export async function getBuilderStatus(
+export async function getWorkerStatus(
   pi: ExtensionAPI,
   cwd: string,
-  settings: PlanBuildSettings,
-  plannerSession: PlannerSessionBinding,
-): Promise<BuilderStatus> {
-  const { state, warnings } = await resolveState(pi, cwd, settings, plannerSession);
+  settings: LeadWorkerSettings,
+  leadSession: LeadSessionBinding,
+): Promise<WorkerStatus> {
+  const { state, warnings } = await resolveState(pi, cwd, settings, leadSession);
   return buildStatus(pi, cwd, "status", state, warnings);
 }
 
-export async function stopBuilder(
+export async function stopWorker(
   pi: ExtensionAPI,
   cwd: string,
-  settings: PlanBuildSettings,
-  plannerSession: PlannerSessionBinding,
-): Promise<BuilderStatus> {
+  settings: LeadWorkerSettings,
+  leadSession: LeadSessionBinding,
+): Promise<WorkerStatus> {
   await ensureTmuxAvailable(pi, cwd);
-  const { paths, state, warnings } = await resolveState(pi, cwd, settings, plannerSession);
+  const { paths, state, warnings } = await resolveState(pi, cwd, settings, leadSession);
 
   if (await tmuxSessionExists(pi, state.tmuxSession, cwd)) {
     const stopped = await exec(pi, "tmux", ["kill-session", "-t", state.tmuxSession], cwd);
@@ -582,7 +582,7 @@ export async function stopBuilder(
     }
   }
 
-  const nextState = withStateOverrides(paths, settings, plannerSession, state, {
+  const nextState = withStateOverrides(paths, settings, leadSession, state, {
     lastStoppedAt: new Date().toISOString(),
   });
   await saveState(paths.stateFile, nextState);
