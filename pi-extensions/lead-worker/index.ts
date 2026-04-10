@@ -1747,8 +1747,7 @@ function upsertQueuedEvent(supervised: ActiveSupervisedHandoff, event: PairMessa
   const eventName = event.name ?? "";
   const existingIndex = supervised.pendingEvents.findIndex((queued) => (queued.name ?? "") === eventName);
   if (existingIndex >= 0) {
-    supervised.pendingEvents[existingIndex] = event;
-    return;
+    supervised.pendingEvents.splice(existingIndex, 1);
   }
 
   if (!beforeTerminal) {
