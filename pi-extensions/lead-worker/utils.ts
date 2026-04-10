@@ -12,6 +12,7 @@ const TMUX_FORMAT = "#{session_id}\t#{window_id}\t#{pane_id}";
 const ANSI_CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const ANSI_OSC_RE = /\x1b\][^\x07]*(?:\x07|\x1b\\)/g;
 const CONTROL_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
+const WORKER_BASE_NAME = "worker";
 
 export type PlanBuildAction = "start" | "status" | "stop";
 
@@ -109,24 +110,20 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
-function getConfiguredBuilderAgentName(settings: PlanBuildSettings): string {
-  return settings.builder.agent_name;
-}
-
 export function plannerSessionTag(plannerSession: PlannerSessionBinding): string {
   return createHash("sha1").update(plannerSession.sessionId).digest("hex").slice(0, 10);
 }
 
-function getBuilderAgentName(settings: PlanBuildSettings, plannerSession: PlannerSessionBinding): string {
-  return `${getConfiguredBuilderAgentName(settings)}-${plannerSessionTag(plannerSession)}`;
+function getBuilderAgentName(_settings: PlanBuildSettings, plannerSession: PlannerSessionBinding): string {
+  return `${WORKER_BASE_NAME}-${plannerSessionTag(plannerSession)}`;
 }
 
 function getBuilderModel(settings: PlanBuildSettings): string {
-  return settings.builder.model;
+  return settings.worker.model;
 }
 
 function getBuilderThinking(settings: PlanBuildSettings): ThinkingLevel {
-  return settings.builder.thinking;
+  return settings.worker.thinking;
 }
 
 function tmuxSessionName(projectRoot: string, builderAgentName: string): string {
@@ -141,20 +138,20 @@ function tmuxSessionName(projectRoot: string, builderAgentName: string): string 
     .replace(/^-+|-+$/g, "")
     .slice(0, 12) || "builder";
   const suffix = createHash("sha1").update(`${projectRoot}:${builderAgentName}`).digest("hex").slice(0, 8);
-  return `plan-${agentBase}-${projectBase}-${suffix}`;
+  return `lead-worker-${agentBase}-${projectBase}-${suffix}`;
 }
 
 function buildPaths(projectRoot: string, settings: PlanBuildSettings, plannerSession: PlannerSessionBinding): Paths {
   const sessionTag = plannerSessionTag(plannerSession);
-  const runtimeDir = join(projectRoot, ".pi", "plan-build", sessionTag);
+  const runtimeDir = join(projectRoot, ".pi", "lead-worker", sessionTag);
   const builderAgentName = getBuilderAgentName(settings, plannerSession);
 
   return {
     projectRoot,
     runtimeDir,
     stateFile: join(runtimeDir, "builder-state.json"),
-    logFile: join(runtimeDir, "builder.log"),
-    launchScript: join(runtimeDir, "launch-builder.sh"),
+    logFile: join(runtimeDir, "worker.log"),
+    launchScript: join(runtimeDir, "launch-worker.sh"),
     systemPromptFile: join(runtimeDir, "builder-system-prompt.md"),
     startupPromptFile: join(runtimeDir, "builder-startup.md"),
     sessionFile: join(projectRoot, ".pi", "sessions", `${builderAgentName}.jsonl`),
@@ -206,7 +203,7 @@ export async function resolvePairChannelPaths(
   plannerSession: PlannerSessionBinding,
 ): Promise<PairChannelPaths> {
   const projectRoot = await resolveProjectRoot(pi, cwd);
-  const runtimeDir = join(projectRoot, ".pi", "plan-build", plannerSessionTag(plannerSession));
+  const runtimeDir = join(projectRoot, ".pi", "lead-worker", plannerSessionTag(plannerSession));
   return {
     projectRoot,
     runtimeDir,
@@ -218,7 +215,7 @@ export async function resolvePairChannelPaths(
 async function ensureTmuxAvailable(pi: ExtensionAPI, cwd: string): Promise<void> {
   const result = await exec(pi, "tmux", ["-V"], cwd);
   if (result.code !== 0) {
-    throw new Error("tmux is required for plan-build but was not found or is not working");
+    throw new Error("tmux is required for lead-worker but was not found or is not working");
   }
 }
 
@@ -276,7 +273,7 @@ async function captureBacklog(pi: ExtensionAPI, cwd: string, state: BuilderState
 /**
  * Infer the command and arguments needed to re-invoke the current Pi process.
  * Heuristic: checks process.execPath against known runtimes (node, bun).
- * May need a settings override (e.g. builder.pi_command) if Pi is invoked
+ * May need a code change if Pi is invoked
  * through an unusual runtime or wrapper not covered here.
  */
 function getPiInvocation(): { command: string; argsPrefix: string[] } {
@@ -307,25 +304,25 @@ function getPiInvocation(): { command: string; argsPrefix: string[] } {
 function buildSystemPrompt(settings: PlanBuildSettings, plannerSession: PlannerSessionBinding): string {
   const builderAgentName = getBuilderAgentName(settings, plannerSession);
   const lines = [
-    `You are ${builderAgentName}, the persistent builder session for this project.`,
-    `You are dedicated to planner session ${plannerSession.sessionId}.`,
+    `You are ${builderAgentName}, the persistent worker session for this project.`,
+    `You are dedicated to lead session ${plannerSession.sessionId}.`,
     "",
     "Role:",
-    "- You are the write-enabled builder counterpart to the planner session.",
+    "- You are the write-enabled worker counterpart to the lead session.",
     "- Preserve continuity across turns; this session is meant to accumulate implementation context over time.",
-    "- Use plan_build({ action: \"message\", message: \"...\" }) for concise direct messages to the paired planner when needed.",
+    "- Use lead_worker({ action: \"message\", message: \"...\" }) for concise direct messages to the paired lead when needed.",
     "- Do not send acknowledgements or chatter.",
-    "- For each delegated handoff, you MUST send exactly one completion message to the planner when you finish or stop.",
+    "- For each delegated handoff, you MUST send exactly one completion message to the lead when you finish or stop.",
     "- Completion message format: handoff_id, status (done/blocked), files changed, validation run + result, and any blocker/next action.",
     "- You may send additional messages only for material blockers or concrete clarification questions.",
-    "- Treat planner messages as intent/specification, not code to paste blindly.",
-    "- If planner includes code-like text, extract intent/constraints and implement natively in the repository.",
+    "- Treat lead messages as intent/specification, not code to paste blindly.",
+    "- If lead includes code-like text, extract intent/constraints and implement natively in the repository.",
     "- Execute concrete changes, tests, and diagnostics. Do not start autonomous worker swarms unless explicitly asked.",
     "- When blocked, report the minimal blocking fact and the next concrete action needed.",
   ];
 
-  if (settings.builder.system_prompt_append) {
-    lines.push("", settings.builder.system_prompt_append);
+  if (settings.worker.system_prompt_append) {
+    lines.push("", settings.worker.system_prompt_append);
   }
 
   return lines.join("\n");
@@ -334,20 +331,20 @@ function buildSystemPrompt(settings: PlanBuildSettings, plannerSession: PlannerS
 function buildStartupPrompt(settings: PlanBuildSettings, plannerSession: PlannerSessionBinding): string {
   const builderAgentName = getBuilderAgentName(settings, plannerSession);
   const lines = [
-    `You are booting as ${builderAgentName}, the persistent builder session for this project.`,
-    `This builder is reserved for planner session ${plannerSession.sessionId}.`,
+    `You are booting as ${builderAgentName}, the persistent worker session for this project.`,
+    `This worker is reserved for lead session ${plannerSession.sessionId}.`,
     "",
     "Startup checklist:",
-    `1. Reply with a short readiness note that explicitly says you are paired with planner session ${plannerSession.sessionId} and ready for direct paired plan-build messages.`,
-    '2. If you need to contact the planner later, use plan_build({ action: "message", message: "..." }).',
-    '3. For every delegated handoff, send exactly one completion message back to the planner with: handoff_id, status, files changed, validation result, and blockers/next action (if any).',
+    `1. Reply with a short readiness note that explicitly says you are paired with lead session ${plannerSession.sessionId} and ready for direct paired lead-worker messages.`,
+    '2. If you need to contact the lead later, use lead_worker({ action: "message", message: "..." }).',
+    '3. For every delegated handoff, send exactly one completion message back to the lead with: handoff_id, status, files changed, validation result, and blockers/next action (if any).',
     "4. Then wait for further instructions.",
     "",
     "Do not modify files during this startup handshake.",
   ];
 
-  if (settings.builder.startup_prompt_append) {
-    lines.push("", settings.builder.startup_prompt_append);
+  if (settings.worker.startup_prompt_append) {
+    lines.push("", settings.worker.startup_prompt_append);
   }
 
   return lines.join("\n");
@@ -359,8 +356,8 @@ async function writeRuntimeFiles(paths: Paths, settings: PlanBuildSettings, plan
   const systemPrompt = buildSystemPrompt(settings, plannerSession);
   const startupPrompt = buildStartupPrompt(settings, plannerSession);
   const startupBannerLines = [
-    `[plan-build] ${builderAgentName} paired with planner session ${plannerSession.sessionId}`,
-    ...(plannerSession.sessionFile ? [`[plan-build] planner session file ${plannerSession.sessionFile}`] : []),
+    `[lead-worker] ${builderAgentName} paired with lead session ${plannerSession.sessionId}`,
+    ...(plannerSession.sessionFile ? [`[lead-worker] lead session file ${plannerSession.sessionFile}`] : []),
   ];
   const fullArgs = [
     ...invocation.argsPrefix,
@@ -443,10 +440,10 @@ async function resolveState(
 
 function describeAction(action: PlanBuildAction, agentName: string, running: boolean, alreadyRunning?: boolean): string {
   if (action === "start") {
-    return alreadyRunning ? `Builder ${agentName} is already running.` : `Started builder ${agentName} in a detached tmux session.`;
+    return alreadyRunning ? `Builder ${agentName} is already running.` : `Started worker ${agentName} in a detached tmux session.`;
   }
   if (action === "stop") {
-    return running ? `Builder ${agentName} is still running.` : `Stopped builder ${agentName}.`;
+    return running ? `Builder ${agentName} is still running.` : `Stopped worker ${agentName}.`;
   }
   return running ? `Builder ${agentName} is running.` : `Builder ${agentName} is not running.`;
 }
@@ -541,7 +538,7 @@ export async function startBuilder(
   if (nextState.tmuxPaneId) {
     const pipeResult = await exec(pi, "tmux", ["pipe-pane", "-t", nextState.tmuxPaneId, "-o", `cat >> ${shellQuote(paths.logFile)}`], cwd);
     if (pipeResult.code !== 0) {
-      pipeWarnings.push(`tmux pipe-pane failed (exit ${pipeResult.code}): builder log capture may be missing.`);
+      pipeWarnings.push(`tmux pipe-pane failed (exit ${pipeResult.code}): worker log capture may be missing.`);
     }
   }
 
@@ -554,7 +551,7 @@ export async function startBuilder(
     [
       ...warnings,
       ...pipeWarnings,
-      "Startup is asynchronous. Once the builder reports ready, use /build or plan_build({ action: \"message\", message: \"...\" }) from the paired planner session to send work.",
+      "Startup is asynchronous. Once the worker reports ready, use /build or lead_worker({ action: \"message\", message: \"...\" }) from the paired lead session to send work.",
     ],
   );
 }

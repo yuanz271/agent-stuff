@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { z } from "zod";
 
-export const PLAN_BUILD_SETTINGS_FILE_NAME = "plan-build-settings.yaml";
+export const PLAN_BUILD_SETTINGS_FILE_NAME = "lead-worker-settings.yaml";
 const PLAN_BUILD_PROJECT_DIR_NAME = ".pi";
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 
@@ -18,15 +18,14 @@ export interface PlanBuildSource {
   path: string;
 }
 
-export interface PlannerSettings {
+export interface LeadSettings {
   model: string;
   thinking: ThinkingLevel;
   allowed_tools: string[];
   prompt_append?: string;
 }
 
-export interface BuilderSettings {
-  agent_name: string;
+export interface WorkerSettings {
   model: string;
   thinking: ThinkingLevel;
   system_prompt_append?: string;
@@ -35,8 +34,8 @@ export interface BuilderSettings {
 
 export interface PlanBuildSettings {
   version: number;
-  planner: PlannerSettings;
-  builder: BuilderSettings;
+  lead: LeadSettings;
+  worker: WorkerSettings;
 }
 
 export interface PlanBuildSettingsStats {
@@ -51,27 +50,27 @@ export interface PlanBuildSettingsLoadResult {
   stats: PlanBuildSettingsStats;
 }
 
-type PartialPlannerSettings = Partial<PlannerSettings>;
-type PartialBuilderSettings = Partial<BuilderSettings>;
+type PartialLeadSettings = Partial<LeadSettings>;
+type PartialWorkerSettings = Partial<WorkerSettings>;
 type PartialPlanBuildSettings = {
   version?: number;
-  planner?: PartialPlannerSettings;
-  builder?: PartialBuilderSettings;
+  lead?: PartialLeadSettings;
+  worker?: PartialWorkerSettings;
 };
 
-const TOP_LEVEL_KEYS = new Set(["version", "planner", "builder"]);
+const TOP_LEVEL_KEYS = new Set(["version", "lead", "worker"]);
 const PLANNER_KEYS = new Set(["model", "thinking", "allowed_tools", "prompt_append"]);
-const BUILDER_KEYS = new Set(["agent_name", "model", "thinking", "system_prompt_append", "startup_prompt_append"]);
+const BUILDER_KEYS = new Set(["model", "thinking", "system_prompt_append", "startup_prompt_append"]);
 
 const raw_settings_schema = z
   .object({
     version: z.unknown().optional(),
-    planner: z.unknown().optional(),
-    builder: z.unknown().optional(),
+    lead: z.unknown().optional(),
+    worker: z.unknown().optional(),
   })
   .passthrough();
 
-const raw_planner_schema = z
+const raw_lead_schema = z
   .object({
     model: z.unknown().optional(),
     thinking: z.unknown().optional(),
@@ -80,9 +79,8 @@ const raw_planner_schema = z
   })
   .passthrough();
 
-const raw_builder_schema = z
+const raw_worker_schema = z
   .object({
-    agent_name: z.unknown().optional(),
     model: z.unknown().optional(),
     thinking: z.unknown().optional(),
     system_prompt_append: z.unknown().optional(),
@@ -118,10 +116,10 @@ export async function loadPlanBuildSettings(cwd: string, importMetaUrl: string):
 
   const bundled = await parseSettingsSource(bundled_source);
   if (bundled.error) {
-    throw new Error(`required bundled plan-build settings failed (${bundled_source.path}): ${bundled.error}`);
+    throw new Error(`required bundled lead-worker settings failed (${bundled_source.path}): ${bundled.error}`);
   }
 
-  let settings = finalizePlanBuildSettings(bundled.partial, `bundled plan-build settings (${bundled_source.path})`);
+  let settings = finalizePlanBuildSettings(bundled.partial, `bundled lead-worker settings (${bundled_source.path})`);
   const warnings: string[] = [...bundled.warnings];
   const skipped_sources: Array<{ source: PlanBuildSource; reason: string }> = [];
   const loaded_sources: PlanBuildSource[] = [bundled_source];
@@ -139,7 +137,7 @@ export async function loadPlanBuildSettings(cwd: string, importMetaUrl: string):
 
     settings = finalizePlanBuildSettings(
       mergePlanBuildSettings(settings, parsed.partial),
-      `plan-build settings after applying ${source.kind} overrides`,
+      `lead-worker settings after applying ${source.kind} overrides`,
     );
     loaded_sources.push(source);
     warnings.push(...parsed.warnings);
@@ -207,19 +205,19 @@ async function parseSettingsSource(source: PlanBuildSource): Promise<ParseSource
     }
   }
 
-  if (parsed.planner !== undefined) {
-    const normalizedPlanner = normalizePlannerSettings(parsed.planner, source);
+  if (parsed.lead !== undefined) {
+    const normalizedPlanner = normalizeLeadSettings(parsed.lead, source);
     if (normalizedPlanner.settings) {
-      partial.planner = normalizedPlanner.settings;
+      partial.lead = normalizedPlanner.settings;
     }
     warnings.push(...normalizedPlanner.warnings);
     invalid_field_count += normalizedPlanner.invalid_field_count;
   }
 
-  if (parsed.builder !== undefined) {
-    const normalizedBuilder = normalizeBuilderSettings(parsed.builder, source);
+  if (parsed.worker !== undefined) {
+    const normalizedBuilder = normalizeWorkerSettings(parsed.worker, source);
     if (normalizedBuilder.settings) {
-      partial.builder = normalizedBuilder.settings;
+      partial.worker = normalizedBuilder.settings;
     }
     warnings.push(...normalizedBuilder.warnings);
     invalid_field_count += normalizedBuilder.invalid_field_count;
@@ -232,61 +230,61 @@ async function parseSettingsSource(source: PlanBuildSource): Promise<ParseSource
   };
 }
 
-function normalizePlannerSettings(
+function normalizeLeadSettings(
   rawPlanner: unknown,
   source: PlanBuildSource,
-): { settings?: PartialPlannerSettings; warnings: string[]; invalid_field_count: number } {
-  const parsedPlanner = raw_planner_schema.safeParse(rawPlanner ?? {});
+): { settings?: PartialLeadSettings; warnings: string[]; invalid_field_count: number } {
+  const parsedPlanner = raw_lead_schema.safeParse(rawPlanner ?? {});
   if (!parsedPlanner.success) {
     return {
-      warnings: [`${source.kind}: 'planner' must be an object`],
+      warnings: [`${source.kind}: 'lead' must be an object`],
       invalid_field_count: 1,
     };
   }
 
-  const planner = parsedPlanner.data;
+  const lead = parsedPlanner.data;
   const warnings: string[] = [];
   let invalid_field_count = 0;
-  const settings: PartialPlannerSettings = {};
+  const settings: PartialLeadSettings = {};
 
-  for (const key of Object.keys(planner)) {
+  for (const key of Object.keys(lead)) {
     if (!PLANNER_KEYS.has(key)) {
-      warnings.push(`${source.kind}: ignoring unknown planner key '${key}' in ${source.path}`);
+      warnings.push(`${source.kind}: ignoring unknown lead key '${key}' in ${source.path}`);
     }
   }
 
-  if (planner.model !== undefined) {
-    if (typeof planner.model !== "string" || !planner.model.trim()) {
+  if (lead.model !== undefined) {
+    if (typeof lead.model !== "string" || !lead.model.trim()) {
       invalid_field_count += 1;
-      warnings.push(`${source.kind}: 'planner.model' must be a non-empty string`);
-    } else if (!isProviderModelRef(planner.model.trim())) {
+      warnings.push(`${source.kind}: 'lead.model' must be a non-empty string`);
+    } else if (!isProviderModelRef(lead.model.trim())) {
       invalid_field_count += 1;
-      warnings.push(`${source.kind}: 'planner.model' must look like 'provider/modelId'`);
+      warnings.push(`${source.kind}: 'lead.model' must look like 'provider/modelId'`);
     } else {
-      settings.model = planner.model.trim();
+      settings.model = lead.model.trim();
     }
   }
 
-  if (planner.thinking !== undefined) {
-    const thinking = thinking_level_schema.safeParse(planner.thinking);
+  if (lead.thinking !== undefined) {
+    const thinking = thinking_level_schema.safeParse(lead.thinking);
     if (!thinking.success) {
       invalid_field_count += 1;
-      warnings.push(`${source.kind}: 'planner.thinking' must be one of ${THINKING_LEVELS.join(", ")}`);
+      warnings.push(`${source.kind}: 'lead.thinking' must be one of ${THINKING_LEVELS.join(", ")}`);
     } else {
       settings.thinking = thinking.data;
     }
   }
 
-  if (planner.allowed_tools !== undefined) {
-    if (!Array.isArray(planner.allowed_tools)) {
+  if (lead.allowed_tools !== undefined) {
+    if (!Array.isArray(lead.allowed_tools)) {
       invalid_field_count += 1;
-      warnings.push(`${source.kind}: 'planner.allowed_tools' must be an array`);
+      warnings.push(`${source.kind}: 'lead.allowed_tools' must be an array`);
     } else {
       const allowed_tools: string[] = [];
-      for (const value of planner.allowed_tools) {
+      for (const value of lead.allowed_tools) {
         if (typeof value !== "string" || !value.trim()) {
           invalid_field_count += 1;
-          warnings.push(`${source.kind}: non-empty strings are required in 'planner.allowed_tools'`);
+          warnings.push(`${source.kind}: non-empty strings are required in 'lead.allowed_tools'`);
           continue;
         }
         const normalized = value.trim();
@@ -298,11 +296,11 @@ function normalizePlannerSettings(
     }
   }
 
-  if (planner.prompt_append !== undefined) {
-    const prompt_append = normalizeOptionalText(planner.prompt_append);
-    if (prompt_append === undefined && typeof planner.prompt_append !== "string") {
+  if (lead.prompt_append !== undefined) {
+    const prompt_append = normalizeOptionalText(lead.prompt_append);
+    if (prompt_append === undefined && typeof lead.prompt_append !== "string") {
       invalid_field_count += 1;
-      warnings.push(`${source.kind}: 'planner.prompt_append' must be a string`);
+      warnings.push(`${source.kind}: 'lead.prompt_append' must be a string`);
     } else {
       settings.prompt_append = prompt_append;
     }
@@ -315,48 +313,39 @@ function normalizePlannerSettings(
   };
 }
 
-function normalizeBuilderSettings(
+function normalizeWorkerSettings(
   rawBuilder: unknown,
   source: PlanBuildSource,
-): { settings?: PartialBuilderSettings; warnings: string[]; invalid_field_count: number } {
-  const parsedBuilder = raw_builder_schema.safeParse(rawBuilder ?? {});
+): { settings?: PartialWorkerSettings; warnings: string[]; invalid_field_count: number } {
+  const parsedBuilder = raw_worker_schema.safeParse(rawBuilder ?? {});
   if (!parsedBuilder.success) {
     return {
-      warnings: [`${source.kind}: 'builder' must be an object`],
+      warnings: [`${source.kind}: 'worker' must be an object`],
       invalid_field_count: 1,
     };
   }
 
-  const builder = parsedBuilder.data;
+  const worker = parsedBuilder.data;
   const warnings: string[] = [];
   let invalid_field_count = 0;
-  const settings: PartialBuilderSettings = {};
+  const settings: PartialWorkerSettings = {};
   let shorthandThinking: ThinkingLevel | undefined;
 
-  for (const key of Object.keys(builder)) {
+  for (const key of Object.keys(worker)) {
     if (!BUILDER_KEYS.has(key)) {
-      warnings.push(`${source.kind}: ignoring unknown builder key '${key}' in ${source.path}`);
+      warnings.push(`${source.kind}: ignoring unknown worker key '${key}' in ${source.path}`);
     }
   }
 
-  if (builder.agent_name !== undefined) {
-    if (typeof builder.agent_name !== "string" || !builder.agent_name.trim()) {
+  if (worker.model !== undefined) {
+    if (typeof worker.model !== "string" || !worker.model.trim()) {
       invalid_field_count += 1;
-      warnings.push(`${source.kind}: 'builder.agent_name' must be a non-empty string`);
+      warnings.push(`${source.kind}: 'worker.model' must be a non-empty string`);
     } else {
-      settings.agent_name = builder.agent_name.trim();
-    }
-  }
-
-  if (builder.model !== undefined) {
-    if (typeof builder.model !== "string" || !builder.model.trim()) {
-      invalid_field_count += 1;
-      warnings.push(`${source.kind}: 'builder.model' must be a non-empty string`);
-    } else {
-      const normalizedModel = splitModelThinkingShorthand(builder.model.trim());
+      const normalizedModel = splitModelThinkingShorthand(worker.model.trim());
       if (!isProviderModelRef(normalizedModel.model)) {
         invalid_field_count += 1;
-        warnings.push(`${source.kind}: 'builder.model' must look like 'provider/modelId'`);
+        warnings.push(`${source.kind}: 'worker.model' must look like 'provider/modelId'`);
       } else {
         settings.model = normalizedModel.model;
         shorthandThinking = normalizedModel.thinking;
@@ -364,16 +353,16 @@ function normalizeBuilderSettings(
     }
   }
 
-  if (builder.thinking !== undefined) {
-    const thinking = thinking_level_schema.safeParse(builder.thinking);
+  if (worker.thinking !== undefined) {
+    const thinking = thinking_level_schema.safeParse(worker.thinking);
     if (!thinking.success) {
       invalid_field_count += 1;
-      warnings.push(`${source.kind}: 'builder.thinking' must be one of ${THINKING_LEVELS.join(", ")}`);
+      warnings.push(`${source.kind}: 'worker.thinking' must be one of ${THINKING_LEVELS.join(", ")}`);
     } else {
       settings.thinking = thinking.data;
       if (shorthandThinking && shorthandThinking !== thinking.data) {
         warnings.push(
-          `${source.kind}: builder.model includes legacy thinking suffix '${shorthandThinking}', but explicit builder.thinking '${thinking.data}' takes precedence`,
+          `${source.kind}: worker.model includes legacy thinking suffix '${shorthandThinking}', but explicit worker.thinking '${thinking.data}' takes precedence`,
         );
       }
     }
@@ -381,21 +370,21 @@ function normalizeBuilderSettings(
     settings.thinking = shorthandThinking;
   }
 
-  if (builder.system_prompt_append !== undefined) {
-    const system_prompt_append = normalizeOptionalText(builder.system_prompt_append);
-    if (system_prompt_append === undefined && typeof builder.system_prompt_append !== "string") {
+  if (worker.system_prompt_append !== undefined) {
+    const system_prompt_append = normalizeOptionalText(worker.system_prompt_append);
+    if (system_prompt_append === undefined && typeof worker.system_prompt_append !== "string") {
       invalid_field_count += 1;
-      warnings.push(`${source.kind}: 'builder.system_prompt_append' must be a string`);
+      warnings.push(`${source.kind}: 'worker.system_prompt_append' must be a string`);
     } else {
       settings.system_prompt_append = system_prompt_append;
     }
   }
 
-  if (builder.startup_prompt_append !== undefined) {
-    const startup_prompt_append = normalizeOptionalText(builder.startup_prompt_append);
-    if (startup_prompt_append === undefined && typeof builder.startup_prompt_append !== "string") {
+  if (worker.startup_prompt_append !== undefined) {
+    const startup_prompt_append = normalizeOptionalText(worker.startup_prompt_append);
+    if (startup_prompt_append === undefined && typeof worker.startup_prompt_append !== "string") {
       invalid_field_count += 1;
-      warnings.push(`${source.kind}: 'builder.startup_prompt_append' must be a string`);
+      warnings.push(`${source.kind}: 'worker.startup_prompt_append' must be a string`);
     } else {
       settings.startup_prompt_append = startup_prompt_append;
     }
@@ -412,24 +401,23 @@ function mergePlanBuildSettings(base: PlanBuildSettings, partial: PartialPlanBui
   // hasOwnProperty distinguishes "field absent" (keep base value) from
   // "field explicitly set to undefined" (clear the value).  This matters
   // for optional text fields that a project layer may want to remove.
-  const plannerHasPromptAppend = !!partial.planner && Object.prototype.hasOwnProperty.call(partial.planner, "prompt_append");
-  const builderHasSystemPromptAppend = !!partial.builder && Object.prototype.hasOwnProperty.call(partial.builder, "system_prompt_append");
-  const builderHasStartupPromptAppend = !!partial.builder && Object.prototype.hasOwnProperty.call(partial.builder, "startup_prompt_append");
+  const leadHasPromptAppend = !!partial.lead && Object.prototype.hasOwnProperty.call(partial.lead, "prompt_append");
+  const workerHasSystemPromptAppend = !!partial.worker && Object.prototype.hasOwnProperty.call(partial.worker, "system_prompt_append");
+  const workerHasStartupPromptAppend = !!partial.worker && Object.prototype.hasOwnProperty.call(partial.worker, "startup_prompt_append");
 
   return {
     version: partial.version ?? base.version,
-    planner: {
-      model: partial.planner?.model ?? base.planner.model,
-      thinking: partial.planner?.thinking ?? base.planner.thinking,
-      allowed_tools: partial.planner?.allowed_tools ? [...partial.planner.allowed_tools] : [...base.planner.allowed_tools],
-      prompt_append: plannerHasPromptAppend ? partial.planner?.prompt_append : base.planner.prompt_append,
+    lead: {
+      model: partial.lead?.model ?? base.lead.model,
+      thinking: partial.lead?.thinking ?? base.lead.thinking,
+      allowed_tools: partial.lead?.allowed_tools ? [...partial.lead.allowed_tools] : [...base.lead.allowed_tools],
+      prompt_append: leadHasPromptAppend ? partial.lead?.prompt_append : base.lead.prompt_append,
     },
-    builder: {
-      agent_name: partial.builder?.agent_name ?? base.builder.agent_name,
-      model: partial.builder?.model ?? base.builder.model,
-      thinking: partial.builder?.thinking ?? base.builder.thinking,
-      system_prompt_append: builderHasSystemPromptAppend ? partial.builder?.system_prompt_append : base.builder.system_prompt_append,
-      startup_prompt_append: builderHasStartupPromptAppend ? partial.builder?.startup_prompt_append : base.builder.startup_prompt_append,
+    worker: {
+      model: partial.worker?.model ?? base.worker.model,
+      thinking: partial.worker?.thinking ?? base.worker.thinking,
+      system_prompt_append: workerHasSystemPromptAppend ? partial.worker?.system_prompt_append : base.worker.system_prompt_append,
+      startup_prompt_append: workerHasStartupPromptAppend ? partial.worker?.startup_prompt_append : base.worker.startup_prompt_append,
     },
   };
 }
@@ -437,46 +425,44 @@ function mergePlanBuildSettings(base: PlanBuildSettings, partial: PartialPlanBui
 function finalizePlanBuildSettings(settings: PartialPlanBuildSettings, context: string): PlanBuildSettings {
   const missing: string[] = [];
   const version = settings.version;
-  const planner = settings.planner;
-  const builder = settings.builder;
+  const lead = settings.lead;
+  const worker = settings.worker;
 
   if (typeof version !== "number" || !Number.isFinite(version)) missing.push("version");
-  if (!planner?.model) missing.push("planner.model");
-  if (!planner?.thinking) missing.push("planner.thinking");
-  if (!Array.isArray(planner?.allowed_tools)) missing.push("planner.allowed_tools");
-  if (!builder?.agent_name) missing.push("builder.agent_name");
-  if (!builder?.model) missing.push("builder.model");
-  if (!builder?.thinking) missing.push("builder.thinking");
+  if (!lead?.model) missing.push("lead.model");
+  if (!lead?.thinking) missing.push("lead.thinking");
+  if (!Array.isArray(lead?.allowed_tools)) missing.push("lead.allowed_tools");
+  if (!worker?.model) missing.push("worker.model");
+  if (!worker?.thinking) missing.push("worker.thinking");
 
   if (missing.length > 0) {
     throw new Error(`${context} is incomplete: missing ${missing.join(", ")}`);
   }
 
   const completeVersion = version as number;
-  const completePlanner = planner as PlannerSettings;
-  const completeBuilder = builder as BuilderSettings;
+  const completeLead = lead as LeadSettings;
+  const completeWorker = worker as WorkerSettings;
 
-  if (!isProviderModelRef(completePlanner.model)) {
-    throw new Error(`${context} is invalid: planner.model must look like 'provider/modelId'`);
+  if (!isProviderModelRef(completeLead.model)) {
+    throw new Error(`${context} is invalid: lead.model must look like 'provider/modelId'`);
   }
-  if (!isProviderModelRef(completeBuilder.model)) {
-    throw new Error(`${context} is invalid: builder.model must look like 'provider/modelId'`);
+  if (!isProviderModelRef(completeWorker.model)) {
+    throw new Error(`${context} is invalid: worker.model must look like 'provider/modelId'`);
   }
 
   return {
     version: completeVersion,
-    planner: {
-      model: completePlanner.model,
-      thinking: completePlanner.thinking,
-      allowed_tools: [...completePlanner.allowed_tools],
-      ...(completePlanner.prompt_append !== undefined ? { prompt_append: completePlanner.prompt_append } : {}),
+    lead: {
+      model: completeLead.model,
+      thinking: completeLead.thinking,
+      allowed_tools: [...completeLead.allowed_tools],
+      ...(completeLead.prompt_append !== undefined ? { prompt_append: completeLead.prompt_append } : {}),
     },
-    builder: {
-      agent_name: completeBuilder.agent_name,
-      model: completeBuilder.model,
-      thinking: completeBuilder.thinking,
-      ...(completeBuilder.system_prompt_append !== undefined ? { system_prompt_append: completeBuilder.system_prompt_append } : {}),
-      ...(completeBuilder.startup_prompt_append !== undefined ? { startup_prompt_append: completeBuilder.startup_prompt_append } : {}),
+    worker: {
+      model: completeWorker.model,
+      thinking: completeWorker.thinking,
+      ...(completeWorker.system_prompt_append !== undefined ? { system_prompt_append: completeWorker.system_prompt_append } : {}),
+      ...(completeWorker.startup_prompt_append !== undefined ? { startup_prompt_append: completeWorker.startup_prompt_append } : {}),
     },
   };
 }

@@ -1,0 +1,17 @@
+version: 1
+
+lead:
+  model: anthropic/claude-opus-4-6
+  thinking: high
+  # Built-in Pi tools are: read, write, edit, bash.
+  # write and edit stay excluded so the lead remains read-only.
+  # bash is enabled for read-only commands only; mutating commands are blocked by lead-worker runtime checks.
+  # lead_worker is force-added by the extension regardless of this list.
+  allowed_tools:
+    - read
+    - bash
+    - websearch
+
+worker:
+  model: openai/gpt-5.4
+  thinking: medium
