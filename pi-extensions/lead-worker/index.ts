@@ -1,6 +1,6 @@
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { StringEnum } from "@mariozechner/pi-ai";
+import { complete, getModel, StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -43,6 +43,10 @@ const MAX_HANDOFF_CHARS = 32_000;
 const WORKER_RELAY_DEDUP_WINDOW_MS = 60_000;
 const WORKER_AUTO_REPORT_SUMMARY_MAX_CHARS = 3_000;
 const MAX_TRACKED_REPORTED_HANDOFF_IDS = 256;
+const MAX_SUPERVISED_STEERS = 5;
+const SUPERVISOR_MODEL_PROVIDER = "anthropic";
+const SUPERVISOR_MODEL_ID = "claude-haiku-4-5";
+const MAX_SUPERVISED_RECENT_EVENTS = 10;
 const SOCKET_WAIT_TIMEOUT_MS = 10_000;
 const SOCKET_WAIT_INTERVAL_MS = 100;
 const MUTATING_BASH_PATTERNS = [
@@ -189,6 +193,21 @@ type PendingWorkerHandoff = {
   pairId: string;
 };
 
+type SupervisorDecision = {
+  action: "continue" | "steer" | "done" | "escalate";
+  message?: string;
+  confidence: number;
+  reasoning: string;
+};
+
+type ActiveSupervisedHandoff = {
+  id: string;
+  spec: string;
+  outcome: string;
+  steerCount: number;
+  recentEvents: PairMessageV2[];
+};
+
 interface LeadWorkerRuntime {
   modeEnabled: boolean;
   previousActiveTools: string[] | undefined;
@@ -212,6 +231,7 @@ interface LeadWorkerRuntime {
   workerServerPairId: string | undefined;
   activeLeadSocket: Socket | undefined;
   activeLeadSessionId: string | undefined;
+  activeSupervisedHandoff: ActiveSupervisedHandoff | undefined;
 }
 
 const rt: LeadWorkerRuntime = {
@@ -237,6 +257,7 @@ const rt: LeadWorkerRuntime = {
   workerServerPairId: undefined,
   activeLeadSocket: undefined,
   activeLeadSessionId: undefined,
+  activeSupervisedHandoff: undefined,
 };
 
 function normalizeControlAction(raw: string): LeadWorkerControlAction | null {
@@ -1183,6 +1204,7 @@ async function statusOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: Lea
 }
 
 async function stopOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: LeadWorkerSettings): Promise<LeadWorkerStatus> {
+  rt.activeSupervisedHandoff = undefined;
   const worker = await stopWorker(pi, ctx.cwd ?? process.cwd(), settings, getLeadSessionBinding(ctx));
 
   if (rt.modeEnabled) {
@@ -1481,6 +1503,9 @@ async function handleIncomingMessage(pi: ExtensionAPI, message: PairMessageV2, s
       } else {
         deliverIncomingProtocolMessage(pi, message, true);
         maybeRelayWorkerEventToUser(pi, message);
+        void maybeRunLeadSupervision(pi, ctx, message).catch((err) => {
+          notify(ctx, `lead supervisor error: ${err instanceof Error ? err.message : String(err)}`, "warning");
+        });
       }
     } else {
       deliverIncomingProtocolMessage(pi, message, true);
@@ -1651,6 +1676,211 @@ async function sendMessageAction(pi: ExtensionAPI, ctx: ExtensionContext, rawMes
   return result;
 }
 
+const SUPERVISOR_DECISION_TOOL = {
+  name: "report_supervisor_decision",
+  description: "Report the supervisor decision for the current worker execution state",
+  parameters: Type.Object({
+    action: Type.Union([
+      Type.Literal("continue"),
+      Type.Literal("steer"),
+      Type.Literal("done"),
+      Type.Literal("escalate"),
+    ], { description: "continue: worker is on track; steer: inject a correction; done: goal is met; escalate: surface to human" }),
+    message: Type.Optional(Type.String({ description: "Required for steer and escalate: the message to inject or surface" })),
+    confidence: Type.Number({ description: "Confidence in this decision, 0.0-1.0" }),
+    reasoning: Type.String({ description: "Brief reasoning" }),
+  }),
+};
+
+async function synthesizeOutcome(
+  handoffSpec: string,
+  apiKey: string,
+): Promise<string> {
+  const model = getModel(SUPERVISOR_MODEL_PROVIDER, SUPERVISOR_MODEL_ID);
+  if (!model) return truncate(handoffSpec, 120);
+
+  try {
+    const response = await complete(
+      model,
+      {
+        systemPrompt: "Summarize the following task handoff as a single concise sentence describing what successful completion looks like. Output only the sentence, no preamble.",
+        messages: [
+          {
+            role: "user" as const,
+            content: [{ type: "text" as const, text: handoffSpec }],
+            timestamp: Date.now(),
+          },
+        ],
+        tools: [],
+      },
+      { apiKey },
+    );
+    const text = response.content
+      .filter((c: any) => c.type === "text")
+      .map((c: any) => String(c.text ?? ""))
+      .join("")
+      .trim();
+    return text || truncate(handoffSpec, 120);
+  } catch {
+    return truncate(handoffSpec, 120);
+  }
+}
+
+async function analyzeWorkerEvent(
+  ctx: ExtensionContext,
+  supervised: ActiveSupervisedHandoff,
+  apiKey: string,
+): Promise<SupervisorDecision> {
+  const model = ctx.model
+    ? ctx.modelRegistry.find(ctx.model.provider, ctx.model.id) ?? getModel(SUPERVISOR_MODEL_PROVIDER, SUPERVISOR_MODEL_ID)
+    : getModel(SUPERVISOR_MODEL_PROVIDER, SUPERVISOR_MODEL_ID);
+  if (!model) return { action: "continue", confidence: 0, reasoning: "no model available" };
+
+  const stagnating = supervised.steerCount >= MAX_SUPERVISED_STEERS;
+  const recentEventText = supervised.recentEvents
+    .slice(-MAX_SUPERVISED_RECENT_EVENTS)
+    .map((e) => `[${e.name ?? e.type}] ${e.body ?? ""}`)
+    .join("\n");
+
+  try {
+    const response = await complete(
+      model,
+      {
+        systemPrompt: [
+          "You are the lead-side supervisor for a lead-worker coding session.",
+          "Analyze the worker's progress against the stated outcome and decide what to do.",
+          stagnating ? `The worker has been steered ${supervised.steerCount} times without completing. Lean toward escalate.` : "",
+          "You MUST call the report_supervisor_decision tool.",
+        ].filter(Boolean).join(" "),
+        messages: [
+          {
+            role: "user" as const,
+            content: [
+              {
+                type: "text" as const,
+                text: [
+                  `Outcome: ${supervised.outcome}`,
+                  "",
+                  "Handoff spec:",
+                  supervised.spec,
+                  "",
+                  "Recent worker events:",
+                  recentEventText || "(none yet)",
+                ].join("\n"),
+              },
+            ],
+            timestamp: Date.now(),
+          },
+        ],
+        tools: [SUPERVISOR_DECISION_TOOL],
+      },
+      { apiKey },
+    );
+
+    const toolCall = response.content.find((c: any) => c.type === "toolCall" && c.name === SUPERVISOR_DECISION_TOOL.name);
+    if (!toolCall || toolCall.type !== "toolCall") {
+      return { action: "continue", confidence: 0, reasoning: "no tool call" };
+    }
+    const args = toolCall.arguments as Record<string, unknown>;
+    return {
+      action: (args.action as SupervisorDecision["action"]) ?? "continue",
+      message: typeof args.message === "string" ? args.message : undefined,
+      confidence: typeof args.confidence === "number" ? args.confidence : 0,
+      reasoning: typeof args.reasoning === "string" ? args.reasoning : "",
+    };
+  } catch {
+    return { action: "continue", confidence: 0, reasoning: "analysis failed" };
+  }
+}
+
+async function maybeRunLeadSupervision(pi: ExtensionAPI, ctx: ExtensionContext, event: PairMessageV2): Promise<void> {
+  if (currentPairRole() !== "lead") return;
+  const supervised = rt.activeSupervisedHandoff;
+  if (!supervised) return;
+  if (event.handoffId && event.handoffId !== supervised.id) return;
+
+  const eventName = event.name ?? "";
+  const isMeaningful = ["progress", "blocker", "clarification_needed", "completed", "failed", "cancelled"].includes(eventName);
+  if (!isMeaningful) return;
+
+  supervised.recentEvents.push(event);
+  if (supervised.recentEvents.length > MAX_SUPERVISED_RECENT_EVENTS * 2) {
+    supervised.recentEvents = supervised.recentEvents.slice(-MAX_SUPERVISED_RECENT_EVENTS);
+  }
+
+  const isTerminal = ["completed", "failed", "cancelled"].includes(eventName);
+  const haikuModel = getModel(SUPERVISOR_MODEL_PROVIDER, SUPERVISOR_MODEL_ID);
+  if (!haikuModel) {
+    if (isTerminal) rt.activeSupervisedHandoff = undefined;
+    return;
+  }
+  const auth = await (ctx.modelRegistry as any).getApiKeyAndHeaders(haikuModel);
+  if (!auth.ok || !auth.apiKey) {
+    if (isTerminal) rt.activeSupervisedHandoff = undefined;
+    return;
+  }
+
+  let decision: SupervisorDecision;
+  if (isTerminal) {
+    decision = await analyzeWorkerEvent(ctx, supervised, auth.apiKey);
+    rt.activeSupervisedHandoff = undefined;
+  } else if (supervised.steerCount >= MAX_SUPERVISED_STEERS) {
+    decision = { action: "escalate", confidence: 1, reasoning: "stagnation threshold reached" };
+    rt.activeSupervisedHandoff = undefined;
+  } else {
+    decision = await analyzeWorkerEvent(ctx, supervised, auth.apiKey);
+  }
+
+  if (decision.action === "continue") return;
+
+  if (decision.action === "steer" && decision.message) {
+    supervised.steerCount++;
+    await sendOneWayEvent(pi, ctx, {
+      name: "steer",
+      body: decision.message,
+      handoffId: supervised.id,
+      autoStart: false,
+      failIfUnavailable: false,
+    }).catch((err) => {
+      notify(ctx, `lead supervisor steer failed: ${err instanceof Error ? err.message : String(err)}`, "warning");
+    });
+    return;
+  }
+
+  if (decision.action === "done") {
+    notify(ctx,
+      `Lead supervisor: outcome achieved for handoff ${supervised.id.slice(0, 8)}.`,
+      "info",
+    );
+    rt.activeSupervisedHandoff = undefined;
+    return;
+  }
+
+  if (decision.action === "escalate") {
+    const summary = [
+      `Lead supervisor escalating handoff ${supervised.id.slice(0, 8)} — needs your attention.`,
+      `Outcome: ${supervised.outcome}`,
+      `Steer count: ${supervised.steerCount}`,
+      decision.message ? `Reason: ${decision.message}` : `Reason: ${decision.reasoning}`,
+    ].join(" | ");
+    notify(ctx, summary, "warning");
+    pi.sendUserMessage(
+      [
+        "[LEAD-WORKER SUPERVISOR ESCALATION]",
+        `handoff_id: ${supervised.id}`,
+        `outcome: ${supervised.outcome}`,
+        `steer_count: ${supervised.steerCount}`,
+        `reason: ${decision.message ?? decision.reasoning}`,
+        "",
+        "Review the latest worker events and decide the next action.",
+      ].join("\n"),
+      { deliverAs: "followUp" },
+    );
+    rt.activeSupervisedHandoff = undefined;
+    return;
+  }
+}
+
 function buildHandoffText(ctx: ExtensionContext, extraInstructions: string, handoffId: string): string | null {
   const recent = getMessagesSinceLastUser(ctx);
   const trimmedExtra = extraInstructions.trim();
@@ -1736,6 +1966,32 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
   });
   const reply = await startRpc(command, connection.socket);
   if (!reply.ok) throw new Error(reply.error ?? reply.body ?? `Worker rejected handoff ${handoffId}.`);
+
+  // --- Activate supervision ---
+  // 1. Synthesize outcome from handoff spec
+  const haikuModel = getModel(SUPERVISOR_MODEL_PROVIDER, SUPERVISOR_MODEL_ID);
+  let outcome = truncate(handoff, 120);
+  if (haikuModel) {
+    const auth = await (ctx.modelRegistry as any).getApiKeyAndHeaders(haikuModel).catch(() => ({ ok: false }));
+    if (auth.ok && auth.apiKey) {
+      outcome = await synthesizeOutcome(handoff, auth.apiKey);
+    }
+  }
+
+  // 2. Activate lead-side supervisor state
+  rt.activeSupervisedHandoff = {
+    id: handoffId,
+    spec: handoff,
+    outcome,
+    steerCount: 0,
+    recentEvents: [],
+  };
+
+  // 3. Activate worker-side pi-supervisor (best effort — not all workers have it installed)
+  const superviseResult = await sendCommandAction(pi, ctx, "slash_command", `/supervise ${outcome}`).catch((err: unknown) => ({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+  if (!(superviseResult as any).ok) {
+    notify(ctx, `Worker-side supervision unavailable (pi-supervisor may not be installed): ${(superviseResult as any).error ?? ""}`, "warning");
+  }
 
   emitInfo(pi, formatBuildQueuedMarkdown(worker, connection.pairId, handoffId), BUILD_HANDOFF_MESSAGE_TYPE);
 }
