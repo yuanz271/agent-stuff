@@ -1689,7 +1689,7 @@ async function sendMessageAction(pi: ExtensionAPI, ctx: ExtensionContext, rawMes
     autoStart: false,
     failIfUnavailable: true,
   });
-  if (role === "worker" && inferredName !== "progress") {
+  if (role === "worker" && isTerminalSupervisionEvent(inferredName)) {
     rt.pendingWorkerHandoff = undefined;
   }
   return result;
