@@ -156,7 +156,7 @@ The lead analyzes incoming worker events against the handoff spec:
 - output: `{ action: "continue" | "steer" | "done" | "escalate", message?, confidence, reasoning }`
 - trigger: on every meaningful worker event (`progress`, `blocker`, `clarification_needed`, terminal)
 - concurrency: events are analyzed serially per handoff so bursts of `progress` updates cannot race into duplicate steering or premature escalation
-- queue policy: queued `progress` events are coalesced/bounded for backpressure, and terminal events preempt only stale `progress` while retaining queued `blocker` / `clarification_needed` context for final analysis
+- queue policy: queued supervision events are bounded structurally by coalescing same-kind updates (`progress`, `blocker`, `clarification_needed`), while terminal events preempt only stale `progress` and retain queued `blocker` / `clarification_needed` context for final analysis
 
 Actions:
 - `continue` → stay silent

@@ -1743,10 +1743,27 @@ function isTerminalSupervisionEvent(eventName: string): boolean {
   return ["completed", "failed", "cancelled"].includes(eventName);
 }
 
-function enqueueSupervisionEvent(
-  supervised: ActiveSupervisedHandoff,
-  event: PairMessageV2,
-): { droppedProgressForBackpressure: boolean; preservedNonProgressOverflow: boolean } {
+function upsertQueuedEvent(supervised: ActiveSupervisedHandoff, event: PairMessageV2, beforeTerminal: boolean): void {
+  const eventName = event.name ?? "";
+  const existingIndex = supervised.pendingEvents.findIndex((queued) => (queued.name ?? "") === eventName);
+  if (existingIndex >= 0) {
+    supervised.pendingEvents[existingIndex] = event;
+    return;
+  }
+
+  if (!beforeTerminal) {
+    supervised.pendingEvents.push(event);
+    return;
+  }
+
+  const terminalIndex = supervised.pendingEvents.findIndex((queued) => isTerminalSupervisionEvent(queued.name ?? ""));
+  if (terminalIndex < 0) {
+    throw new Error("Lead supervision queue entered an invalid terminal state.");
+  }
+  supervised.pendingEvents.splice(terminalIndex, 0, event);
+}
+
+function enqueueSupervisionEvent(supervised: ActiveSupervisedHandoff, event: PairMessageV2): void {
   const eventName = event.name ?? "";
 
   if (isTerminalSupervisionEvent(eventName)) {
@@ -1754,43 +1771,19 @@ function enqueueSupervisionEvent(
       const queuedName = queued.name ?? "";
       return queuedName !== "progress" && !isTerminalSupervisionEvent(queuedName);
     });
-    supervised.pendingEvents = [...preservedContext, event];
-    return { droppedProgressForBackpressure: false, preservedNonProgressOverflow: false };
-  }
-
-  if (supervised.pendingEvents.some((queued) => isTerminalSupervisionEvent(queued.name ?? ""))) {
-    if (eventName === "progress") {
-      return { droppedProgressForBackpressure: false, preservedNonProgressOverflow: false };
-    }
-    const terminalIndex = supervised.pendingEvents.findIndex((queued) => isTerminalSupervisionEvent(queued.name ?? ""));
-    if (terminalIndex < 0) {
-      throw new Error("Lead supervision queue entered an invalid terminal state.");
-    }
-    supervised.pendingEvents.splice(terminalIndex, 0, event);
-    return { droppedProgressForBackpressure: false, preservedNonProgressOverflow: false };
-  }
-
-  if (eventName === "progress") {
-    const existingProgressIndex = supervised.pendingEvents.findIndex((queued) => (queued.name ?? "") === "progress");
-    if (existingProgressIndex >= 0) {
-      supervised.pendingEvents[existingProgressIndex] = event;
-    } else {
-      supervised.pendingEvents.push(event);
+    supervised.pendingEvents = preservedContext;
+    upsertQueuedEvent(supervised, event, false);
+  } else if (supervised.pendingEvents.some((queued) => isTerminalSupervisionEvent(queued.name ?? ""))) {
+    if (eventName !== "progress") {
+      upsertQueuedEvent(supervised, event, true);
     }
   } else {
-    supervised.pendingEvents.push(event);
+    upsertQueuedEvent(supervised, event, false);
   }
 
-  if (supervised.pendingEvents.length <= MAX_PENDING_SUPERVISION_EVENTS) {
-    return { droppedProgressForBackpressure: false, preservedNonProgressOverflow: false };
+  if (supervised.pendingEvents.length > MAX_PENDING_SUPERVISION_EVENTS) {
+    throw new Error(`Lead supervision queue exceeded bound of ${MAX_PENDING_SUPERVISION_EVENTS} events.`);
   }
-
-  const oldestProgressIndex = supervised.pendingEvents.findIndex((queued) => (queued.name ?? "") === "progress");
-  if (oldestProgressIndex >= 0) {
-    supervised.pendingEvents.splice(oldestProgressIndex, 1);
-    return { droppedProgressForBackpressure: true, preservedNonProgressOverflow: false };
-  }
-  return { droppedProgressForBackpressure: false, preservedNonProgressOverflow: true };
 }
 
 async function resolveLeadSupervisionModel(ctx: ExtensionContext): Promise<{ model: NonNullable<ReturnType<ExtensionContext["modelRegistry"]["find"]>>; apiKey: string }> {
@@ -1879,6 +1872,10 @@ async function processLeadSupervisionEvent(pi: ExtensionAPI, ctx: ExtensionConte
 
   const eventName = event.name ?? "";
   const isTerminal = isTerminalSupervisionEvent(eventName);
+  if (!isTerminal && supervised.pendingEvents.some((queued) => isTerminalSupervisionEvent(queued.name ?? ""))) {
+    return;
+  }
+
   const { model, apiKey } = await resolveLeadSupervisionModel(ctx);
 
   let decision: SupervisorDecision;
@@ -1890,10 +1887,6 @@ async function processLeadSupervisionEvent(pi: ExtensionAPI, ctx: ExtensionConte
     rt.activeSupervisedHandoff = undefined;
   } else {
     decision = await analyzeWorkerEvent(model, supervised, apiKey);
-  }
-
-  if (!isTerminal && supervised.pendingEvents.some((queued) => isTerminalSupervisionEvent(queued.name ?? ""))) {
-    return;
   }
 
   if (decision.action === "continue") return;
@@ -1957,13 +1950,7 @@ async function maybeRunLeadSupervision(pi: ExtensionAPI, ctx: ExtensionContext, 
   const eventName = event.name ?? "";
   if (!isMeaningfulSupervisionEvent(eventName)) return;
 
-  const { droppedProgressForBackpressure, preservedNonProgressOverflow } = enqueueSupervisionEvent(supervised, event);
-  if (droppedProgressForBackpressure) {
-    notify(ctx, `lead supervision queue overflow for handoff ${supervised.id.slice(0, 8)}; dropped stale queued progress event to preserve backpressure.`, "warning");
-  }
-  if (preservedNonProgressOverflow) {
-    notify(ctx, `lead supervision queue exceeded ${MAX_PENDING_SUPERVISION_EVENTS} events for handoff ${supervised.id.slice(0, 8)}; preserving non-progress context instead of dropping blocker/clarification events.`, "warning");
-  }
+  enqueueSupervisionEvent(supervised, event);
   if (supervised.supervisionRunning) return;
   supervised.supervisionRunning = true;
 
