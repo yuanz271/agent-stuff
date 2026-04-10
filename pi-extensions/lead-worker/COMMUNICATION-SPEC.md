@@ -78,15 +78,24 @@ Use a **repo-local Unix domain socket** owned by the worker.
 
 ### Socket location
 
-Use a deterministic repo-local path inside the lead-worker runtime directory, for example:
+Use a deterministic repo-local path inside the lead-worker runtime directory:
 
 ```text
-<repo>/.pi/lead-worker/<pair-tag>/worker.sock
+<repo>/.pi/lead-worker/<pair-id>/protocol-v2/worker.sock
 ```
 
-Where `<pair-tag>` identifies the current repo-scoped pair runtime.
+`pair-id` is a repo-scoped worker identity, not a lead-session identity.
 
-The exact tag derivation may remain the current lead-worker session tag unless a later refactor deliberately loosens worker identity from lead-session identity.
+### Pair ownership
+
+A worker serves **one active lead connection at a time**.
+
+Required policy:
+- the first healthy lead connection owns the worker session
+- a second lead connection is rejected with an explicit busy error
+- ownership is released when the active connection closes or is declared dead
+
+This refactor does not include shared multi-lead arbitration.
 
 ## Protocol model
 
@@ -111,10 +120,11 @@ type PairMessageV2 = {
   to: "lead" | "worker";
   pairId: string;
   timestamp: string; // ISO 8601
-  name?: string;
-  body: string;
-  replyTo?: string;
-  ok?: boolean;
+  name?: string;     // required for command and event
+  body?: string;     // human-readable text
+  payload?: unknown; // structured message-specific data
+  replyTo?: string;  // required for reply
+  ok?: boolean;      // required for reply
   error?: string;
   handoffId?: string;
 };
@@ -124,25 +134,33 @@ type PairMessageV2 = {
 
 1. Every `request` must receive **exactly one** `reply`.
 2. Every `command` must receive **exactly one** `reply`.
-3. `reply.replyTo` must reference a known in-flight `request` or `command`.
+3. `reply.replyTo` must reference one known in-flight `request` or `command`.
 4. `event` messages must not expect replies.
 5. `from`, `to`, and `pairId` must match the active pair context.
-6. Unknown `type` or missing required fields are protocol errors.
-7. Replies arriving after timeout or for unknown IDs are protocol errors.
-8. Malformed messages are connection-fatal for the current socket.
+6. `command` and `event` messages must set `name`.
+7. `reply` messages must set `replyTo` and `ok`.
+8. Unknown `type` or missing required fields are protocol errors.
+9. Malformed messages are connection-fatal for the current socket.
 
 ## Pair identity
 
-The protocol should use an explicit `pairId` rather than overloading higher-level lead session semantics.
+The protocol uses an explicit `pairId` rather than any lead-session identifier.
 
 ### Why
-- Communication is now a component of a repo-scoped pair, not of a central global lead.
-- The old `leadSessionId` concept was valid for the discarded design, but it should no longer be the primary ownership primitive.
+- Communication is a component of a repo-scoped pair, not of a central global lead.
+- The worker is the durable endpoint; the lead is a transient client.
+- A repo-local worker must remain addressable across lead reconnects and runtime reloads.
 
 ### Pair identity requirements
-A valid `pairId` must uniquely identify the currently attached lead/worker runtime for the repo.
+A valid `pairId` must:
+- be stable for the repo-scoped worker runtime
+- survive individual lead reconnects
+- not depend on the current lead session id
+- map deterministically to the runtime directory and socket path
 
-It may initially be derived from the current lead-worker runtime directory naming if that minimizes migration complexity.
+Initial recommendation:
+- derive `pairId` from resolved project root plus a fixed worker slot identifier
+- keep it stable until the worker is explicitly reset or re-provisioned
 
 ## Framing and validation
 
@@ -159,8 +177,9 @@ On receipt, validate in order:
 2. payload is valid JSON
 3. payload matches `PairMessageV2`
 4. role and destination are valid for the receiving endpoint
-5. `replyTo` is present exactly when required
+5. `name`, `replyTo`, and `ok` are present exactly when required
 6. `pairId` matches the active runtime
+7. message ownership matches the active lead connection
 
 Any failure is a **protocol error**, not a warning.
 
@@ -179,8 +198,10 @@ Any failure is a **protocol error**, not a warning.
 - Default timeout should remain aligned with the historical lead-worker expectation: **10 minutes**.
 - On timeout:
   - reject the pending caller
-  - mark the request closed
-  - any later reply is invalid/orphaned and should be surfaced as a protocol error
+  - mark the request closed as expired
+  - a later reply for that expired id is surfaced visibly as a stale reply and ignored
+
+Unknown replies for ids that were never issued remain protocol errors.
 
 ## Command model
 
@@ -248,7 +269,7 @@ Extend `lead_worker(...)` with structured actions:
 
 ## `/build` semantics under the new protocol
 
-`/build` should be implemented as a high-level wrapper on top of the communication layer.
+`/build` is a high-level wrapper on top of the communication layer.
 
 ### Required behavior
 1. Gather recent lead context and explicit build instructions.
@@ -260,7 +281,21 @@ Extend `lead_worker(...)` with structured actions:
    - validation expectations
    - `handoffId`
 3. Send the handoff to the worker using the typed protocol.
-4. Expect exactly one completion event or a clearly surfaced blocker/clarification event for that `handoffId`.
+4. Track the handoff by `handoffId` until one terminal outcome is observed.
+
+### Handoff event model
+Allowed non-terminal events:
+- `handoff_started`
+- `blocker`
+- `clarification_needed`
+- `progress`
+
+Required terminal event set:
+- `completed`
+- `failed`
+- `cancelled`
+
+Each handoff may emit zero or more non-terminal events and **exactly one** terminal event.
 
 ### Constraint carried forward from current design
 The lead must send **intent/specification only**, not concrete code blocks or patches to paste blindly.
@@ -274,8 +309,9 @@ Treat these as connection-fatal protocol errors:
 - invalid JSON
 - schema mismatch
 - invalid `from`/`to`
+- invalid active-lead ownership
 - reply without valid `replyTo`
-- unexpected reply to unknown request
+- unexpected reply to an id that was never issued
 - wrong `pairId`
 - duplicate resolution of the same request
 
@@ -296,31 +332,40 @@ These should return explicit error replies rather than corrupting the connection
 - Lead may reconnect to the worker socket after a disconnect or runtime reload.
 - Reconnection is a new transport connection, not a continuation of the old stream.
 - In-flight blocking requests on the disconnected lead side must be rejected immediately.
+- Reconnect does not change `pairId`; it only establishes a new active lead connection.
 
 ### Stale socket cleanup
-- Stale socket files should be cleaned up when starting the worker server.
+- Stale socket files in the protocol v2 runtime path should be cleaned up when starting the worker server.
 - Cleanup must surface unexpected filesystem failures rather than silently ignoring them.
+- Old mailbox artifacts are not part of cleanup correctness; they are ignored by the new transport.
 
 ## Migration plan
 
 ### Version boundary
-This refactor is a **protocol break**.
+This refactor is a **clean protocol break**.
 
-Do not attempt to preserve compatibility with the current ad hoc mailbox message format.
+Backward compatibility is explicitly **not** a priority.
+
+Do not implement:
+- a compatibility shim for the current mailbox message format
+- dual transport support
+- fallback from socket protocol v2 to mailbox behavior
+- identity rules preserved only for old runtime artifact compatibility
 
 ### Migration rule
-- Introduce a new communication implementation as **protocol v2**.
+- Introduce one communication implementation: **protocol v2 over the worker-owned socket**.
 - Do not read old mailbox payloads as if they were v2 messages.
-- Keep old queued artifacts isolated from the new runtime paths.
+- Do not route new traffic through old mailbox files.
+- Old communication artifacts may remain on disk, but the new implementation treats them as non-authoritative.
 
 ### Runtime directory recommendation
-Use a versioned subpath for the new communication substrate, for example:
+Use a versioned subpath for the new communication substrate:
 
 ```text
-<repo>/.pi/lead-worker/<pair-tag>/protocol-v2/
+<repo>/.pi/lead-worker/<pair-id>/protocol-v2/
 ```
 
-This allows clean coexistence during implementation and testing.
+The versioned path is the only authoritative location for the new transport.
 
 ## Validation plan
 
@@ -334,20 +379,21 @@ Minimum validation before considering the refactor complete:
 6. **Malformed message** causes visible protocol failure.
 7. **Unexpected reply** causes visible protocol failure.
 8. **Disconnect during in-flight request** rejects pending caller promptly.
-9. **`/build` handoff** produces exactly one completion event for a successful handoff.
+9. **`/build` handoff** allows interim events and produces exactly one terminal event.
+10. **Second lead attach attempt** is rejected cleanly while another lead owns the worker connection.
+11. **Old mailbox artifacts present on disk** do not affect protocol v2 operation.
 
 ## Non-goals and future work
 
 ### Not required in this refactor
-- multi-lead arbitration for a single worker
+- multi-lead arbitration beyond single-active-lead rejection
 - cross-repo orchestration from one central control session
 - brokered multiplexing across multiple workers
 - message persistence across worker crashes beyond what tmux/session files already provide
 
 ### Possible future work
 - explicit attach/detach semantics if the pair model later evolves
-- richer command payload schemas beyond `body: string`
-- structured event payloads with typed JSON bodies
+- narrower typed payload schemas per command/event name
 - multi-worker fan-out from a single current session
 
 ## Decision summary
@@ -355,7 +401,8 @@ Minimum validation before considering the refactor complete:
 - Keep the **current repo-scoped paired lead/worker architecture**.
 - Recover the **old worker-grade communication component**.
 - Use a **worker-owned Unix socket** with explicit framed messages.
-- Introduce **protocol v2** with `request` / `reply` / `command` / `event`.
+- Introduce **protocol v2** with `request` / `reply` / `command` / `event` and stable repo-scoped `pairId`.
+- Make a clean cutover: no mailbox compatibility shim, no dual transport path.
 - Treat protocol corruption as **hard failure**.
 - Do **not** reintroduce the old central lead architecture.
 - Do **not** copy `pi-intercom` code.
