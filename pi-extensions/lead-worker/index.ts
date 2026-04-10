@@ -790,36 +790,46 @@ async function saveQueuedWorkerEvents(protocolDir: string, events: PairMessageV2
 
 const workerEventQueueLocks = new Map<string, Promise<void>>();
 
-async function enqueueWorkerEvent(protocolDir: string, message: PairMessageV2): Promise<void> {
+function withQueueLock<T>(protocolDir: string, fn: () => Promise<T>): Promise<T> {
   const prev = workerEventQueueLocks.get(protocolDir) ?? Promise.resolve();
-  const next = prev.then(async () => {
+  const next = prev.then(fn);
+  const settled = next.then(
+    () => { if (workerEventQueueLocks.get(protocolDir) === settled) workerEventQueueLocks.delete(protocolDir); },
+    () => { if (workerEventQueueLocks.get(protocolDir) === settled) workerEventQueueLocks.delete(protocolDir); },
+  );
+  workerEventQueueLocks.set(protocolDir, settled);
+  return next;
+}
+
+async function enqueueWorkerEvent(protocolDir: string, message: PairMessageV2): Promise<void> {
+  await withQueueLock(protocolDir, async () => {
     const queued = await loadQueuedWorkerEvents(protocolDir);
     queued.push(message);
     await saveQueuedWorkerEvents(protocolDir, queued);
   });
-  workerEventQueueLocks.set(protocolDir, next.catch(() => {}));
-  await next;
 }
 
 async function flushQueuedWorkerEvents(protocolDir: string, socket: Socket, pairId: string): Promise<void> {
-  const queued = await loadQueuedWorkerEvents(protocolDir);
-  if (queued.length === 0) return;
+  await withQueueLock(protocolDir, async () => {
+    const queued = await loadQueuedWorkerEvents(protocolDir);
+    if (queued.length === 0) return;
 
-  let sent = 0;
-  try {
-    for (const message of queued) {
-      if (message.pairId !== pairId) {
-        throw new Error(`Queued worker event ${message.id} has wrong pairId ${message.pairId}.`);
+    let sent = 0;
+    try {
+      for (const message of queued) {
+        if (message.pairId !== pairId) {
+          throw new Error(`Queued worker event ${message.id} has wrong pairId ${message.pairId}.`);
+        }
+        sendProtocolMessage(socket, message);
+        sent++;
       }
-      sendProtocolMessage(socket, message);
-      sent++;
+    } catch (error) {
+      await saveQueuedWorkerEvents(protocolDir, queued.slice(sent));
+      throw error;
     }
-  } catch (error) {
-    await saveQueuedWorkerEvents(protocolDir, queued.slice(sent));
-    throw error;
-  }
 
-  await saveQueuedWorkerEvents(protocolDir, []);
+    await saveQueuedWorkerEvents(protocolDir, []);
+  });
 }
 
 async function deliverWorkerEvent(protocolDir: string, socket: Socket | undefined, message: PairMessageV2): Promise<boolean> {
@@ -1739,6 +1749,9 @@ async function synthesizeOutcome(
       .trim();
     return text || truncate(handoffSpec, 120);
   } catch (error) {
+    // Intentional fallback: outcome synthesis is best-effort. Supervision viability is
+    // validated separately in resolveLeadSupervisionModel; a truncated handoff spec is an
+    // acceptable degraded outcome string. Log for debugging visibility.
     console.warn("[lead-worker] synthesizeOutcome failed:", error instanceof Error ? error.message : String(error));
     return truncate(handoffSpec, 120);
   }
@@ -2095,8 +2108,8 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
   if (haikuModel) {
     const registry = ctx.modelRegistry as unknown as Record<string, unknown>;
     const auth = typeof registry.getApiKeyAndHeaders === "function"
-      ? await (registry.getApiKeyAndHeaders as (m: unknown) => Promise<{ ok?: boolean; apiKey?: string }>)(haikuModel).catch(() => ({ ok: false as const }))
-      : { ok: false as const };
+      ? await (registry.getApiKeyAndHeaders as (m: unknown) => Promise<{ ok?: boolean; apiKey?: string }>)(haikuModel).catch(() => ({ ok: false as const, apiKey: undefined }))
+      : { ok: false as const, apiKey: undefined };
     if (auth.ok && auth.apiKey) {
       outcome = await synthesizeOutcome(handoff, auth.apiKey);
     }
