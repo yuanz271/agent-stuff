@@ -1060,8 +1060,8 @@ async function restoreModeState(pi: ExtensionAPI, ctx: ExtensionContext): Promis
     ctx.cwd ?? process.cwd(),
     requireCurrentSettings().settings,
     getLeadSessionBinding(ctx),
-  ).catch(() => undefined);
-  if (worker) updateStatusLine(ctx, worker);
+  );
+  updateStatusLine(ctx, worker);
 }
 
 async function startOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: LeadWorkerSettings): Promise<LeadWorkerStatus> {
