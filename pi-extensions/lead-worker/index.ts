@@ -1743,6 +1743,20 @@ function isTerminalSupervisionEvent(eventName: string): boolean {
   return ["completed", "failed", "cancelled"].includes(eventName);
 }
 
+function queuedTerminalIndex(events: PairMessageV2[]): number {
+  return events.findIndex((queued) => isTerminalSupervisionEvent(queued.name ?? ""));
+}
+
+function hasQueuedTerminal(events: PairMessageV2[]): boolean {
+  return queuedTerminalIndex(events) >= 0;
+}
+
+function trimRecentSupervisionEvents(supervised: ActiveSupervisedHandoff): void {
+  if (supervised.recentEvents.length > MAX_SUPERVISED_RECENT_EVENTS * 2) {
+    supervised.recentEvents = supervised.recentEvents.slice(-MAX_SUPERVISED_RECENT_EVENTS);
+  }
+}
+
 function upsertQueuedEvent(supervised: ActiveSupervisedHandoff, event: PairMessageV2, beforeTerminal: boolean): void {
   const eventName = event.name ?? "";
   const existingIndex = supervised.pendingEvents.findIndex((queued) => (queued.name ?? "") === eventName);
@@ -1755,7 +1769,7 @@ function upsertQueuedEvent(supervised: ActiveSupervisedHandoff, event: PairMessa
     return;
   }
 
-  const terminalIndex = supervised.pendingEvents.findIndex((queued) => isTerminalSupervisionEvent(queued.name ?? ""));
+  const terminalIndex = queuedTerminalIndex(supervised.pendingEvents);
   if (terminalIndex < 0) {
     throw new Error("Lead supervision queue entered an invalid terminal state.");
   }
@@ -1764,15 +1778,15 @@ function upsertQueuedEvent(supervised: ActiveSupervisedHandoff, event: PairMessa
 
 function enqueueSupervisionEvent(supervised: ActiveSupervisedHandoff, event: PairMessageV2): void {
   const eventName = event.name ?? "";
+  const terminalQueued = hasQueuedTerminal(supervised.pendingEvents);
 
   if (isTerminalSupervisionEvent(eventName)) {
-    const preservedContext = supervised.pendingEvents.filter((queued) => {
+    supervised.pendingEvents = supervised.pendingEvents.filter((queued) => {
       const queuedName = queued.name ?? "";
       return queuedName !== "progress" && !isTerminalSupervisionEvent(queuedName);
     });
-    supervised.pendingEvents = preservedContext;
     upsertQueuedEvent(supervised, event, false);
-  } else if (supervised.pendingEvents.some((queued) => isTerminalSupervisionEvent(queued.name ?? ""))) {
+  } else if (terminalQueued) {
     if (eventName !== "progress") {
       upsertQueuedEvent(supervised, event, true);
     }
@@ -1865,13 +1879,11 @@ async function analyzeWorkerEvent(
 
 async function processLeadSupervisionEvent(pi: ExtensionAPI, ctx: ExtensionContext, supervised: ActiveSupervisedHandoff, event: PairMessageV2): Promise<void> {
   supervised.recentEvents.push(event);
-  if (supervised.recentEvents.length > MAX_SUPERVISED_RECENT_EVENTS * 2) {
-    supervised.recentEvents = supervised.recentEvents.slice(-MAX_SUPERVISED_RECENT_EVENTS);
-  }
+  trimRecentSupervisionEvents(supervised);
 
   const eventName = event.name ?? "";
   const isTerminal = isTerminalSupervisionEvent(eventName);
-  if (!isTerminal && supervised.pendingEvents.some((queued) => isTerminalSupervisionEvent(queued.name ?? ""))) {
+  if (!isTerminal && hasQueuedTerminal(supervised.pendingEvents)) {
     return;
   }
 
