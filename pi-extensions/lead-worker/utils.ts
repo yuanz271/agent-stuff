@@ -435,13 +435,13 @@ async function resolveState(
   cwd: string,
   settings: LeadWorkerSettings,
   leadSession: LeadSessionBinding,
-): Promise<{ paths: Paths; state: WorkerState; warnings: string[] }> {
+): Promise<{ paths: Paths; desiredState: WorkerState; existingState: WorkerState | null; warnings: string[] }> {
   const projectRoot = await resolveProjectRoot(pi, cwd);
   const paths = buildPaths(projectRoot, settings);
-  const existing = await loadState(paths.stateFile);
-  const state = withStateOverrides(paths, settings, leadSession, existing, {});
+  const existingState = await loadState(paths.stateFile);
+  const desiredState = withStateOverrides(paths, settings, leadSession, existingState, {});
   const warnings: string[] = [];
-  return { paths, state, warnings };
+  return { paths, desiredState, existingState, warnings };
 }
 
 function describeAction(action: LeadWorkerAction, agentName: string, running: boolean, alreadyRunning?: boolean): string {
@@ -503,11 +503,14 @@ export async function startWorker(
   leadSession: LeadSessionBinding,
 ): Promise<WorkerStatus> {
   await ensureTmuxAvailable(pi, cwd);
-  const { paths, state, warnings } = await resolveState(pi, cwd, settings, leadSession);
+  const { paths, desiredState, existingState, warnings } = await resolveState(pi, cwd, settings, leadSession);
 
-  if (await tmuxSessionExists(pi, state.tmuxSession, cwd)) {
-    await saveState(paths.stateFile, state);
-    return buildStatus(pi, cwd, "start", state, warnings, true);
+  if (await tmuxSessionExists(pi, desiredState.tmuxSession, cwd)) {
+    const liveState = existingState ?? desiredState;
+    const nextWarnings = existingState
+      ? warnings
+      : [...warnings, "Worker tmux session is already running, but worker-state.json is missing; reported model/thinking may reflect current settings rather than the live worker process."];
+    return buildStatus(pi, cwd, "start", liveState, nextWarnings, true);
   }
 
   await writeRuntimeFiles(paths, settings, leadSession);
@@ -522,7 +525,7 @@ export async function startWorker(
       "-F",
       TMUX_FORMAT,
       "-s",
-      state.tmuxSession,
+      desiredState.tmuxSession,
       "-c",
       paths.projectRoot,
       `bash ${shellQuote(paths.launchScript)}`,
@@ -531,11 +534,11 @@ export async function startWorker(
   );
 
   if (started.code !== 0) {
-    throw new Error(started.stderr.trim() || started.stdout.trim() || `Failed to start tmux session ${state.tmuxSession}`);
+    throw new Error(started.stderr.trim() || started.stdout.trim() || `Failed to start tmux session ${desiredState.tmuxSession}`);
   }
 
   const metadata = parseNewSessionMetadata(started.stdout);
-  const nextState = withStateOverrides(paths, settings, leadSession, state, {
+  const nextState = withStateOverrides(paths, settings, leadSession, desiredState, {
     tmuxSessionId: metadata.sessionId,
     tmuxWindowId: metadata.windowId,
     tmuxPaneId: metadata.paneId,
@@ -571,8 +574,13 @@ export async function getWorkerStatus(
   settings: LeadWorkerSettings,
   leadSession: LeadSessionBinding,
 ): Promise<WorkerStatus> {
-  const { state, warnings } = await resolveState(pi, cwd, settings, leadSession);
-  return buildStatus(pi, cwd, "status", state, warnings);
+  const { desiredState, existingState, warnings } = await resolveState(pi, cwd, settings, leadSession);
+  const running = await tmuxSessionExists(pi, desiredState.tmuxSession, cwd);
+  const liveState = running && existingState ? existingState : desiredState;
+  const nextWarnings = running && !existingState
+    ? [...warnings, "Worker tmux session is running, but worker-state.json is missing; reported model/thinking may reflect current settings rather than the live worker process."]
+    : warnings;
+  return buildStatus(pi, cwd, "status", liveState, nextWarnings);
 }
 
 export async function stopWorker(
@@ -582,7 +590,8 @@ export async function stopWorker(
   leadSession: LeadSessionBinding,
 ): Promise<WorkerStatus> {
   await ensureTmuxAvailable(pi, cwd);
-  const { paths, state, warnings } = await resolveState(pi, cwd, settings, leadSession);
+  const { paths, desiredState, existingState, warnings } = await resolveState(pi, cwd, settings, leadSession);
+  const state = existingState ?? desiredState;
 
   if (await tmuxSessionExists(pi, state.tmuxSession, cwd)) {
     const stopped = await exec(pi, "tmux", ["kill-session", "-t", state.tmuxSession], cwd);

@@ -331,11 +331,17 @@ function stripBenignRedirects(command: string): string {
     .replace(/(^|[\s;|&])(?:[12]?>&[12])(?=$|[\s;|&])/g, "$1");
 }
 
+function isSafeReadOnlyFind(command: string): boolean {
+  return !/(?:^|\s)-(?:delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)(?:\s|$)/i.test(command);
+}
+
 function isSafeLeadBash(command: string): boolean {
   const commandForMutatingChecks = stripBenignRedirects(command);
   const destructive = MUTATING_BASH_PATTERNS.some((pattern) => pattern.test(commandForMutatingChecks));
   const safe = SAFE_BASH_PREFIXES.some((pattern) => pattern.test(command));
-  return safe && !destructive;
+  if (!safe || destructive) return false;
+  if (/^\s*find\b/i.test(command)) return isSafeReadOnlyFind(commandForMutatingChecks);
+  return true;
 }
 
 function requireCurrentSettings(): LeadWorkerSettingsLoadResult {
@@ -1509,8 +1515,7 @@ async function handleIncomingMessage(pi: ExtensionAPI, message: PairMessageV2, s
       notify(ctx, `lead-worker stale reply ignored: ${message.replyTo}`, "warning");
       return;
     }
-    notify(ctx, `lead-worker unknown reply ignored: ${message.replyTo ?? "(none)"}`, "warning");
-    return;
+    throw new Error(`Unexpected reply for unknown request id '${message.replyTo ?? "(none)"}'.`);
   }
 
   if (message.type === "event") {
@@ -2088,43 +2093,47 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
   }
 
   const connection = await ensureLeadConnection(pi, ctx, { autoStart: true, failIfUnavailable: true });
-  const command = createMessage({
-    type: "command",
-    from: "lead",
-    to: "worker",
-    pairId: connection.pairId,
-    name: "handoff",
-    handoffId,
-    body: handoff,
-    payload: { handoffId, text: handoff },
-  });
-  const reply = await startRpc(command, connection.socket);
-  if (!reply.ok) throw new Error(reply.error ?? reply.body ?? `Worker rejected handoff ${handoffId}.`);
-
-  // --- Activate supervision ---
-  // 1. Synthesize outcome from handoff spec
-  const haikuModel = getModel(SUPERVISOR_MODEL_PROVIDER, SUPERVISOR_MODEL_ID);
-  let outcome = truncate(handoff, 120);
-  if (haikuModel) {
-    const registry = ctx.modelRegistry as unknown as Record<string, unknown>;
-    const auth = typeof registry.getApiKeyAndHeaders === "function"
-      ? await (registry.getApiKeyAndHeaders as (m: unknown) => Promise<{ ok?: boolean; apiKey?: string }>)(haikuModel).catch(() => ({ ok: false as const, apiKey: undefined }))
-      : { ok: false as const, apiKey: undefined };
-    if (auth.ok && auth.apiKey) {
-      outcome = await synthesizeOutcome(handoff, auth.apiKey);
-    }
-  }
-
-  // 2. Activate lead-side supervisor state
-  rt.activeSupervisedHandoff = {
+  const supervised: ActiveSupervisedHandoff = {
     id: handoffId,
     spec: handoff,
-    outcome,
+    outcome: truncate(handoff, 120),
     steerCount: 0,
     recentEvents: [],
     pendingEvents: [],
     supervisionRunning: false,
   };
+  rt.activeSupervisedHandoff = supervised;
+
+  try {
+    const command = createMessage({
+      type: "command",
+      from: "lead",
+      to: "worker",
+      pairId: connection.pairId,
+      name: "handoff",
+      handoffId,
+      body: handoff,
+      payload: { handoffId, text: handoff },
+    });
+    const reply = await startRpc(command, connection.socket);
+    if (!reply.ok) throw new Error(reply.error ?? reply.body ?? `Worker rejected handoff ${handoffId}.`);
+
+    const haikuModel = getModel(SUPERVISOR_MODEL_PROVIDER, SUPERVISOR_MODEL_ID);
+    if (haikuModel) {
+      const registry = ctx.modelRegistry as unknown as Record<string, unknown>;
+      const auth = typeof registry.getApiKeyAndHeaders === "function"
+        ? await (registry.getApiKeyAndHeaders as (m: unknown) => Promise<{ ok?: boolean; apiKey?: string }>)(haikuModel).catch(() => ({ ok: false as const, apiKey: undefined }))
+        : { ok: false as const, apiKey: undefined };
+      if (auth.ok && auth.apiKey) {
+        supervised.outcome = await synthesizeOutcome(handoff, auth.apiKey);
+      }
+    }
+  } catch (error) {
+    if (rt.activeSupervisedHandoff === supervised) {
+      rt.activeSupervisedHandoff = undefined;
+    }
+    throw error;
+  }
 
   emitInfo(pi, formatBuildQueuedMarkdown(worker, connection.pairId, handoffId), BUILD_HANDOFF_MESSAGE_TYPE);
 }

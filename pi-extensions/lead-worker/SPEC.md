@@ -85,7 +85,7 @@ type PairMessageV2 = {
 - receiver emits exactly one reply
 - default timeout: 10 minutes
 - expired RPC → stale reply is warned and ignored
-- reply for unknown id → protocol error
+- reply for unknown id → protocol error and connection reset
 
 ---
 
@@ -142,9 +142,9 @@ The whole point of `lead-worker` is autonomous worker execution. An unsupervised
 1. Gather recent lead context
 2. Build spec-oriented handoff with `handoffId`
 3. Validate that lead-side supervision can run with the active lead model and credentials
-4. Send `handoff` command → wait for worker ack
-5. Synthesize a one-line outcome string from the handoff spec using a cheap model call
-6. Activate lead-side supervision state
+4. Register lead-side supervision state before issuing the handoff so early worker events cannot be missed
+5. Send `handoff` command → wait for worker ack
+6. Synthesize a one-line outcome string from the handoff spec using a cheap model call
 7. Analyze meaningful worker events and steer when needed
 
 ### Lead-side supervision
