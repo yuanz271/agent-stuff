@@ -3,22 +3,12 @@
 
 ## Summary
 
-Refactor `pi-extensions/lead-worker` to use the communication component quality of the discarded socket-based lead-worker extension while keeping the **current repo-scoped paired lead/worker architecture**.
+`lead-worker` keeps the current repo-scoped paired architecture and replaces the old mailbox transport with a worker-owned socket protocol.
 
-The old design's worker-side substrate was good:
-- persistent repo-scoped worker
-- tmux-backed process lifecycle
-- low-latency request/reply IPC
-- direct commands with explicit success/error replies
-- unsolicited worker → lead notifications
-- fail-fast protocol handling
-
-The old design's problem was the **central lead architecture**, not the worker or socket transport:
-- lead identity was durable and repo-bound
-- lead switching depended on session/cwd rebinding
-- changing cwd naturally became difficult or unsupported
-
-That central-lead problem is no longer part of the current architecture. Therefore, this refactor should change the **communication component**, not the overall paired repo-local lead/worker structure.
+Why:
+- the old worker model was good: persistent tmux-backed worker, low-latency request/reply, truthful command acks, direct worker → lead events
+- the old failure was the central lead architecture, not the worker or socket
+- the current design already removed the central lead problem, so only the communication component needed replacement
 
 ## Scope
 
@@ -29,7 +19,8 @@ That central-lead problem is no longer part of the current architecture. Therefo
 - Preserve tmux-backed worker lifecycle.
 - Preserve current public branding and primary UX:
   - `/lead`
-  - `/build`
+  - `/worker status`
+  - `/worker build`
   - `lead_worker(...)`
 - Enforce fail-fast protocol behavior for malformed or unexpected messages.
 
@@ -72,30 +63,20 @@ Use a **repo-local Unix domain socket** owned by the worker.
 - With the current repo-scoped paired model, the socket can be treated as a local communication component rather than a global coordination primitive.
 
 ### Ownership model
-- **Worker is the socket server**.
-- **Lead is the socket client** for the current paired repo context.
-- The socket is scoped to the pair runtime directory, not to a central lead identity.
+- **worker** owns the socket server
+- **lead** is a client of the repo-local worker
+- one worker allows **one active lead session** at a time
+- a different lead session gets an explicit busy error
+- same-lead reconnect must replace the stale socket instead of tripping busy
+- ownership is released on socket `close` / `error`; no heartbeat in v2
 
 ### Socket location
-
-Use a deterministic repo-local path inside the lead-worker runtime directory:
 
 ```text
 <repo>/.pi/lead-worker/<pair-id>/protocol-v2/worker.sock
 ```
 
-`pair-id` is a repo-scoped worker identity, not a lead-session identity.
-
-### Pair ownership
-
-A worker serves **one active lead connection at a time**.
-
-Required policy:
-- the first healthy lead connection owns the worker session
-- a second lead connection is rejected with an explicit busy error
-- ownership is released when the active connection closes or is declared dead
-
-This refactor does not include shared multi-lead arbitration.
+`pair-id` is repo-scoped worker identity, not lead-session identity.
 
 ## Protocol model
 
@@ -152,15 +133,15 @@ The protocol uses an explicit `pairId` rather than any lead-session identifier.
 - A repo-local worker must remain addressable across lead reconnects and runtime reloads.
 
 ### Pair identity requirements
-A valid `pairId` must:
+`pairId` must:
 - be stable for the repo-scoped worker runtime
-- survive individual lead reconnects
-- not depend on the current lead session id
-- map deterministically to the runtime directory and socket path
+- survive lead reconnects
+- not depend on lead session id
+- map deterministically to runtime paths
 
-Initial recommendation:
-- derive `pairId` from resolved project root plus a fixed worker slot identifier
-- keep it stable until the worker is explicitly reset or re-provisioned
+Current rule:
+- `pairId = sha256(realpath(projectRoot) + ":default")`
+- full hash is protocol identity; filesystem paths and runtime labels may use a short prefix
 
 ## Framing and validation
 
@@ -179,42 +160,34 @@ On receipt, validate in order:
 4. role and destination are valid for the receiving endpoint
 5. `name`, `replyTo`, and `ok` are present exactly when required
 6. `pairId` matches the active runtime
-7. message ownership matches the active lead connection
+7. message ownership matches the active lead session
 
 Any failure is a **protocol error**, not a warning.
 
 ## Request lifecycle
 
-### Request path
-1. sender allocates unique `id`
-2. sender transmits `request`
-3. sender records pending request with timeout
-4. receiver handles the request
-5. receiver emits one `reply`
-6. sender resolves or rejects the pending request
-
-### Timeout
-- Blocking requests and commands must time out explicitly.
-- Default timeout should remain aligned with the historical lead-worker expectation: **10 minutes**.
-- On timeout:
-  - reject the pending caller
-  - mark the request closed as expired
-  - a later reply for that expired id is surfaced visibly as a stale reply and ignored
-
-Unknown replies for ids that were never issued remain protocol errors.
+- sender allocates `id`, sends request/command, and records one pending RPC
+- receiver emits exactly one reply
+- default timeout: **10 minutes**
+- timeout expires the RPC locally; a later reply becomes a visible stale reply and is ignored
+- a reply for an id that was never issued is a protocol error
 
 ## Command model
 
 Commands are operational control messages that execute directly on the target side and reply with explicit success/failure.
 
-### Initial command set
-At minimum, support commands equivalent to the useful old worker control surface:
+### Command set
+Current worker commands:
 - `status`
 - `interrupt`
 - `thinking`
 - `model`
+- `handoff`
+- `slash_command`
 
-This command set may expand later, but each command must remain explicitly named and validated.
+Why they exist:
+- `handoff` is the structured delegation primitive
+- `slash_command` is an optional escape hatch, not a core abstraction; it exists only to reuse worker-local slash commands without growing the protocol surface
 
 ### Command reply shape
 A successful command reply should set:
@@ -233,72 +206,56 @@ A failed command reply should set:
 Events are unsolicited notifications emitted by either side, though worker → lead events are the primary use case.
 
 ### Important worker events
-- readiness
-- handoff started
-- blocker
-- clarification needed
-- completion
-- crash/restart notice (if detectable)
+- `readiness`
+- `progress`
+- `blocker`
+- `clarification_needed`
+- terminal updates: `completed` / `failed` / `cancelled`
+- `busy` for rejected second-lead attachment
 
-### Constraints
-- Events must not block waiting for a reply.
-- Events should still be validated like any other message.
-- Completion events associated with `/build` should include `handoffId` whenever available.
+Events never wait for replies. Worker-build-related events carry `handoffId` when available.
 
 ## Public surface mapping
 
 The public UX stays the same, but it should be reimplemented on top of the typed protocol.
 
 ### Tool
-Extend `lead_worker(...)` with structured actions:
-- existing control actions remain:
-  - `start`
-  - `on`
-  - `status`
-  - `off`
-  - `stop`
-- new communication actions:
-  - `message` — send a one-way paired `event`
-  - `ask` — send a blocking `request`
-  - `command` — send a blocking `command`
+`lead_worker(...)` exposes:
+- control: `start`, `on`, `status`, `off`, `stop`
+- communication: `message`, `ask`, `command`, `reply`
+
+Policy:
+- `ask` / `command` / `/worker build` auto-start the worker if needed
+- `message` requires an already-available worker connection
 
 ### Slash commands
-- `/lead` remains the main mode control command.
-- `/build` becomes a protocol-backed delegated operation rather than an ad hoc mailbox drop.
-- Worker control slash commands, if added later, must delegate to the same protocol layer rather than bypassing it.
+- `/lead` remains the mode control command.
+- `/worker status` is the direct worker status view.
+- `/worker build` is the high-level delegation wrapper.
+- `/worker /<command>` remains the escape hatch for worker-local slash commands that are not worth promoting into first-class protocol commands
 
-## `/build` semantics under the new protocol
+## `/worker` subcommands
 
-`/build` is a high-level wrapper on top of the communication layer.
+### `/worker status`
+Direct status query over protocol v2. This exists so the lead can inspect worker state without packaging a task handoff.
 
-### Required behavior
-1. Gather recent lead context and explicit build instructions.
-2. Construct a handoff payload that contains:
-   - goal
-   - relevant files
-   - constraints
-   - implementation steps
-   - validation expectations
-   - `handoffId`
-3. Send the handoff to the worker using the typed protocol.
-4. Track the handoff by `handoffId` until one terminal outcome is observed.
+### `/worker build`
+High-level delegation wrapper over the lower-level `handoff` command.
 
-### Handoff event model
-Allowed non-terminal events:
-- `handoff_started`
-- `blocker`
-- `clarification_needed`
-- `progress`
+Behind the scenes it:
+- gathers recent lead context
+- adds explicit build instructions from the command line
+- packages a spec-oriented handoff with `handoffId`
+- sends one typed `handoff` command to the worker
 
-Required terminal event set:
-- `completed`
-- `failed`
-- `cancelled`
+Rules:
+- the lead sends **intent/spec only**, never copy-paste implementation blocks
+- a handoff may emit interim events (`progress`, `blocker`, `clarification_needed`)
+- a handoff must emit exactly one terminal event: `completed`, `failed`, or `cancelled`
+- once the worker accepts the handoff, execution is worker-owned; lead disconnect only loses observation, not execution
 
-Each handoff may emit zero or more non-terminal events and **exactly one** terminal event.
-
-### Constraint carried forward from current design
-The lead must send **intent/specification only**, not concrete code blocks or patches to paste blindly.
+### Optional command forwarding
+`slash_command` exists to preserve coverage without forcing the lead protocol to mirror every useful worker-local slash command. Keep it as an escape hatch; add explicit `/worker <subcommand>` aliases only for high-value frequent operations.
 
 ## Error semantics
 
@@ -324,20 +281,15 @@ These should return explicit error replies rather than corrupting the connection
 
 ## State and recovery
 
-### Worker durability
-- Worker process is durable and tmux-backed.
-- Socket lifetime is tied to the live worker process.
-
-### Lead reconnect behavior
-- Lead may reconnect to the worker socket after a disconnect or runtime reload.
-- Reconnection is a new transport connection, not a continuation of the old stream.
-- In-flight blocking requests on the disconnected lead side must be rejected immediately.
-- Reconnect does not change `pairId`; it only establishes a new active lead connection.
-
-### Stale socket cleanup
-- Stale socket files in the protocol v2 runtime path should be cleaned up when starting the worker server.
-- Cleanup must surface unexpected filesystem failures rather than silently ignoring them.
-- Old mailbox artifacts are not part of cleanup correctness; they are ignored by the new transport.
+- worker is durable and tmux-backed; socket lifetime follows the live worker process
+- compact lead status should expose logical state, not full tmux runtime labels
+- tmux session naming should reuse the same pair-derived identity prefix rather than introducing a second unrelated hash
+- lead reconnect is a new transport connection to the same `pairId`
+- reconnect from the **same lead session** must take over the worker connection cleanly
+- reconnect from a **different lead session** must get a busy error unless ownership is explicitly released
+- in-flight RPCs on a disconnected lead fail immediately
+- stale `worker.sock` in protocol-v2 path is cleaned on worker startup
+- old mailbox artifacts are ignored by design
 
 ## Migration plan
 
@@ -367,21 +319,21 @@ Use a versioned subpath for the new communication substrate:
 
 The versioned path is the only authoritative location for the new transport.
 
-## Validation plan
+## Validation
 
-Minimum validation before considering the refactor complete:
-
-1. **Type-check** the extension entrypoint and communication module.
-2. **Happy-path worker startup** creates the socket and accepts a lead connection.
-3. **Blocking request/reply** succeeds end-to-end.
-4. **Command success/error** is reported truthfully.
-5. **Worker unsolicited event** reaches the lead visibly.
-6. **Malformed message** causes visible protocol failure.
-7. **Unexpected reply** causes visible protocol failure.
-8. **Disconnect during in-flight request** rejects pending caller promptly.
-9. **`/build` handoff** allows interim events and produces exactly one terminal event.
-10. **Second lead attach attempt** is rejected cleanly while another lead owns the worker connection.
-11. **Old mailbox artifacts present on disk** do not affect protocol v2 operation.
+Required checks:
+1. type-check entrypoint + protocol module
+2. worker startup creates socket and accepts one lead
+3. same-lead reconnect replaces stale ownership cleanly
+4. different-lead attach is rejected cleanly
+5. blocking `ask` / `command` round-trips succeed
+6. command success/error replies are truthful
+7. unsolicited worker events surface visibly on lead
+8. malformed frames/messages fail loudly
+9. unknown replies fail loudly; expired replies are warned and ignored
+10. disconnect rejects in-flight RPCs promptly
+11. `/worker build` blocker and success paths both propagate with correct `handoffId`
+12. old mailbox artifacts do not affect v2
 
 ## Non-goals and future work
 

@@ -5,7 +5,7 @@ import { promises as fs } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import type { LeadWorkerSettings } from "./settings.js";
 
-const STATE_VERSION = 1;
+const STATE_VERSION = 2;
 const CAPTURE_LINES = 40;
 const LOG_TAIL_BYTES = 32 * 1024;
 const TMUX_FORMAT = "#{session_id}\t#{window_id}\t#{pane_id}";
@@ -13,6 +13,8 @@ const ANSI_CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const ANSI_OSC_RE = /\x1b\][^\x07]*(?:\x07|\x1b\\)/g;
 const CONTROL_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
 const WORKER_BASE_NAME = "worker";
+const DEFAULT_WORKER_SLOT = "default";
+const PAIR_ID_PATH_CHARS = 16;
 
 export type LeadWorkerAction = "start" | "status" | "stop";
 
@@ -23,8 +25,9 @@ export type LeadSessionBinding = {
 
 export type WorkerState = {
   version: number;
+  pairId: string;
   projectRoot: string;
-  leadSessionId: string;
+  leadSessionId?: string;
   leadSessionFile?: string;
   tmuxSession: string;
   tmuxSessionId?: string;
@@ -35,6 +38,8 @@ export type WorkerState = {
   launchScript: string;
   systemPromptFile: string;
   startupPromptFile: string;
+  protocolDir: string;
+  socketPath: string;
   agentName: string;
   model: string;
   thinking: ThinkingLevel;
@@ -48,8 +53,9 @@ export type WorkerStatus = {
   running: boolean;
   alreadyRunning?: boolean;
   message: string;
+  pairId: string;
   projectRoot: string;
-  leadSessionId: string;
+  leadSessionId?: string;
   leadSessionFile?: string;
   tmuxSession: string;
   tmuxSessionId?: string;
@@ -60,6 +66,8 @@ export type WorkerStatus = {
   launchScript: string;
   systemPromptFile: string;
   startupPromptFile: string;
+  protocolDir: string;
+  socketPath: string;
   agentName: string;
   model: string;
   thinking: ThinkingLevel;
@@ -69,22 +77,26 @@ export type WorkerStatus = {
   backlog: string[];
 };
 
-export type PairChannelPaths = {
+export type PairRuntimePaths = {
+  pairId: string;
   projectRoot: string;
   runtimeDir: string;
-  leadInbox: string;
-  workerInbox: string;
+  protocolDir: string;
+  socketPath: string;
 };
 
 type Paths = {
+  pairId: string;
   projectRoot: string;
   runtimeDir: string;
+  protocolDir: string;
   stateFile: string;
   logFile: string;
   launchScript: string;
   systemPromptFile: string;
   startupPromptFile: string;
   sessionFile: string;
+  socketPath: string;
   tmuxSession: string;
 };
 
@@ -110,12 +122,16 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
-export function leadSessionTag(leadSession: LeadSessionBinding): string {
-  return createHash("sha1").update(leadSession.sessionId).digest("hex").slice(0, 10);
+export function computePairId(projectRoot: string, workerSlot = DEFAULT_WORKER_SLOT): string {
+  return createHash("sha256").update(`${projectRoot}:${workerSlot}`).digest("hex");
 }
 
-function getWorkerAgentName(_settings: LeadWorkerSettings, leadSession: LeadSessionBinding): string {
-  return `${WORKER_BASE_NAME}-${leadSessionTag(leadSession)}`;
+export function pairIdTag(pairId: string): string {
+  return pairId.slice(0, PAIR_ID_PATH_CHARS);
+}
+
+function getWorkerAgentName(_settings: LeadWorkerSettings, pairId: string): string {
+  return `${WORKER_BASE_NAME}-${pairId.slice(0, 10)}`;
 }
 
 function getWorkerModel(settings: LeadWorkerSettings): string {
@@ -126,44 +142,43 @@ function getWorkerThinking(settings: LeadWorkerSettings): ThinkingLevel {
   return settings.worker.thinking;
 }
 
-function tmuxSessionName(projectRoot: string, workerAgentName: string): string {
+function tmuxSessionName(projectRoot: string, pairId: string): string {
   const projectBase = basename(projectRoot)
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 18) || "project";
-  const agentBase = workerAgentName
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 12) || "worker";
-  const suffix = createHash("sha1").update(`${projectRoot}:${workerAgentName}`).digest("hex").slice(0, 8);
-  return `lead-worker-${agentBase}-${projectBase}-${suffix}`;
+  return `lead-worker-${projectBase}-${pairId.slice(0, 10)}`;
 }
 
-function buildPaths(projectRoot: string, settings: LeadWorkerSettings, leadSession: LeadSessionBinding): Paths {
-  const sessionTag = leadSessionTag(leadSession);
-  const runtimeDir = join(projectRoot, ".pi", "lead-worker", sessionTag);
-  const workerAgentName = getWorkerAgentName(settings, leadSession);
+function buildPaths(projectRoot: string, settings: LeadWorkerSettings): Paths {
+  const pairId = computePairId(projectRoot);
+  const workerAgentName = getWorkerAgentName(settings, pairId);
+  const runtimeDir = join(projectRoot, ".pi", "lead-worker", pairIdTag(pairId));
+  const protocolDir = join(runtimeDir, "protocol-v2");
 
   return {
+    pairId,
     projectRoot,
     runtimeDir,
+    protocolDir,
     stateFile: join(runtimeDir, "worker-state.json"),
     logFile: join(runtimeDir, "worker.log"),
     launchScript: join(runtimeDir, "launch-worker.sh"),
     systemPromptFile: join(runtimeDir, "worker-system-prompt.md"),
     startupPromptFile: join(runtimeDir, "worker-startup.md"),
     sessionFile: join(projectRoot, ".pi", "sessions", `${workerAgentName}.jsonl`),
-    tmuxSession: tmuxSessionName(projectRoot, workerAgentName),
+    socketPath: join(protocolDir, "worker.sock"),
+    tmuxSession: tmuxSessionName(projectRoot, pairId),
   };
 }
 
 function baseState(paths: Paths, settings: LeadWorkerSettings, leadSession: LeadSessionBinding): WorkerState {
   return {
     version: STATE_VERSION,
+    pairId: paths.pairId,
     projectRoot: paths.projectRoot,
-    leadSessionId: leadSession.sessionId,
+    ...(leadSession.sessionId ? { leadSessionId: leadSession.sessionId } : {}),
     ...(leadSession.sessionFile ? { leadSessionFile: leadSession.sessionFile } : {}),
     tmuxSession: paths.tmuxSession,
     sessionFile: paths.sessionFile,
@@ -171,7 +186,9 @@ function baseState(paths: Paths, settings: LeadWorkerSettings, leadSession: Lead
     launchScript: paths.launchScript,
     systemPromptFile: paths.systemPromptFile,
     startupPromptFile: paths.startupPromptFile,
-    agentName: getWorkerAgentName(settings, leadSession),
+    protocolDir: paths.protocolDir,
+    socketPath: paths.socketPath,
+    agentName: getWorkerAgentName(settings, paths.pairId),
     model: getWorkerModel(settings),
     thinking: getWorkerThinking(settings),
   };
@@ -182,7 +199,6 @@ async function exec(pi: ExtensionAPI, command: string, args: string[], cwd?: str
   return {
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",
-    // Treat undefined exit code (timeout, internal error) as failure.
     code: result.code ?? 1,
   };
 }
@@ -197,18 +213,17 @@ export async function resolveProjectRoot(pi: ExtensionAPI, cwd: string): Promise
   }
 }
 
-export async function resolvePairChannelPaths(
-  pi: ExtensionAPI,
-  cwd: string,
-  leadSession: LeadSessionBinding,
-): Promise<PairChannelPaths> {
+export async function resolvePairRuntimePaths(pi: ExtensionAPI, cwd: string): Promise<PairRuntimePaths> {
   const projectRoot = await resolveProjectRoot(pi, cwd);
-  const runtimeDir = join(projectRoot, ".pi", "lead-worker", leadSessionTag(leadSession));
+  const pairId = computePairId(projectRoot);
+  const runtimeDir = join(projectRoot, ".pi", "lead-worker", pairIdTag(pairId));
+  const protocolDir = join(runtimeDir, "protocol-v2");
   return {
+    pairId,
     projectRoot,
     runtimeDir,
-    leadInbox: join(runtimeDir, "lead-inbox"),
-    workerInbox: join(runtimeDir, "worker-inbox"),
+    protocolDir,
+    socketPath: join(protocolDir, "worker.sock"),
   };
 }
 
@@ -229,11 +244,8 @@ async function loadState(stateFile: string): Promise<WorkerState | null> {
   try {
     raw = await fs.readFile(stateFile, "utf8");
   } catch {
-    // File not found or unreadable — no persisted state.
     return null;
   }
-  // Let JSON.parse throw on corrupt data so callers see the failure
-  // instead of silently losing temporal metadata and tmux pane IDs.
   return JSON.parse(raw) as WorkerState;
 }
 
@@ -270,12 +282,6 @@ async function captureBacklog(pi: ExtensionAPI, cwd: string, state: WorkerState)
   return readTailFromFile(state.logFile);
 }
 
-/**
- * Infer the command and arguments needed to re-invoke the current Pi process.
- * Heuristic: checks process.execPath against known runtimes (node, bun).
- * May need a code change if Pi is invoked
- * through an unusual runtime or wrapper not covered here.
- */
 function getPiInvocation(): { command: string; argsPrefix: string[] } {
   const currentEntry = process.argv[1];
   const execName = basename(process.execPath).toLowerCase();
@@ -301,20 +307,20 @@ function getPiInvocation(): { command: string; argsPrefix: string[] } {
   };
 }
 
-function buildSystemPrompt(settings: LeadWorkerSettings, leadSession: LeadSessionBinding): string {
-  const workerAgentName = getWorkerAgentName(settings, leadSession);
+function buildSystemPrompt(settings: LeadWorkerSettings, pairId: string): string {
+  const workerAgentName = getWorkerAgentName(settings, pairId);
   const lines = [
     `You are ${workerAgentName}, the persistent worker session for this project.`,
-    `You are dedicated to lead session ${leadSession.sessionId}.`,
+    `Your stable pair id is ${pairId}.`,
     "",
     "Role:",
-    "- You are the write-enabled worker counterpart to the lead session.",
-    "- Preserve continuity across turns; this session is meant to accumulate implementation context over time.",
-    "- Use lead_worker({ action: \"message\", message: \"...\" }) for concise direct messages to the paired lead when needed.",
+    "- You are the write-enabled worker counterpart for this repository.",
+    '- Use lead_worker({ action: "message", message: "..." }) for concise one-way updates to the active lead.',
+    '- Use lead_worker({ action: "reply", replyTo: "...", message: "..." }) when answering a direct worker-side request.',
     "- Do not send acknowledgements or chatter.",
-    "- For each delegated handoff, you MUST send exactly one completion message to the lead when you finish or stop.",
-    "- Completion message format: handoff_id, status (done/blocked), files changed, validation run + result, and any blocker/next action.",
-    "- You may send additional messages only for material blockers or concrete clarification questions.",
+    "- For each delegated handoff, you MUST send exactly one terminal update to the lead when you finish or stop.",
+    "- Terminal update must include: handoff_id, status (completed/failed/cancelled), files changed, validation run + result, and any blocker/next action.",
+    "- You may send interim updates only for material blockers, clarifications, or useful progress.",
     "- Treat lead messages as intent/specification, not code to paste blindly.",
     "- If lead includes code-like text, extract intent/constraints and implement natively in the repository.",
     "- Execute concrete changes, tests, and diagnostics. Do not start autonomous worker swarms unless explicitly asked.",
@@ -328,17 +334,18 @@ function buildSystemPrompt(settings: LeadWorkerSettings, leadSession: LeadSessio
   return lines.join("\n");
 }
 
-function buildStartupPrompt(settings: LeadWorkerSettings, leadSession: LeadSessionBinding): string {
-  const workerAgentName = getWorkerAgentName(settings, leadSession);
+function buildStartupPrompt(settings: LeadWorkerSettings, pairId: string): string {
+  const workerAgentName = getWorkerAgentName(settings, pairId);
   const lines = [
     `You are booting as ${workerAgentName}, the persistent worker session for this project.`,
-    `This worker is reserved for lead session ${leadSession.sessionId}.`,
+    `This worker serves pair id ${pairId}.`,
     "",
     "Startup checklist:",
-    `1. Reply with a short readiness note that explicitly says you are paired with lead session ${leadSession.sessionId} and ready for direct paired lead-worker messages.`,
+    `1. Reply with a short readiness note that explicitly says you are ready for pair ${pairId}.`,
     '2. If you need to contact the lead later, use lead_worker({ action: "message", message: "..." }).',
-    '3. For every delegated handoff, send exactly one completion message back to the lead with: handoff_id, status, files changed, validation result, and blockers/next action (if any).',
-    "4. Then wait for further instructions.",
+    '3. If you receive a direct request that expects an answer, respond with lead_worker({ action: "reply", replyTo: "...", message: "..." }).',
+    '4. For every delegated handoff, send exactly one terminal update back to the lead with: handoff_id, status, files changed, validation result, and blockers/next action (if any).',
+    "5. Then wait for further instructions.",
     "",
     "Do not modify files during this startup handshake.",
   ];
@@ -352,11 +359,12 @@ function buildStartupPrompt(settings: LeadWorkerSettings, leadSession: LeadSessi
 
 async function writeRuntimeFiles(paths: Paths, settings: LeadWorkerSettings, leadSession: LeadSessionBinding): Promise<void> {
   const invocation = getPiInvocation();
-  const workerAgentName = getWorkerAgentName(settings, leadSession);
-  const systemPrompt = buildSystemPrompt(settings, leadSession);
-  const startupPrompt = buildStartupPrompt(settings, leadSession);
+  const workerAgentName = getWorkerAgentName(settings, paths.pairId);
+  const systemPrompt = buildSystemPrompt(settings, paths.pairId);
+  const startupPrompt = buildStartupPrompt(settings, paths.pairId);
   const startupBannerLines = [
-    `[lead-worker] ${workerAgentName} paired with lead session ${leadSession.sessionId}`,
+    `[lead-worker] ${workerAgentName} pair ${paths.pairId}`,
+    ...(leadSession.sessionId ? [`[lead-worker] started by lead session ${leadSession.sessionId}`] : []),
     ...(leadSession.sessionFile ? [`[lead-worker] lead session file ${leadSession.sessionFile}`] : []),
   ];
   const fullArgs = [
@@ -376,13 +384,14 @@ async function writeRuntimeFiles(paths: Paths, settings: LeadWorkerSettings, lea
     "set -euo pipefail",
     `cd ${shellQuote(paths.projectRoot)}`,
     ...startupBannerLines.map((line) => `printf '%s\\n' ${shellQuote(line)}`),
-    `exec env PI_AGENT_NAME=${shellQuote(workerAgentName)} PI_LEAD_WORKER_ROLE=${shellQuote("worker")} PI_LEAD_WORKER_LEAD_SESSION_ID=${shellQuote(leadSession.sessionId)} ${shellQuote(invocation.command)} ${fullArgs
+    `exec env PI_AGENT_NAME=${shellQuote(workerAgentName)} PI_LEAD_WORKER_ROLE=${shellQuote("worker")} PI_LEAD_WORKER_PAIR_ID=${shellQuote(paths.pairId)} ${shellQuote(invocation.command)} ${fullArgs
       .map(shellQuote)
       .join(" ")}`,
     "",
   ].join("\n");
 
   await fs.mkdir(join(paths.projectRoot, ".pi", "sessions"), { recursive: true });
+  await fs.mkdir(paths.protocolDir, { recursive: true });
   await fs.mkdir(paths.runtimeDir, { recursive: true });
   await fs.writeFile(paths.systemPromptFile, systemPrompt, "utf8");
   await fs.writeFile(paths.startupPromptFile, startupPrompt, "utf8");
@@ -406,11 +415,8 @@ function withStateOverrides(
   state: WorkerState | null,
   patch: Partial<WorkerState>,
 ): WorkerState {
-  // Start from config-derived defaults, then selectively preserve temporal/
-  // runtime fields from the existing persisted state, then apply the patch.
   return {
     ...baseState(paths, settings, leadSession),
-    // Preserve only temporal and runtime fields from persisted state:
     ...(state
       ? {
           startedAt: state.startedAt,
@@ -431,7 +437,7 @@ async function resolveState(
   leadSession: LeadSessionBinding,
 ): Promise<{ paths: Paths; state: WorkerState; warnings: string[] }> {
   const projectRoot = await resolveProjectRoot(pi, cwd);
-  const paths = buildPaths(projectRoot, settings, leadSession);
+  const paths = buildPaths(projectRoot, settings);
   const existing = await loadState(paths.stateFile);
   const state = withStateOverrides(paths, settings, leadSession, existing, {});
   const warnings: string[] = [];
@@ -465,6 +471,7 @@ async function buildStatus(
     running,
     alreadyRunning,
     message: describeAction(action, state.agentName, running, alreadyRunning),
+    pairId: state.pairId,
     projectRoot: state.projectRoot,
     leadSessionId: state.leadSessionId,
     leadSessionFile: state.leadSessionFile,
@@ -477,6 +484,8 @@ async function buildStatus(
     launchScript: state.launchScript,
     systemPromptFile: state.systemPromptFile,
     startupPromptFile: state.startupPromptFile,
+    protocolDir: state.protocolDir,
+    socketPath: state.socketPath,
     agentName: state.agentName,
     model: state.model,
     thinking: state.thinking,
@@ -551,7 +560,7 @@ export async function startWorker(
     [
       ...warnings,
       ...pipeWarnings,
-      "Startup is asynchronous. Once the worker reports ready, use /build or lead_worker({ action: \"message\", message: \"...\" }) from the paired lead session to send work.",
+      "Startup is asynchronous. Once the worker socket is ready, use /worker build, lead_worker({ action: \"message\", ... }), lead_worker({ action: \"ask\", ... }), or lead_worker({ action: \"command\", ... }) from the paired lead session.",
     ],
   );
 }
