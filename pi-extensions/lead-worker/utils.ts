@@ -594,6 +594,15 @@ export async function stopWorker(
   const nextState = withStateOverrides(paths, settings, leadSession, state, {
     lastStoppedAt: new Date().toISOString(),
   });
+  try {
+    await fs.unlink(paths.socketPath);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code !== "ENOENT") {
+      throw new Error(`Failed to remove worker socket ${paths.socketPath}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   await saveState(paths.stateFile, nextState);
   return buildStatus(pi, cwd, "stop", nextState, warnings);
 }
