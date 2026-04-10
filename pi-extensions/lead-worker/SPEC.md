@@ -5,11 +5,7 @@
 
 `lead-worker` uses a repo-scoped paired lead/worker architecture over a worker-owned Unix domain socket with typed framed messages.
 
-The whole point of the extension is to let the worker run autonomously. `/worker build` is therefore always supervised — both on the worker side (via `pi-supervisor`) and on the lead side (via event analysis).
-
-## Prerequisites
-
-- **`pi-supervisor` must be installed** in the worker session for worker-side supervision to function. Without it, `/worker build` will still delegate and the lead-side analysis will still run, but the worker will not self-correct mid-run.
+The whole point of the extension is to let the worker run autonomously. `/worker build` is therefore always supervised by the lead via event analysis and steering.
 
 ## Architecture
 
@@ -147,14 +143,8 @@ The whole point of `lead-worker` is autonomous worker execution. An unsupervised
 2. Build spec-oriented handoff with `handoffId`
 3. Send `handoff` command → wait for worker ack
 4. Synthesize a one-line outcome string from the handoff spec using a cheap model call
-5. Send `slash_command` `/supervise <outcome>` → activates `pi-supervisor` on worker side
-6. Activate lead-side event analysis
-
-### Worker-side supervision (`pi-supervisor`)
-- requires `pi-supervisor` installed in the worker session (see Prerequisites)
-- watches the worker's own tool cycles for mid-run drift
-- corrects within the run before the worker goes idle
-- signals done when the stated outcome is met
+5. Activate lead-side supervision state
+6. Analyze meaningful worker events and steer when needed
 
 ### Lead-side supervision
 The lead analyzes incoming worker events against the handoff spec:
@@ -168,21 +158,22 @@ Actions:
 - `continue` → stay silent
 - `steer` → send steering message to worker via `lead_worker({ action: "message" })`
 - `done` → confirm goal met, notify human, stop watching
-- `escalate` → surface to human lead with summary (follows `pi-supervisor` stagnation policy)
+- `escalate` → surface to human lead with summary after repeated failed steering attempts
 
 ### Outcome string derivation
 When no explicit instructions are given to `/worker build`, the outcome string is synthesized from the handoff spec via a **cheap Haiku model call** — one-shot, low-cost, accurate enough for a one-line outcome statement. This is intentionally a different model from the lead-side event analysis, which uses the current lead model for deeper context-aware judgment.
 
-### Two-layer supervision
+### Single-supervisor architecture
 
-| Layer | Watches | Corrects | Decides done |
-|---|---|---|---|
-| Worker-side (`pi-supervisor`) | worker's own tool cycles | mid-run drift | worker thinks it's done |
-| Lead-side (event analysis) | typed worker→lead events | wrong direction / wrong goal | lead confirms goal is met |
+| Component | Responsibility |
+|---|---|
+| Lead | holds spec, observes worker events, decides `continue`/`steer`/`done`/`escalate` |
+| Worker | executes, emits typed events, accepts `steer`, asks for clarification, reports terminal outcome |
 
-The layers are complementary:
-- worker-side catches micro-drift within a run
-- lead-side catches macro-drift across runs and validates the final result
+This keeps supervision observable and attributable:
+- the lead owns the control policy
+- the worker remains a transparent executor
+- every correction is visible on the paired channel
 
 ---
 
@@ -247,10 +238,11 @@ The layers are complementary:
 8. expired replies are warned and ignored; unknown replies are hard errors
 9. disconnect rejects in-flight RPCs promptly
 10. queued worker events are replayed after reconnect
-11. `/worker build` activates both worker-side and lead-side supervision
+11. `/worker build` activates lead-side supervision state immediately after handoff ack
 12. outcome string is synthesized correctly from lead context
-13. lead-side steer is delivered to worker and visible in worker session
-14. lead-side escalation surfaces to human when stagnation threshold is reached
+13. lead-side supervision analyzes `progress` as well as blocker/terminal events
+14. lead-side steer is delivered to worker and visible in worker session
+15. lead-side escalation surfaces to human when stagnation threshold is reached
 
 ---
 
@@ -263,8 +255,8 @@ The layers are complementary:
 - same-lead reconnect takes over cleanly; different-lead gets busy error
 - worker events queued to disk across lead disconnects
 - `/worker build` is always supervised — no unsupervised delegation
-- worker-side supervision via `pi-supervisor` (must be installed in worker session)
-- lead-side supervision via direct model call on **current lead model**
-- outcome string synthesized from handoff spec via cheap **Haiku** call — separate from lead analysis model by design
-- escalation follows `pi-supervisor` stagnation policy
-- `pi-supervisor` as a standalone top-level extension is redundant once lead-worker supervision is implemented; it should be retired from the extension list at that point, kept only as a worker-session dependency
+- supervision is lead-owned; the worker does not run a second internal supervisor
+- lead-side supervision uses direct model calls on the **current lead model**
+- outcome string is synthesized from the handoff spec via cheap **Haiku** call — separate from lead analysis model by design
+- escalation follows a lead-owned stagnation policy after repeated unsuccessful steering
+- keeping supervision entirely on the lead preserves observability, attribution, and clean role separation

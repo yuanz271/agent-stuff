@@ -1500,6 +1500,11 @@ async function handleIncomingMessage(pi: ExtensionAPI, message: PairMessageV2, s
         notify(ctx, rt.connectionError, "error");
       } else if (eventName === "progress" || eventName === "readiness") {
         notify(ctx, message.body ?? `Worker event: ${eventName}`, "info");
+        if (eventName === "progress") {
+          void maybeRunLeadSupervision(pi, ctx, message).catch((err) => {
+            notify(ctx, `lead supervisor error: ${err instanceof Error ? err.message : String(err)}`, "warning");
+          });
+        }
       } else {
         deliverIncomingProtocolMessage(pi, message, true);
         maybeRelayWorkerEventToUser(pi, message);
@@ -1986,12 +1991,6 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
     steerCount: 0,
     recentEvents: [],
   };
-
-  // 3. Activate worker-side pi-supervisor (best effort — not all workers have it installed)
-  const superviseResult = await sendCommandAction(pi, ctx, "slash_command", `/supervise ${outcome}`).catch((err: unknown) => ({ ok: false, error: err instanceof Error ? err.message : String(err) }));
-  if (!(superviseResult as any).ok) {
-    notify(ctx, `Worker-side supervision unavailable (pi-supervisor may not be installed): ${(superviseResult as any).error ?? ""}`, "warning");
-  }
 
   emitInfo(pi, formatBuildQueuedMarkdown(worker, connection.pairId, handoffId), BUILD_HANDOFF_MESSAGE_TYPE);
 }
