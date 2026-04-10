@@ -1,5 +1,5 @@
-# MAGIC DOC: Lead-Worker Communication Refactor Spec
-*Focus on communication architecture, protocol semantics, and migration boundaries for the current repo-scoped lead-worker extension.*
+# Lead-Worker Communication Spec
+*Communication architecture, protocol semantics, and migration boundaries for the current repo-scoped lead-worker extension.*
 
 ## Summary
 

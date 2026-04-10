@@ -43,7 +43,6 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 * [`pi-supervisor`](pi-extensions/pi-supervisor) - Outcome-focused supervisory overlay that monitors runs and injects steering via `/supervise`.
 * [`pi-schedule-prompt`](pi-extensions/pi-schedule-prompt) - Schedule one-shot or recurring future prompts with `schedule_prompt` and manage them via `/schedule-prompt`.
 * [`session-breakdown.ts`](pi-extensions/session-breakdown.ts) - TUI for 7/30/90-day session and cost analysis with usage graph.
-* [`magic-docs`](pi-extensions/magic-docs) - Self-maintaining markdown docs: mark any `.md` file with `# MAGIC DOC:` and pi tracks it during the session, uses a foreground Haiku judge to decide whether it needs refresh, and runs rewrites in a detached background Pi session with terse completion notices.
 * [`side-chat`](pi-extensions/side-chat) - Fork the current conversation into a non-capturing overlay side chat (`Alt+/`, `/side`) while the main agent keeps working.
 
 ## Docs
