@@ -1,5 +1,5 @@
-# Lead-Worker Communication Spec
-*Communication architecture, protocol semantics, and supervision design for the current repo-scoped lead-worker extension.*
+# Lead-Worker Spec
+*Architecture, protocol semantics, and supervision design for the current repo-scoped lead-worker extension.*
 
 ## Summary
 
@@ -7,10 +7,14 @@
 
 The whole point of the extension is to let the worker run autonomously. `/worker build` is therefore always supervised — both on the worker side (via `pi-supervisor`) and on the lead side (via event analysis).
 
+## Prerequisites
+
+- **`pi-supervisor` must be installed** in the worker session for worker-side supervision to function. Without it, `/worker build` will still delegate and the lead-side analysis will still run, but the worker will not self-correct mid-run.
+
 ## Architecture
 
 ### Roles
-- **lead** — read-only human-driven session; holds the spec; steers the worker
+- **lead** — read-only session; holds the spec, initiates delegation, and steers the worker (may operate autonomously during supervised worker execution)
 - **worker** — persistent tmux-backed session; executes tasks; emits typed progress events
 
 ### Why worker-owned socket
@@ -122,6 +126,9 @@ Worker → lead events carry `handoffId` when associated with a delegated task.
 - `cancelled` — terminal: task was abandoned
 - `busy` — rejected second-lead attachment attempt
 
+### Lead → worker steering
+When the lead-side supervisor decides to steer, it sends a `message` event to the worker via `lead_worker({ action: "message", name: "steer", message: "..." })`. This is not a named worker event but a lead-originated event delivered over the same protocol channel.
+
 ### Terminal vs interim
 Each handoff emits zero or more interim events and exactly one terminal event.
 
@@ -144,7 +151,7 @@ The whole point of `lead-worker` is autonomous worker execution. An unsupervised
 6. Activate lead-side event analysis
 
 ### Worker-side supervision (`pi-supervisor`)
-- `pi-supervisor` must be installed in the worker session
+- requires `pi-supervisor` installed in the worker session (see Prerequisites)
 - watches the worker's own tool cycles for mid-run drift
 - corrects within the run before the worker goes idle
 - signals done when the stated outcome is met
@@ -153,7 +160,7 @@ The whole point of `lead-worker` is autonomous worker execution. An unsupervised
 The lead analyzes incoming worker events against the handoff spec:
 
 - input: handoff spec + recent worker events
-- model: current lead model (whatever is active)
+- model: **current lead model** — heavier, context-aware, appropriate for cross-run goal validation
 - output: `{ action: "continue" | "steer" | "done" | "escalate", message?, confidence, reasoning }`
 - trigger: on every meaningful worker event (`progress`, `blocker`, `clarification_needed`, terminal)
 
@@ -164,7 +171,7 @@ Actions:
 - `escalate` → surface to human lead with summary (follows `pi-supervisor` stagnation policy)
 
 ### Outcome string derivation
-When no explicit instructions are given to `/worker build`, the outcome string is synthesized from the handoff spec via a cheap model call (Haiku). This avoids requiring the user to type a separate outcome string.
+When no explicit instructions are given to `/worker build`, the outcome string is synthesized from the handoff spec via a **cheap Haiku model call** — one-shot, low-cost, accurate enough for a one-line outcome statement. This is intentionally a different model from the lead-side event analysis, which uses the current lead model for deeper context-aware judgment.
 
 ### Two-layer supervision
 
@@ -256,7 +263,8 @@ The layers are complementary:
 - same-lead reconnect takes over cleanly; different-lead gets busy error
 - worker events queued to disk across lead disconnects
 - `/worker build` is always supervised — no unsupervised delegation
-- worker-side supervision via `pi-supervisor` (must be installed)
-- lead-side supervision via direct model call on current lead model
-- outcome derived from handoff spec via cheap model synthesis, not user-typed string
+- worker-side supervision via `pi-supervisor` (must be installed in worker session)
+- lead-side supervision via direct model call on **current lead model**
+- outcome string synthesized from handoff spec via cheap **Haiku** call — separate from lead analysis model by design
 - escalation follows `pi-supervisor` stagnation policy
+- `pi-supervisor` as a standalone top-level extension is redundant once lead-worker supervision is implemented; it should be retired from the extension list at that point, kept only as a worker-session dependency
