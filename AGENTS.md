@@ -46,7 +46,6 @@ Keep this list updated whenever importing or porting an extension/skill so sourc
 - Selective sync note: `pi-extensions/control.ts` and `pi-extensions/loop.ts` were copied from later `https://github.com/mitsuhiko/agent-stuff` revision `d8d6a20edabc5f151ace1342dcd384aa5169b6fd` (`origin/main`) to pick up the `getApiKeyAndHeaders` auth migration.
 - `pi-extensions/websearch/*` → original work, not ported from upstream
 - `pi-extensions/side-chat/*` → `https://github.com/nicobailon/pi-side-chat` @ `f1dba8bdb26e` (`origin/main`)
-- `pi-extensions/pi-tasks/*` → `https://github.com/tintinweb/pi-tasks` @ `46cca7a` (`origin/master`)
 - `pi-extensions/pi-supervisor/*` → `https://github.com/tintinweb/pi-supervisor` @ `a6d8a501bae9` (`origin/master`)
 - `pi-extensions/pi-schedule-prompt/*` → `https://github.com/tintinweb/pi-schedule-prompt` @ `ef7ab49f2988` (`origin/master`)
 - `skills/liteparse/*` → `https://github.com/run-llama/llamaparse-agent-skills` @ `1f10f60a9eba` (`origin/main`)
