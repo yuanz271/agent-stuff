@@ -51,6 +51,7 @@ export function validateMessage(value: unknown): PairMessageV2 {
   }
   if (from !== "lead" && from !== "worker") throw new Error(`invalid message.from: ${String(from)}`);
   if (to !== "lead" && to !== "worker") throw new Error(`invalid message.to: ${String(to)}`);
+  if (from === to) throw new Error(`message.from and message.to must differ (both are '${String(from)}')`);
   if (typeof msg.pairId !== "string" || !msg.pairId.trim()) throw new Error("message.pairId must be a non-empty string");
   if (typeof msg.timestamp !== "string" || !msg.timestamp.trim()) throw new Error("message.timestamp must be a non-empty string");
   if (msg.name !== undefined && typeof msg.name !== "string") throw new Error("message.name must be a string when present");

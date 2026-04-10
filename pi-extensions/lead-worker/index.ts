@@ -788,10 +788,17 @@ async function saveQueuedWorkerEvents(protocolDir: string, events: PairMessageV2
   await fs.writeFile(queuePath, JSON.stringify(events, null, 2) + "\n", "utf8");
 }
 
+const workerEventQueueLocks = new Map<string, Promise<void>>();
+
 async function enqueueWorkerEvent(protocolDir: string, message: PairMessageV2): Promise<void> {
-  const queued = await loadQueuedWorkerEvents(protocolDir);
-  queued.push(message);
-  await saveQueuedWorkerEvents(protocolDir, queued);
+  const prev = workerEventQueueLocks.get(protocolDir) ?? Promise.resolve();
+  const next = prev.then(async () => {
+    const queued = await loadQueuedWorkerEvents(protocolDir);
+    queued.push(message);
+    await saveQueuedWorkerEvents(protocolDir, queued);
+  });
+  workerEventQueueLocks.set(protocolDir, next.catch(() => {}));
+  await next;
 }
 
 async function flushQueuedWorkerEvents(protocolDir: string, socket: Socket, pairId: string): Promise<void> {
@@ -1446,7 +1453,7 @@ async function handleWorkerCommand(
       pairId: message.pairId,
       replyTo: message.id,
       ok: true,
-      body: `Executed worker slash command ${commandText}.`,
+      body: `Submitted worker slash command ${commandText} (fire-and-forget; async failures will not be reported back).`,
       payload: { command: commandText },
     });
   }
@@ -1551,6 +1558,7 @@ async function handleIncomingMessage(pi: ExtensionAPI, message: PairMessageV2, s
         body: err.message,
       }));
     }
+    return;
   }
 }
 
@@ -1730,7 +1738,8 @@ async function synthesizeOutcome(
       .join("")
       .trim();
     return text || truncate(handoffSpec, 120);
-  } catch {
+  } catch (error) {
+    console.warn("[lead-worker] synthesizeOutcome failed:", error instanceof Error ? error.message : String(error));
     return truncate(handoffSpec, 120);
   }
 }
@@ -1811,7 +1820,11 @@ async function resolveLeadSupervisionModel(ctx: ExtensionContext): Promise<{ mod
     throw new Error(`Lead supervision requires the active lead model ${provider}/${modelId} to be present in the local registry.`);
   }
 
-  const auth = await (ctx.modelRegistry as any).getApiKeyAndHeaders(model);
+  const registry = ctx.modelRegistry as unknown as Record<string, unknown>;
+  if (typeof registry.getApiKeyAndHeaders !== "function") {
+    throw new Error(`Lead supervision requires modelRegistry.getApiKeyAndHeaders (unavailable in current runtime).`);
+  }
+  const auth = await (registry.getApiKeyAndHeaders as (m: unknown) => Promise<{ ok?: boolean; apiKey?: string }>)(model);
   if (!auth?.ok || !auth.apiKey) {
     throw new Error(`Lead supervision requires API credentials for the active lead model ${provider}/${modelId}.`);
   }
@@ -1892,6 +1905,9 @@ async function processLeadSupervisionEvent(pi: ExtensionAPI, ctx: ExtensionConte
   let decision: SupervisorDecision;
   if (isTerminal) {
     decision = await analyzeWorkerEvent(model, supervised, apiKey);
+    if (decision.action === "steer") {
+      decision = { action: "escalate", confidence: decision.confidence, reasoning: `terminal event with steer suggestion converted to escalate: ${decision.reasoning}` };
+    }
     rt.activeSupervisedHandoff = undefined;
   } else if (supervised.steerCount >= MAX_SUPERVISED_STEERS) {
     decision = { action: "escalate", confidence: 1, reasoning: "stagnation threshold reached" };
@@ -2077,7 +2093,10 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
   const haikuModel = getModel(SUPERVISOR_MODEL_PROVIDER, SUPERVISOR_MODEL_ID);
   let outcome = truncate(handoff, 120);
   if (haikuModel) {
-    const auth = await (ctx.modelRegistry as any).getApiKeyAndHeaders(haikuModel).catch(() => ({ ok: false }));
+    const registry = ctx.modelRegistry as unknown as Record<string, unknown>;
+    const auth = typeof registry.getApiKeyAndHeaders === "function"
+      ? await (registry.getApiKeyAndHeaders as (m: unknown) => Promise<{ ok?: boolean; apiKey?: string }>)(haikuModel).catch(() => ({ ok: false as const }))
+      : { ok: false as const };
     if (auth.ok && auth.apiKey) {
       outcome = await synthesizeOutcome(handoff, auth.apiKey);
     }
@@ -2288,7 +2307,7 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
     }
   }
 
-  async function handleWorkerCommand(args: string, ctx: ExtensionContext) {
+  async function handleWorkerSlashCommand(args: string, ctx: ExtensionContext) {
     if (currentPairRole() !== "lead") {
       ctx.hasUI && ctx.ui.notify("/worker is only available from the lead session.", "error");
       return;
@@ -2353,7 +2372,7 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
   pi.registerCommand("worker", {
     description: "Inspect the paired worker, delegate execution, or run a registered slash command inside it: /worker status | /worker build [instructions] | /worker /<command> [args]",
     handler: async (args, ctx) => {
-      await handleWorkerCommand(args, ctx);
+      await handleWorkerSlashCommand(args, ctx);
     },
   });
 
