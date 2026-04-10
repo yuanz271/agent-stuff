@@ -47,6 +47,7 @@ const MAX_SUPERVISED_STEERS = 5;
 const SUPERVISOR_MODEL_PROVIDER = "anthropic";
 const SUPERVISOR_MODEL_ID = "claude-haiku-4-5";
 const MAX_SUPERVISED_RECENT_EVENTS = 10;
+const MAX_PENDING_SUPERVISION_EVENTS = 8;
 const SOCKET_WAIT_TIMEOUT_MS = 10_000;
 const SOCKET_WAIT_INTERVAL_MS = 100;
 const MUTATING_BASH_PATTERNS = [
@@ -1742,6 +1743,42 @@ function isTerminalSupervisionEvent(eventName: string): boolean {
   return ["completed", "failed", "cancelled"].includes(eventName);
 }
 
+function enqueueSupervisionEvent(supervised: ActiveSupervisedHandoff, event: PairMessageV2): { droppedForBackpressure: boolean } {
+  const eventName = event.name ?? "";
+
+  if (isTerminalSupervisionEvent(eventName)) {
+    supervised.pendingEvents = [event];
+    return { droppedForBackpressure: false };
+  }
+
+  if (supervised.pendingEvents.some((queued) => isTerminalSupervisionEvent(queued.name ?? ""))) {
+    return { droppedForBackpressure: false };
+  }
+
+  if (eventName === "progress") {
+    const existingProgressIndex = supervised.pendingEvents.findIndex((queued) => (queued.name ?? "") === "progress");
+    if (existingProgressIndex >= 0) {
+      supervised.pendingEvents[existingProgressIndex] = event;
+    } else {
+      supervised.pendingEvents.push(event);
+    }
+    return { droppedForBackpressure: false };
+  }
+
+  supervised.pendingEvents.push(event);
+  if (supervised.pendingEvents.length <= MAX_PENDING_SUPERVISION_EVENTS) {
+    return { droppedForBackpressure: false };
+  }
+
+  const oldestProgressIndex = supervised.pendingEvents.findIndex((queued) => (queued.name ?? "") === "progress");
+  if (oldestProgressIndex >= 0) {
+    supervised.pendingEvents.splice(oldestProgressIndex, 1);
+  } else {
+    supervised.pendingEvents.shift();
+  }
+  return { droppedForBackpressure: true };
+}
+
 async function resolveLeadSupervisionModel(ctx: ExtensionContext): Promise<{ model: NonNullable<ReturnType<ExtensionContext["modelRegistry"]["find"]>>; apiKey: string }> {
   const provider = rt.lastObservedLeadModel.provider ?? ctx.model?.provider;
   const modelId = rt.lastObservedLeadModel.modelId ?? ctx.model?.id;
@@ -1841,6 +1878,10 @@ async function processLeadSupervisionEvent(pi: ExtensionAPI, ctx: ExtensionConte
     decision = await analyzeWorkerEvent(model, supervised, apiKey);
   }
 
+  if (!isTerminal && supervised.pendingEvents.some((queued) => isTerminalSupervisionEvent(queued.name ?? ""))) {
+    return;
+  }
+
   if (decision.action === "continue") return;
 
   if (decision.action === "steer" && decision.message) {
@@ -1902,7 +1943,10 @@ async function maybeRunLeadSupervision(pi: ExtensionAPI, ctx: ExtensionContext, 
   const eventName = event.name ?? "";
   if (!isMeaningfulSupervisionEvent(eventName)) return;
 
-  supervised.pendingEvents.push(event);
+  const { droppedForBackpressure } = enqueueSupervisionEvent(supervised, event);
+  if (droppedForBackpressure) {
+    notify(ctx, `lead supervision queue overflow for handoff ${supervised.id.slice(0, 8)}; dropped stale queued event to preserve backpressure.`, "warning");
+  }
   if (supervised.supervisionRunning) return;
   supervised.supervisionRunning = true;
 
@@ -1990,6 +2034,8 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
     ctx.hasUI && ctx.ui.notify("No recent lead context found. Ask the lead first or pass explicit instructions to /worker build.", "error");
     return;
   }
+
+  await resolveLeadSupervisionModel(ctx);
 
   let worker = await getWorkerStatus(pi, ctx.cwd ?? process.cwd(), settings, getLeadSessionBinding(ctx));
   if (!worker.running) {

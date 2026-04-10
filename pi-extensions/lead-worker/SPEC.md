@@ -141,10 +141,11 @@ The whole point of `lead-worker` is autonomous worker execution. An unsupervised
 
 1. Gather recent lead context
 2. Build spec-oriented handoff with `handoffId`
-3. Send `handoff` command → wait for worker ack
-4. Synthesize a one-line outcome string from the handoff spec using a cheap model call
-5. Activate lead-side supervision state
-6. Analyze meaningful worker events and steer when needed
+3. Validate that lead-side supervision can run with the active lead model and credentials
+4. Send `handoff` command → wait for worker ack
+5. Synthesize a one-line outcome string from the handoff spec using a cheap model call
+6. Activate lead-side supervision state
+7. Analyze meaningful worker events and steer when needed
 
 ### Lead-side supervision
 The lead analyzes incoming worker events against the handoff spec:
@@ -155,6 +156,7 @@ The lead analyzes incoming worker events against the handoff spec:
 - output: `{ action: "continue" | "steer" | "done" | "escalate", message?, confidence, reasoning }`
 - trigger: on every meaningful worker event (`progress`, `blocker`, `clarification_needed`, terminal)
 - concurrency: events are analyzed serially per handoff so bursts of `progress` updates cannot race into duplicate steering or premature escalation
+- queue policy: queued `progress` events are coalesced/bounded for backpressure, and terminal events preempt queued non-terminal progress so stale steering is not sent after completion
 
 Actions:
 - `continue` → stay silent
