@@ -25,16 +25,6 @@ Apache License 2.0 — same terms as stated in upstream `LICENSE`.
 
 MIT License — same terms as stated in upstream `package.json` (`"license": "MIT"`).
 
-## pi-supervisor
-
-- **Source**: https://github.com/tintinweb/pi-supervisor
-- **Included paths in this repo**:
-  - `pi-extensions/pi-supervisor/*`
-- **Upstream license**: MIT License
-- **Upstream copyright**: Copyright (c) 2026 tintinweb
-
-MIT License — same terms as stated in upstream `LICENSE`.
-
 ## pi-schedule-prompt
 
 - **Source**: https://github.com/tintinweb/pi-schedule-prompt
