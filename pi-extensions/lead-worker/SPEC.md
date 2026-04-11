@@ -139,7 +139,7 @@ Worker → lead events carry `handoffId` when associated with a delegated task.
 - `busy` — rejected second-lead attachment attempt
 
 ### Lead → worker steering
-When the lead-side supervisor decides to steer, it sends a `message` event to the worker via `lead_worker({ action: "message", name: "steer", message: "..." })`. This is not a named worker event but a lead-originated event delivered over the same protocol channel.
+When lead-side supervision decides to steer, it sends a `message` event to the worker via `lead_worker({ action: "message", name: "steer", message: "..." })`. This is not a named worker event but a lead-originated event delivered over the same protocol channel.
 
 ### Terminal vs interim
 Each handoff emits zero or more interim events and exactly one terminal event.
@@ -183,14 +183,14 @@ Actions:
 ### Outcome string derivation
 When no explicit instructions are given to `/worker build`, the outcome string is synthesized from the handoff spec via a **cheap Haiku model call** — one-shot, low-cost, accurate enough for a one-line outcome statement. This is intentionally a different model from the lead-side event analysis, which uses the current lead model for deeper context-aware judgment.
 
-### Single-supervisor architecture
+### Single lead-owned supervision layer
 
 | Component | Responsibility |
 |---|---|
 | Lead | holds spec, observes worker events, decides `continue`/`steer`/`done`/`escalate` |
 | Worker | executes, emits typed events, accepts `steer`, asks for clarification, reports terminal outcome |
 
-This keeps supervision observable and attributable:
+This keeps lead-worker supervision observable and attributable:
 - the lead owns the control policy
 - the worker remains a transparent executor
 - every correction is visible on the paired channel

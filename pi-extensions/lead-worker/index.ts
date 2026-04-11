@@ -731,14 +731,14 @@ async function handleIncomingMessage(pi: ExtensionAPI, message: PairMessageV2, s
         notify(ctx, message.body ?? `Worker event: ${eventName}`, "info");
         if (eventName === "progress") {
           void maybeRunLeadSupervision(pi, ctx, message, sendOneWayEvent).catch((err) => {
-            notify(ctx, `lead supervisor error: ${err instanceof Error ? err.message : String(err)}`, "warning");
+            notify(ctx, `lead-worker supervision error: ${err instanceof Error ? err.message : String(err)}`, "warning");
           });
         }
       } else {
         deliverIncomingProtocolMessage(pi, message, true);
         maybeRelayWorkerEventToUser(pi, message);
         void maybeRunLeadSupervision(pi, ctx, message, sendOneWayEvent).catch((err) => {
-          notify(ctx, `lead supervisor error: ${err instanceof Error ? err.message : String(err)}`, "warning");
+          notify(ctx, `lead-worker supervision error: ${err instanceof Error ? err.message : String(err)}`, "warning");
         });
       }
     } else {

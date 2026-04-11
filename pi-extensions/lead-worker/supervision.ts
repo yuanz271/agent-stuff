@@ -267,14 +267,14 @@ async function processLeadSupervisionEvent(
   }
 
   if (decision.action === "done") {
-    ctx.hasUI && ctx.ui.notify(`Lead supervisor: outcome achieved for handoff ${supervised.id.slice(0, 8)}.`, "info");
+    ctx.hasUI && ctx.ui.notify(`Lead-worker supervision: outcome achieved for handoff ${supervised.id.slice(0, 8)}.`, "info");
     rt.activeSupervisedHandoff = undefined;
     return;
   }
 
   if (decision.action === "escalate") {
     const summary = [
-      `Lead supervisor escalating handoff ${supervised.id.slice(0, 8)} — needs your attention.`,
+      `Lead-worker supervision escalating handoff ${supervised.id.slice(0, 8)} — needs your attention.`,
       `Outcome: ${supervised.outcome}`,
       `Steer count: ${supervised.steerCount}`,
       decision.message ? `Reason: ${decision.message}` : `Reason: ${decision.reasoning}`,
@@ -282,7 +282,7 @@ async function processLeadSupervisionEvent(
     ctx.hasUI && ctx.ui.notify(summary, "warning");
     pi.sendUserMessage(
       [
-        "[LEAD-WORKER SUPERVISOR ESCALATION]",
+        "[LEAD-WORKER SUPERVISION ESCALATION]",
         `handoff_id: ${supervised.id}`,
         `outcome: ${supervised.outcome}`,
         `steer_count: ${supervised.steerCount}`,
