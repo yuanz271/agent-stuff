@@ -15,6 +15,19 @@ This repository includes code copied/adapted from the project below.
 
 Apache License 2.0 — same terms as stated in upstream `LICENSE`.
 
+## agent-stuff selective auth migration sync
+
+- **Source**: https://github.com/mitsuhiko/agent-stuff
+- **Included paths in this repo**:
+  - `pi-extensions/control.ts`
+  - `pi-extensions/loop.ts`
+- **Copied from upstream revision**:
+  - `d8d6a20edabc5f151ace1342dcd384aa5169b6fd`
+- **Upstream license**: Apache License 2.0
+- **Upstream copyright note**: no explicit copyright line was identified in the upstream `LICENSE`; provenance is tracked via the upstream repository URL above.
+
+Apache License 2.0 — same terms as stated in upstream `LICENSE`.
+
 ## pi-side-chat
 
 - **Source**: https://github.com/nicobailon/pi-side-chat
