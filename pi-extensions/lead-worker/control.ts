@@ -265,10 +265,6 @@ export function formatStatusMarkdown(status: LeadWorkerStatus): string {
     for (const warning of status.worker.warnings) lines.push(`- ${warning}`);
   }
 
-  if (status.worker.backlog.length > 0) {
-    lines.push("", "**recent worker output**", "", "```text", ...status.worker.backlog, "```");
-  }
-
   return lines.join("\n");
 }
 
