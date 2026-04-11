@@ -1,6 +1,6 @@
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { complete, getModel, StringEnum } from "@mariozechner/pi-ai";
+import { getModel, StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -22,33 +22,58 @@ import {
   resolveProjectRoot,
   startWorker,
   stopWorker,
-  type LeadSessionBinding,
   type WorkerStatus,
 } from "./utils.js";
 import {
-  loadLeadWorkerSettings,
-  type LeadWorkerSettings,
-  type LeadWorkerSettingsLoadResult,
-  type LeadWorkerSource,
-} from "./settings.js";
+  BUILD_HANDOFF_MESSAGE_TYPE,
+  CONTEXT_MESSAGE_TYPE,
+  MAX_HANDOFF_CHARS,
+  MAX_TRACKED_REPORTED_HANDOFF_IDS,
+  SOCKET_WAIT_INTERVAL_MS,
+  SOCKET_WAIT_TIMEOUT_MS,
+  SUPERVISOR_MODEL_ID,
+  SUPERVISOR_MODEL_PROVIDER,
+  TOOL_NAME,
+  rt,
+  currentPairRole,
+  getLeadSessionBinding,
+  getMessagesSinceLastUser,
+  isTerminalSupervisionEvent,
+  leadConfig,
+  pairedRole,
+  refreshSettings,
+  truncate,
+  type ActiveConnection,
+  type ActiveSupervisedHandoff,
+  type LeadWorkerControlAction,
+  type PendingInboundRequest,
+  type PendingRpc,
+} from "./runtime.js";
+import {
+  emitInfo,
+  formatLeadModel,
+  formatStatusMarkdown,
+  getCurrentLeadSelection,
+  resolveCommandAction,
+  restoreModeState,
+  runControlAction,
+  updateStatusLine,
+} from "./control.js";
+import {
+  deliverIncomingProtocolMessage,
+  formatWorkerStatusReply,
+  inferWorkerEventName,
+  maybeAutoReportWorkerCompletion,
+  maybeRelayWorkerEventToUser,
+  promptForReply,
+  queryWorkerStatusPassive,
+} from "./relay.js";
+import {
+  maybeRunLeadSupervision,
+  resolveLeadSupervisionModel,
+  synthesizeOutcome,
+} from "./supervision.js";
 
-const STATUS_KEY = "lead-worker";
-const TOOL_NAME = "lead_worker";
-const STATE_ENTRY_TYPE = "lead-worker-state";
-const CONTEXT_MESSAGE_TYPE = "lead-worker-context";
-const BUILD_HANDOFF_MESSAGE_TYPE = "lead-worker-handoff";
-const PAIR_MESSAGE_TYPE = "lead-worker-pair-message";
-const MAX_CONTEXT_MESSAGE_CHARS = 4_000;
-const MAX_HANDOFF_CHARS = 32_000;
-const WORKER_RELAY_DEDUP_WINDOW_MS = 60_000;
-const MAX_TRACKED_REPORTED_HANDOFF_IDS = 256;
-const MAX_SUPERVISED_STEERS = 5;
-const SUPERVISOR_MODEL_PROVIDER = "anthropic";
-const SUPERVISOR_MODEL_ID = "claude-haiku-4-5";
-const MAX_SUPERVISED_RECENT_EVENTS = 10;
-const MAX_PENDING_SUPERVISION_EVENTS = 8;
-const SOCKET_WAIT_TIMEOUT_MS = 10_000;
-const SOCKET_WAIT_INTERVAL_MS = 100;
 const CORE_BLOCKED_BASH_PATTERNS = [
   /\brm\b/i,
   /\brmdir\b/i,
@@ -75,205 +100,6 @@ const CORE_BLOCKED_BASH_PATTERNS = [
   /\bzsh\b/i,
 ];
 
-type LeadWorkerControlAction = "start" | "on" | "status" | "off" | "stop";
-type CommunicationAction = "message" | "ask" | "command" | "reply";
-type LeadWorkerAction = LeadWorkerControlAction | CommunicationAction;
-
-type LeadSelection = {
-  provider?: string;
-  modelId?: string;
-  thinkingLevel?: ThinkingLevel;
-};
-
-type PersistedLeadWorkerState = {
-  enabled: boolean;
-  previousActiveTools?: string[];
-  previousLeadSelection?: LeadSelection;
-  updatedAt: string;
-};
-
-type ExtractedMessage = {
-  role: "user" | "assistant";
-  content: string;
-  timestamp: number;
-};
-
-type LeadWorkerStatus = {
-  ok: true;
-  action: LeadWorkerControlAction;
-  modeEnabled: boolean;
-  leadReadOnly: boolean;
-  message: string;
-  activeTools: string[];
-  previousActiveTools?: string[];
-  leadModel?: string;
-  leadThinkingLevel: ThinkingLevel;
-  configuredLeadModel: string;
-  configuredLeadThinkingLevel: ThinkingLevel;
-  previousLeadModel?: string;
-  previousLeadThinkingLevel?: ThinkingLevel;
-  settingsSources: LeadWorkerSource[];
-  settingsWarnings: string[];
-  settingsInvalidFieldCount: number;
-  worker: WorkerStatus;
-};
-
-type PendingRpc = {
-  resolve: (message: PairMessageV2) => void;
-  reject: (error: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
-};
-
-type PendingInboundRequest = {
-  from: PairRole;
-  name?: string;
-  receivedAtMs: number;
-};
-
-type ActiveConnection = {
-  socket: Socket;
-  pairId: string;
-  socketPath: string;
-  projectRoot: string;
-  leadSessionId: string;
-};
-
-type PendingWorkerHandoff = {
-  id: string;
-  receivedAtMs: number;
-  pairId: string;
-  terminalEventSentAtMs?: number;
-};
-
-type SupervisorDecision = {
-  action: "continue" | "steer" | "done" | "escalate";
-  message?: string;
-  confidence: number;
-  reasoning: string;
-};
-
-type ActiveSupervisedHandoff = {
-  id: string;
-  spec: string;
-  outcome: string;
-  steerCount: number;
-  recentEvents: PairMessageV2[];
-  pendingEvents: PairMessageV2[];
-  supervisionRunning: boolean;
-};
-
-interface LeadWorkerRuntime {
-  modeEnabled: boolean;
-  previousActiveTools: string[] | undefined;
-  previousLeadSelection: LeadSelection | undefined;
-  lastObservedLeadModel: { provider?: string; modelId?: string };
-  currentSettings: LeadWorkerSettingsLoadResult | undefined;
-  latestPairContext: ExtensionContext | undefined;
-  pendingWorkerHandoff: PendingWorkerHandoff | undefined;
-  lastWorkerRelayFingerprint: string | undefined;
-  lastWorkerRelayAtMs: number | undefined;
-  reportedWorkerEventKeys: Set<string>;
-  pendingRpc: Map<string, PendingRpc>;
-  expiredRpcIds: Set<string>;
-  pendingInboundRequests: Map<string, PendingInboundRequest>;
-  activeConnection: ActiveConnection | undefined;
-  connectPromise: Promise<ActiveConnection> | undefined;
-  connectionError: string | undefined;
-  workerServer: Server | undefined;
-  workerServerSocketPath: string | undefined;
-  workerServerPairId: string | undefined;
-  activeLeadSocket: Socket | undefined;
-  activeLeadSessionId: string | undefined;
-  activeSupervisedHandoff: ActiveSupervisedHandoff | undefined;
-}
-
-const rt: LeadWorkerRuntime = {
-  modeEnabled: false,
-  previousActiveTools: undefined,
-  previousLeadSelection: undefined,
-  lastObservedLeadModel: {},
-  currentSettings: undefined,
-  latestPairContext: undefined,
-  pendingWorkerHandoff: undefined,
-  lastWorkerRelayFingerprint: undefined,
-  lastWorkerRelayAtMs: undefined,
-  reportedWorkerEventKeys: new Set<string>(),
-  pendingRpc: new Map<string, PendingRpc>(),
-  expiredRpcIds: new Set<string>(),
-  pendingInboundRequests: new Map<string, PendingInboundRequest>(),
-  activeConnection: undefined,
-  connectPromise: undefined,
-  connectionError: undefined,
-  workerServer: undefined,
-  workerServerSocketPath: undefined,
-  workerServerPairId: undefined,
-  activeLeadSocket: undefined,
-  activeLeadSessionId: undefined,
-  activeSupervisedHandoff: undefined,
-};
-
-function normalizeControlAction(raw: string): LeadWorkerControlAction | null {
-  const value = raw.trim().toLowerCase();
-  if (value === "") return null;
-  if (value === "start") return "start";
-  if (value === "on") return "on";
-  if (value === "status") return "status";
-  if (value === "off") return "off";
-  if (value === "stop") return "stop";
-  return null;
-}
-
-function truncate(text: string, maxChars: number): string {
-  if (text.length <= maxChars) return text;
-  if (maxChars <= 1) return "…";
-  return `${text.slice(0, maxChars - 1)}…`;
-}
-
-function extractTextContent(content: unknown): string {
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter((block): block is { type: "text"; text: string } => {
-      return typeof block === "object" && block !== null && "type" in block && "text" in block && (block as { type?: string }).type === "text";
-    })
-    .map((block) => block.text)
-    .join("\n")
-    .trim();
-}
-
-function getMessagesSinceLastUser(ctx: ExtensionContext): ExtractedMessage[] {
-  const branch = ctx.sessionManager.getBranch();
-  let lastUserIndex = -1;
-
-  for (let i = branch.length - 1; i >= 0; i--) {
-    const entry = branch[i];
-    if (entry.type === "message" && "role" in entry.message && entry.message.role === "user") {
-      lastUserIndex = i;
-      break;
-    }
-  }
-
-  if (lastUserIndex === -1) return [];
-
-  const extracted: ExtractedMessage[] = [];
-  for (let i = lastUserIndex; i < branch.length; i++) {
-    const entry = branch[i];
-    if (entry.type !== "message") continue;
-
-    const msg = entry.message;
-    if (!("role" in msg) || (msg.role !== "user" && msg.role !== "assistant")) continue;
-    const text = extractTextContent(msg.content);
-    if (!text) continue;
-
-    extracted.push({
-      role: msg.role,
-      content: truncate(text, MAX_CONTEXT_MESSAGE_CHARS),
-      timestamp: typeof msg.timestamp === "number" ? msg.timestamp : Date.now(),
-    });
-  }
-
-  return extracted;
-}
-
 function stripBenignRedirects(command: string): string {
   return command
     .replace(/(^|[\s;|&])(?:[12]?>\s*\/dev\/null)(?=$|[\s;|&])/gi, "$1")
@@ -285,297 +111,12 @@ function isSafeLeadBash(command: string): boolean {
   return !CORE_BLOCKED_BASH_PATTERNS.some((pattern) => pattern.test(commandForMutatingChecks));
 }
 
-function requireCurrentSettings(): LeadWorkerSettingsLoadResult {
-  if (!rt.currentSettings) {
-    throw new Error("lead-worker settings are not loaded");
-  }
-  return rt.currentSettings;
-}
-
 function workerSessionReference(): string {
   return "the paired worker session";
 }
 
-function leadConfig(): LeadWorkerSettings["lead"] {
-  return requireCurrentSettings().settings.lead;
-}
-
-function getConfiguredLeadSelection(settings: LeadWorkerSettings = requireCurrentSettings().settings): LeadSelection | undefined {
-  const ref = settings.lead.model.trim();
-  const separator = ref.indexOf("/");
-  if (separator <= 0 || separator >= ref.length - 1) return undefined;
-  return {
-    provider: ref.slice(0, separator),
-    modelId: ref.slice(separator + 1),
-    thinkingLevel: settings.lead.thinking,
-  };
-}
-
-async function refreshSettings(cwd: string): Promise<LeadWorkerSettingsLoadResult> {
-  rt.currentSettings = await loadLeadWorkerSettings(cwd, import.meta.url);
-  return rt.currentSettings;
-}
-
-function currentPairRole(): PairRole {
-  return process.env.PI_LEAD_WORKER_ROLE === "worker" ? "worker" : "lead";
-}
-
-function pairedRole(role: PairRole): PairRole {
-  return role === "lead" ? "worker" : "lead";
-}
-
-function getLeadSessionBinding(ctx: ExtensionContext): LeadSessionBinding {
-  return {
-    sessionId: ctx.sessionManager.getSessionId(),
-    sessionFile: ctx.sessionManager.getSessionFile(),
-  };
-}
-
-function validToolNames(pi: ExtensionAPI): Set<string> {
-  return new Set(pi.getAllTools().map((tool) => tool.name));
-}
-
-function filterLeadTools(pi: ExtensionAPI, sourceTools: string[]): string[] {
-  const valid = validToolNames(pi);
-  const allowed = new Set(leadConfig().allowed_tools);
-  if (valid.has(TOOL_NAME)) {
-    allowed.add(TOOL_NAME);
-  }
-  const filtered = sourceTools.filter((name, index) => sourceTools.indexOf(name) === index && valid.has(name) && allowed.has(name));
-  if (filtered.length > 0) return filtered;
-  return Array.from(valid).filter((name) => allowed.has(name));
-}
-
-function normalizeToolList(pi: ExtensionAPI, sourceTools: string[] | undefined): string[] {
-  if (!sourceTools || sourceTools.length === 0) return [];
-  const valid = validToolNames(pi);
-  return sourceTools.filter((name, index) => sourceTools.indexOf(name) === index && valid.has(name));
-}
-
-function normalizeLeadSelection(selection: LeadSelection | undefined): LeadSelection | undefined {
-  if (!selection) return undefined;
-  const provider = typeof selection.provider === "string" && selection.provider.trim() ? selection.provider.trim() : undefined;
-  const modelId = typeof selection.modelId === "string" && selection.modelId.trim() ? selection.modelId.trim() : undefined;
-  const thinkingLevel = selection.thinkingLevel;
-  if (!provider && !modelId && !thinkingLevel) return undefined;
-  return { provider, modelId, thinkingLevel };
-}
-
-function formatLeadModel(selection: LeadSelection | undefined): string | undefined {
-  if (!selection?.provider || !selection.modelId) return undefined;
-  return `${selection.provider}/${selection.modelId}`;
-}
-
-function getCurrentLeadSelection(pi: ExtensionAPI, ctx: ExtensionContext): LeadSelection {
-  return {
-    provider: rt.lastObservedLeadModel.provider ?? ctx.model?.provider,
-    modelId: rt.lastObservedLeadModel.modelId ?? ctx.model?.id,
-    thinkingLevel: pi.getThinkingLevel(),
-  };
-}
-
-async function applyLeadSelection(
-  pi: ExtensionAPI,
-  ctx: ExtensionContext,
-  selection: LeadSelection | undefined,
-): Promise<string | undefined> {
-  const normalized = normalizeLeadSelection(selection);
-  if (!normalized) return undefined;
-
-  let warning: string | undefined;
-
-  if (normalized.provider && normalized.modelId) {
-    const model = ctx.modelRegistry.find(normalized.provider, normalized.modelId);
-    if (!model) {
-      warning = `Model ${normalized.provider}/${normalized.modelId} is not available in the local registry.`;
-    } else {
-      const ok = await pi.setModel(model);
-      if (!ok) {
-        warning = `No API key available for ${normalized.provider}/${normalized.modelId}.`;
-      } else {
-        rt.lastObservedLeadModel = { provider: normalized.provider, modelId: normalized.modelId };
-      }
-    }
-  }
-
-  if (normalized.thinkingLevel) {
-    pi.setThinkingLevel(normalized.thinkingLevel);
-  }
-
-  return warning;
-}
-
-function persistModeState(pi: ExtensionAPI): void {
-  pi.appendEntry<PersistedLeadWorkerState>(STATE_ENTRY_TYPE, {
-    enabled: rt.modeEnabled,
-    previousActiveTools: rt.previousActiveTools,
-    previousLeadSelection: rt.previousLeadSelection,
-    updatedAt: new Date().toISOString(),
-  });
-}
-
-function restorePersistedState(ctx: ExtensionContext): PersistedLeadWorkerState | undefined {
-  const branch = ctx.sessionManager.getBranch();
-  for (let i = branch.length - 1; i >= 0; i--) {
-    const entry = branch[i];
-    if (entry.type !== "custom" || entry.customType !== STATE_ENTRY_TYPE) continue;
-    const data = entry.data as PersistedLeadWorkerState | undefined;
-    if (!data || typeof data.enabled !== "boolean") continue;
-    return {
-      enabled: data.enabled,
-      previousActiveTools: Array.isArray(data.previousActiveTools) ? data.previousActiveTools.filter((name) => typeof name === "string") : undefined,
-      previousLeadSelection: normalizeLeadSelection(data.previousLeadSelection),
-      updatedAt: typeof data.updatedAt === "string" ? data.updatedAt : new Date().toISOString(),
-    };
-  }
-  return undefined;
-}
-
-function restoreNormalTools(pi: ExtensionAPI, savedTools: string[] | undefined): void {
-  const normalized = normalizeToolList(pi, savedTools);
-  if (normalized.length > 0) {
-    pi.setActiveTools(normalized);
-  }
-}
-
-function applyLeadMode(pi: ExtensionAPI): void {
-  if (!rt.modeEnabled) return;
-  if (!rt.previousActiveTools || rt.previousActiveTools.length === 0) {
-    rt.previousActiveTools = pi.getActiveTools();
-  }
-  pi.setActiveTools(filterLeadTools(pi, rt.previousActiveTools));
-}
-
-function renderSummary(worker: WorkerStatus): string | undefined {
-  if (!rt.modeEnabled && !worker.running) return undefined;
-  const workerPart = worker.running ? `${worker.agentName}:on` : `${worker.agentName}:off`;
-  if (!rt.modeEnabled) return workerPart;
-  return `lead:on | ${workerPart}`;
-}
-
-function updateStatusLine(ctx: ExtensionContext, worker: WorkerStatus): void {
-  if (!ctx.hasUI) return;
-  const summary = renderSummary(worker);
-  if (!summary) {
-    ctx.ui.setStatus(STATUS_KEY, undefined);
-    return;
-  }
-
-  const theme = ctx.ui.theme;
-  if (rt.modeEnabled) {
-    const leadPart = theme.fg("warning", "lead:on");
-    const workerPart = worker.running
-      ? theme.fg("accent", `${worker.agentName}:on`)
-      : theme.fg("muted", `${worker.agentName}:off`);
-    ctx.ui.setStatus(STATUS_KEY, `${leadPart} | ${workerPart}`);
-    return;
-  }
-
-  const workerPart = worker.running
-    ? theme.fg("accent", `${worker.agentName}:on`)
-    : theme.fg("muted", `${worker.agentName}:off`);
-  ctx.ui.setStatus(STATUS_KEY, workerPart);
-}
-
-function buildStatus(action: LeadWorkerControlAction, message: string, worker: WorkerStatus, pi: ExtensionAPI): LeadWorkerStatus {
-  const leadModel = formatLeadModel({
-    provider: rt.lastObservedLeadModel.provider,
-    modelId: rt.lastObservedLeadModel.modelId,
-  });
-  const previousLeadModel = formatLeadModel(rt.previousLeadSelection);
-  const loadedSettings = requireCurrentSettings();
-
-  return {
-    ok: true,
-    action,
-    modeEnabled: rt.modeEnabled,
-    leadReadOnly: rt.modeEnabled,
-    message,
-    activeTools: pi.getActiveTools(),
-    previousActiveTools: rt.previousActiveTools,
-    leadModel,
-    leadThinkingLevel: pi.getThinkingLevel(),
-    configuredLeadModel: loadedSettings.settings.lead.model,
-    configuredLeadThinkingLevel: loadedSettings.settings.lead.thinking,
-    previousLeadModel,
-    previousLeadThinkingLevel: rt.previousLeadSelection?.thinkingLevel,
-    settingsSources: loadedSettings.stats.loaded_sources,
-    settingsWarnings: loadedSettings.warnings,
-    settingsInvalidFieldCount: loadedSettings.stats.invalid_field_count,
-    worker,
-  };
-}
-
-function formatStatusMarkdown(status: LeadWorkerStatus): string {
-  const lines = [
-    `**lead-worker ${status.action}**`,
-    "",
-    `- message: ${status.message}`,
-    `- lead mode: ${status.modeEnabled ? "on" : "off"}`,
-    `- lead behavior: ${status.leadReadOnly ? "lead (no direct repo edits)" : "normal"}`,
-    `- lead model: ${status.leadModel ?? "unknown"}`,
-    `- lead thinking: ${status.leadThinkingLevel}`,
-    `- configured lead model: ${status.configuredLeadModel}`,
-    `- configured lead thinking: ${status.configuredLeadThinkingLevel}`,
-    `- active tools: ${status.activeTools.length > 0 ? status.activeTools.join(", ") : "(none)"}`,
-  ];
-
-  if (status.previousLeadModel) {
-    lines.push(`- restore model on off: ${status.previousLeadModel}`);
-  }
-  if (status.previousLeadThinkingLevel) {
-    lines.push(`- restore thinking on off: ${status.previousLeadThinkingLevel}`);
-  }
-
-  lines.push(
-    "",
-    "**settings**",
-    "",
-    `- loaded sources: ${status.settingsSources.map((source) => `${source.kind}:${source.path}`).join(", ")}`,
-    `- invalid fields ignored: ${status.settingsInvalidFieldCount}`,
-    "",
-    "**worker**",
-    "",
-    `- running: ${status.worker.running ? "yes" : "no"}`,
-    `- name: ${status.worker.agentName}`,
-    `- pair id: ${status.worker.pairId}`,
-    `- model: ${status.worker.model}`,
-    `- thinking: ${status.worker.thinking}`,
-    ...(status.worker.leadSessionId ? [`- last lead session id: ${status.worker.leadSessionId}`] : []),
-    `- tmux session: ${status.worker.tmuxSession}`,
-    `- session file: ${status.worker.sessionFile}`,
-    `- log file: ${status.worker.logFile}`,
-    `- launch script: ${status.worker.launchScript}`,
-    `- socket path: ${status.worker.socketPath}`,
-  );
-
-  if (status.worker.leadSessionFile) lines.push(`- last lead session file: ${status.worker.leadSessionFile}`);
-  if (status.worker.startedAt) lines.push(`- started: ${status.worker.startedAt}`);
-  if (status.worker.lastStoppedAt) lines.push(`- last stopped: ${status.worker.lastStoppedAt}`);
-  if (status.worker.alreadyRunning) lines.push(`- note: existing ${status.worker.agentName} session reused`);
-
-  if (status.settingsWarnings.length > 0 || status.worker.warnings.length > 0) {
-    lines.push("", "**warnings**", "");
-    for (const warning of status.settingsWarnings) lines.push(`- settings: ${warning}`);
-    for (const warning of status.worker.warnings) lines.push(`- ${warning}`);
-  }
-
-  if (status.worker.backlog.length > 0) {
-    lines.push("", "**recent worker output**", "", "```text", ...status.worker.backlog, "```");
-  }
-
-  return lines.join("\n");
-}
-
-function emitInfo(pi: ExtensionAPI, markdown: string, customType = BUILD_HANDOFF_MESSAGE_TYPE): void {
-  pi.sendMessage(
-    {
-      customType,
-      content: markdown,
-      display: true,
-    },
-    { triggerTurn: false },
-  );
+function notify(ctx: ExtensionContext | undefined, message: string, severity: "info" | "warning" | "error" = "info"): void {
+  if (ctx?.hasUI) ctx.ui.notify(message, severity);
 }
 
 function rememberExpiredRpc(id: string): void {
@@ -927,262 +468,10 @@ function startRpc(message: PairMessageV2, socket: Socket, timeoutMs = DEFAULT_RE
   });
 }
 
-function normalizeWhitespaceLower(text: string): string {
-  return text.replace(/\s+/g, " ").trim().toLowerCase();
-}
-
-function pairRelayFingerprint(message: PairMessageV2): string {
-  const handoffId = message.handoffId ?? "";
-  return `${message.from}|${message.to}|${message.type}|${message.name ?? ""}|${message.pairId}|${handoffId}|${normalizeWhitespaceLower(message.body ?? "")}`;
-}
-
-function inferWorkerEventName(text: string, pendingHandoff: PendingWorkerHandoff | undefined): string {
-  const normalized = normalizeWhitespaceLower(text);
-  if (/\bstatus\s*:\s*(done|completed)\b/.test(normalized)) return "completed";
-  if (/\bstatus\s*:\s*(failed|cancelled)\b/.test(normalized)) return "failed";
-  if (/\bstatus\s*:\s*blocked\b/.test(normalized)) return "blocker";
-  if (/\bclarification\b/.test(normalized)) return "clarification_needed";
-  return pendingHandoff ? "progress" : "message";
-}
-
-function workerRelayDedupKey(message: PairMessageV2): string | undefined {
-  const handoffId = message.handoffId?.trim();
-  const eventName = message.name ?? "event";
-  if (!handoffId || !isTerminalSupervisionEvent(eventName)) return undefined;
-  return `${handoffId}:terminal`;
-}
-
-function rememberReportedWorkerEventKey(key: string): void {
-  rt.reportedWorkerEventKeys.add(key);
-  if (rt.reportedWorkerEventKeys.size <= MAX_TRACKED_REPORTED_HANDOFF_IDS) return;
-  const oldest = rt.reportedWorkerEventKeys.values().next().value;
-  if (oldest) rt.reportedWorkerEventKeys.delete(oldest);
-}
-
-function formatIncomingProtocolMessage(message: PairMessageV2): string {
-  const heading = message.type === "event"
-    ? `**lead-worker event from ${message.from}: ${message.name ?? "event"}**`
-    : message.type === "request"
-      ? `**lead-worker request from ${message.from}${message.name ? `: ${message.name}` : ""}**`
-      : `**lead-worker message from ${message.from}**`;
-  return [
-    heading,
-    "",
-    `- pair id: ${message.pairId}`,
-    ...(message.handoffId ? [`- handoff id: ${message.handoffId}`] : []),
-    ...(message.replyTo ? [`- reply to: ${message.replyTo}`] : []),
-    "",
-    message.body ?? "(no body)",
-  ].join("\n");
-}
-
-function notify(ctx: ExtensionContext | undefined, message: string, severity: "info" | "warning" | "error" = "info"): void {
-  if (ctx?.hasUI) ctx.ui.notify(message, severity);
-}
-
-function deliverIncomingProtocolMessage(pi: ExtensionAPI, message: PairMessageV2, triggerTurn: boolean): void {
-  pi.sendMessage(
-    {
-      customType: PAIR_MESSAGE_TYPE,
-      content: formatIncomingProtocolMessage(message),
-      display: true,
-      details: message,
-    },
-    triggerTurn ? { triggerTurn: true, deliverAs: "steer" } : { triggerTurn: false },
-  );
-}
-
-function promptForReply(pi: ExtensionAPI, message: PairMessageV2): void {
-  const instruction = [
-    `${message.from === "worker" ? "Worker" : "Lead"} asked a direct question${message.name ? ` (${message.name})` : ""}.`,
-    `Reply exactly once with lead_worker({ action: "reply", replyTo: "${message.id}", message: "..." }).`,
-    ...(message.handoffId ? [`handoff_id: ${message.handoffId}`] : []),
-    "",
-    message.body ?? "",
-  ].join("\n");
-  pi.sendUserMessage(instruction, { deliverAs: "followUp" });
-}
-
-function maybeRelayWorkerEventToUser(pi: ExtensionAPI, message: PairMessageV2): void {
-  if (currentPairRole() !== "lead" || message.from !== "worker" || message.type !== "event") return;
-  if (!["completed", "failed", "cancelled", "blocker", "clarification_needed"].includes(message.name ?? "")) return;
-
-  const handoffId = message.handoffId;
-  const relayKey = workerRelayDedupKey(message);
-  if (relayKey && rt.reportedWorkerEventKeys.has(relayKey)) return;
-
-  const now = Date.now();
-  const fingerprint = pairRelayFingerprint(message);
-  const withinWindow = (rt.lastWorkerRelayAtMs ?? 0) > now - WORKER_RELAY_DEDUP_WINDOW_MS;
-  if (withinWindow && rt.lastWorkerRelayFingerprint === fingerprint) return;
-
-  rt.lastWorkerRelayFingerprint = fingerprint;
-  rt.lastWorkerRelayAtMs = now;
-  if (relayKey) rememberReportedWorkerEventKey(relayKey);
-
-  const relayPrompt = [
-    "Worker sent an execution update.",
-    "Reply to the USER now with a concise status update.",
-    "Include: (1) status, (2) files changed, (3) validation result, (4) next step.",
-    ...(handoffId ? ["", `handoff_id: ${handoffId}`] : []),
-    "",
-    `Worker event (${message.name}):`,
-    message.body ?? "",
-  ].join("\n");
-
-  pi.sendUserMessage(relayPrompt, { deliverAs: "followUp" });
-}
-
-function maybeAutoReportWorkerCompletion(): void {
-  if (currentPairRole() !== "worker") return;
-  const pending = rt.pendingWorkerHandoff;
-  if (!pending?.terminalEventSentAtMs) return;
-  rt.pendingWorkerHandoff = undefined;
-}
 
 async function maybePrimeLeadConnection(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
   if (currentPairRole() !== "lead") return;
   await ensureLeadConnection(pi, ctx, { autoStart: false, failIfUnavailable: false }).catch(() => undefined);
-}
-
-async function restoreModeState(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
-  await refreshSettings(ctx.cwd ?? process.cwd());
-
-  const restored = restorePersistedState(ctx);
-  rt.modeEnabled = restored?.enabled ?? false;
-  rt.previousActiveTools = rt.modeEnabled ? restored?.previousActiveTools ?? pi.getActiveTools() : undefined;
-  rt.previousLeadSelection = rt.modeEnabled ? restored?.previousLeadSelection : undefined;
-
-  if (rt.modeEnabled) {
-    applyLeadMode(pi);
-    const warning = await applyLeadSelection(pi, ctx, getConfiguredLeadSelection());
-    if (warning) notify(ctx, `lead-worker: ${warning}`, "warning");
-  }
-
-  const worker = await getWorkerStatus(
-    pi,
-    ctx.cwd ?? process.cwd(),
-    requireCurrentSettings().settings,
-    getLeadSessionBinding(ctx),
-  );
-  updateStatusLine(ctx, worker);
-}
-
-async function startOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: LeadWorkerSettings): Promise<LeadWorkerStatus> {
-  const worker = await startWorker(pi, ctx.cwd ?? process.cwd(), settings, getLeadSessionBinding(ctx));
-  updateStatusLine(ctx, worker);
-  await maybePrimeLeadConnection(pi, ctx);
-  return buildStatus("start", worker.message, worker, pi);
-}
-
-async function enableMode(pi: ExtensionAPI, ctx: ExtensionContext, settings: LeadWorkerSettings): Promise<LeadWorkerStatus> {
-  const capturedTools = rt.modeEnabled ? rt.previousActiveTools : pi.getActiveTools();
-  const capturedSelection = rt.modeEnabled ? rt.previousLeadSelection : getCurrentLeadSelection(pi, ctx);
-  const worker = await startWorker(pi, ctx.cwd ?? process.cwd(), settings, getLeadSessionBinding(ctx));
-  const configuredSelection = getConfiguredLeadSelection(settings);
-
-  rt.modeEnabled = true;
-  rt.previousActiveTools = normalizeToolList(pi, capturedTools);
-  if (rt.previousActiveTools.length === 0) rt.previousActiveTools = pi.getActiveTools();
-  rt.previousLeadSelection = normalizeLeadSelection(capturedSelection);
-
-  const switchWarning = await applyLeadSelection(pi, ctx, configuredSelection);
-
-  applyLeadMode(pi);
-  persistModeState(pi);
-  updateStatusLine(ctx, worker);
-  await maybePrimeLeadConnection(pi, ctx);
-
-  const configuredModelLabel = formatLeadModel(configuredSelection) ?? settings.lead.model;
-  const switchMessage = switchWarning
-    ? `Lead remained on ${formatLeadModel(getCurrentLeadSelection(pi, ctx)) ?? "the current model"} (${switchWarning})`
-    : `Lead switched to ${configuredModelLabel} (${settings.lead.thinking})`;
-
-  return buildStatus(
-    "on",
-    `Lead-worker mode enabled. Lead now avoids direct repo edits. ${switchMessage}. ${worker.message}`,
-    worker,
-    pi,
-  );
-}
-
-async function restoreLeadMode(pi: ExtensionAPI, ctx: ExtensionContext, worker: WorkerStatus): Promise<string> {
-  const toolsToRestore = rt.previousActiveTools;
-  const leadToRestore = rt.previousLeadSelection;
-
-  rt.modeEnabled = false;
-  restoreNormalTools(pi, toolsToRestore);
-
-  const restoreWarning = await applyLeadSelection(pi, ctx, leadToRestore);
-
-  rt.previousActiveTools = undefined;
-  rt.previousLeadSelection = undefined;
-  persistModeState(pi);
-  updateStatusLine(ctx, worker);
-
-  const restoreTarget = formatLeadModel(leadToRestore);
-  return restoreWarning
-    ? `Lead model restore was skipped (${restoreWarning})`
-    : restoreTarget
-      ? `Lead restored to ${restoreTarget}${leadToRestore?.thinkingLevel ? ` (${leadToRestore.thinkingLevel})` : ""}`
-      : "Lead returned to its prior model state";
-}
-
-async function disableMode(pi: ExtensionAPI, ctx: ExtensionContext, settings: LeadWorkerSettings): Promise<LeadWorkerStatus> {
-  const worker = await getWorkerStatus(pi, ctx.cwd ?? process.cwd(), settings, getLeadSessionBinding(ctx));
-  const restoreMessage = await restoreLeadMode(pi, ctx, worker);
-  return buildStatus(
-    "off",
-    `Lead-worker mode disabled. Lead returned to normal mode. ${restoreMessage}. ${worker.running ? `Worker ${worker.agentName} is still running.` : `Worker ${worker.agentName} is not running.`}`,
-    worker,
-    pi,
-  );
-}
-
-async function statusOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: LeadWorkerSettings): Promise<LeadWorkerStatus> {
-  const worker = await getWorkerStatus(pi, ctx.cwd ?? process.cwd(), settings, getLeadSessionBinding(ctx));
-  updateStatusLine(ctx, worker);
-  return buildStatus(
-    "status",
-    `Lead-worker mode is ${rt.modeEnabled ? "on" : "off"}. Lead model is ${formatLeadModel(getCurrentLeadSelection(pi, ctx)) ?? "unknown"}. Worker ${worker.agentName} is ${worker.running ? "running" : "not running"}.`,
-    worker,
-    pi,
-  );
-}
-
-async function stopOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: LeadWorkerSettings): Promise<LeadWorkerStatus> {
-  rt.activeSupervisedHandoff = undefined;
-  const worker = await stopWorker(pi, ctx.cwd ?? process.cwd(), settings, getLeadSessionBinding(ctx));
-
-  if (rt.modeEnabled) {
-    const restoreMessage = await restoreLeadMode(pi, ctx, worker);
-    return buildStatus("stop", `Worker ${worker.agentName} forcibly terminated. Lead-worker mode disabled. ${restoreMessage}.`, worker, pi);
-  }
-
-  updateStatusLine(ctx, worker);
-  return buildStatus("stop", `Worker ${worker.agentName} forcibly terminated.`, worker, pi);
-}
-
-async function runControlAction(pi: ExtensionAPI, ctx: ExtensionContext, action: LeadWorkerControlAction): Promise<LeadWorkerStatus> {
-  if (currentPairRole() !== "lead") {
-    throw new Error(`Lead-worker control action '${action}' is only available from the lead session.`);
-  }
-
-  const { settings } = await refreshSettings(ctx.cwd ?? process.cwd());
-  switch (action) {
-    case "start": return startOnly(pi, ctx, settings);
-    case "on": return enableMode(pi, ctx, settings);
-    case "status": return statusOnly(pi, ctx, settings);
-    case "off": return disableMode(pi, ctx, settings);
-    case "stop": return stopOnly(pi, ctx, settings);
-  }
-}
-
-async function resolveCommandAction(raw: string): Promise<LeadWorkerControlAction | null> {
-  const explicit = normalizeControlAction(raw);
-  if (explicit) return explicit;
-  if (raw.trim() !== "") return null;
-  return rt.modeEnabled ? "off" : "on";
 }
 
 function registerInboundRequest(message: PairMessageV2): void {
@@ -1195,81 +484,6 @@ function registerInboundRequest(message: PairMessageV2): void {
 
 function clearInboundRequest(replyTo: string): void {
   rt.pendingInboundRequests.delete(replyTo);
-}
-
-function formatWorkerStatusReply(pi: ExtensionAPI, ctx: ExtensionContext): string {
-  const cwd = ctx.cwd ?? process.cwd();
-  return [
-    "Worker status",
-    `- cwd: ${cwd}`,
-    `- model: ${ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "unknown"}`,
-    `- thinking: ${pi.getThinkingLevel()}`,
-    ...(rt.pendingWorkerHandoff ? [`- pending handoff id: ${rt.pendingWorkerHandoff.id}`] : []),
-  ].join("\n");
-}
-
-function formatPassiveWorkerStatusMarkdown(worker: WorkerStatus, note?: string): string {
-  const lines = [
-    "**worker status**",
-    "",
-    `- running: ${worker.running ? "yes" : "no"}`,
-    `- name: ${worker.agentName}`,
-    `- pair id: ${worker.pairId}`,
-    `- model: ${worker.model}`,
-    `- thinking: ${worker.thinking}`,
-    `- tmux session: ${worker.tmuxSession}`,
-    `- session file: ${worker.sessionFile}`,
-    `- log file: ${worker.logFile}`,
-    `- socket path: ${worker.socketPath}`,
-  ];
-
-  if (note) lines.push(`- note: ${note}`);
-  if (worker.leadSessionId) lines.push(`- last lead session id: ${worker.leadSessionId}`);
-  if (worker.leadSessionFile) lines.push(`- last lead session file: ${worker.leadSessionFile}`);
-  if (worker.startedAt) lines.push(`- started: ${worker.startedAt}`);
-  if (worker.lastStoppedAt) lines.push(`- last stopped: ${worker.lastStoppedAt}`);
-
-  if (worker.warnings.length > 0) {
-    lines.push("", "**warnings**", "");
-    for (const warning of worker.warnings) lines.push(`- ${warning}`);
-  }
-
-  if (worker.backlog.length > 0) {
-    lines.push("", "**recent worker output**", "", "```text", ...worker.backlog, "```");
-  }
-
-  return lines.join("\n");
-}
-
-async function queryWorkerStatusPassive(pi: ExtensionAPI, ctx: ExtensionContext): Promise<string> {
-  const cwd = ctx.cwd ?? process.cwd();
-  const { settings } = await refreshSettings(cwd);
-  const worker = await getWorkerStatus(pi, cwd, settings, getLeadSessionBinding(ctx));
-  if (!worker.running) {
-    return formatPassiveWorkerStatusMarkdown(worker, "worker is not running; direct protocol status unavailable.");
-  }
-
-  try {
-    const connection = await ensureLeadConnection(pi, ctx, { autoStart: false, failIfUnavailable: false });
-    const message = createMessage({
-      type: "command",
-      from: "lead",
-      to: "worker",
-      pairId: connection.pairId,
-      name: "status",
-      body: "",
-    });
-    const reply = await startRpc(message, connection.socket);
-    if (!reply.ok) throw new Error(reply.error ?? reply.body ?? "Worker status command failed.");
-    return [
-      "**worker status**",
-      "",
-      ...(reply.body ? [reply.body] : [JSON.stringify({ ok: true, reply }, null, 2)]),
-    ].join("\n");
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    return formatPassiveWorkerStatusMarkdown(worker, `passive status only; direct protocol status unavailable: ${err.message}`);
-  }
 }
 
 async function resolveModelSelection(ctx: ExtensionContext, ref: string) {
@@ -1516,14 +730,14 @@ async function handleIncomingMessage(pi: ExtensionAPI, message: PairMessageV2, s
       } else if (eventName === "progress" || eventName === "readiness") {
         notify(ctx, message.body ?? `Worker event: ${eventName}`, "info");
         if (eventName === "progress") {
-          void maybeRunLeadSupervision(pi, ctx, message).catch((err) => {
+          void maybeRunLeadSupervision(pi, ctx, message, sendOneWayEvent).catch((err) => {
             notify(ctx, `lead supervisor error: ${err instanceof Error ? err.message : String(err)}`, "warning");
           });
         }
       } else {
         deliverIncomingProtocolMessage(pi, message, true);
         maybeRelayWorkerEventToUser(pi, message);
-        void maybeRunLeadSupervision(pi, ctx, message).catch((err) => {
+        void maybeRunLeadSupervision(pi, ctx, message, sendOneWayEvent).catch((err) => {
           notify(ctx, `lead supervisor error: ${err instanceof Error ? err.message : String(err)}`, "warning");
         });
       }
@@ -1695,316 +909,6 @@ async function sendMessageAction(pi: ExtensionAPI, ctx: ExtensionContext, rawMes
     rt.pendingWorkerHandoff = undefined;
   }
   return result;
-}
-
-const SUPERVISOR_DECISION_TOOL = {
-  name: "report_supervisor_decision",
-  description: "Report the supervisor decision for the current worker execution state",
-  parameters: Type.Object({
-    action: Type.Union([
-      Type.Literal("continue"),
-      Type.Literal("steer"),
-      Type.Literal("done"),
-      Type.Literal("escalate"),
-    ], { description: "continue: worker is on track; steer: inject a correction; done: goal is met; escalate: surface to human" }),
-    message: Type.Optional(Type.String({ description: "Required for steer and escalate: the message to inject or surface" })),
-    confidence: Type.Number({ description: "Confidence in this decision, 0.0-1.0" }),
-    reasoning: Type.String({ description: "Brief reasoning" }),
-  }),
-};
-
-async function synthesizeOutcome(
-  handoffSpec: string,
-  apiKey: string,
-): Promise<string> {
-  const model = getModel(SUPERVISOR_MODEL_PROVIDER, SUPERVISOR_MODEL_ID);
-  if (!model) return truncate(handoffSpec, 500);
-
-  try {
-    const response = await complete(
-      model,
-      {
-        systemPrompt: "Summarize the following task handoff as a single concise sentence describing what successful completion looks like. Output only the sentence, no preamble.",
-        messages: [
-          {
-            role: "user" as const,
-            content: [{ type: "text" as const, text: handoffSpec }],
-            timestamp: Date.now(),
-          },
-        ],
-        tools: [],
-      },
-      { apiKey },
-    );
-    const text = response.content
-      .filter((c: any) => c.type === "text")
-      .map((c: any) => String(c.text ?? ""))
-      .join("")
-      .trim();
-    return text || truncate(handoffSpec, 500);
-  } catch (error) {
-    // Intentional fallback: outcome synthesis is best-effort. Supervision viability is
-    // validated separately in resolveLeadSupervisionModel; a truncated handoff spec is an
-    // acceptable degraded outcome string. Log for debugging visibility.
-    console.warn("[lead-worker] synthesizeOutcome failed:", error instanceof Error ? error.message : String(error));
-    return truncate(handoffSpec, 500);
-  }
-}
-
-function isMeaningfulSupervisionEvent(eventName: string): boolean {
-  return ["progress", "blocker", "clarification_needed", "completed", "failed", "cancelled"].includes(eventName);
-}
-
-function isTerminalSupervisionEvent(eventName: string): boolean {
-  return ["completed", "failed", "cancelled"].includes(eventName);
-}
-
-function queuedTerminalIndex(events: PairMessageV2[]): number {
-  return events.findIndex((queued) => isTerminalSupervisionEvent(queued.name ?? ""));
-}
-
-function hasQueuedTerminal(events: PairMessageV2[]): boolean {
-  return queuedTerminalIndex(events) >= 0;
-}
-
-function trimRecentSupervisionEvents(supervised: ActiveSupervisedHandoff): void {
-  if (supervised.recentEvents.length > MAX_SUPERVISED_RECENT_EVENTS * 2) {
-    supervised.recentEvents = supervised.recentEvents.slice(-MAX_SUPERVISED_RECENT_EVENTS);
-  }
-}
-
-function upsertQueuedEvent(supervised: ActiveSupervisedHandoff, event: PairMessageV2, beforeTerminal: boolean): void {
-  const eventName = event.name ?? "";
-  const existingIndex = supervised.pendingEvents.findIndex((queued) => (queued.name ?? "") === eventName);
-  if (existingIndex >= 0) {
-    supervised.pendingEvents.splice(existingIndex, 1);
-  }
-
-  if (!beforeTerminal) {
-    supervised.pendingEvents.push(event);
-    return;
-  }
-
-  const terminalIndex = queuedTerminalIndex(supervised.pendingEvents);
-  if (terminalIndex < 0) {
-    throw new Error("Lead supervision queue entered an invalid terminal state.");
-  }
-  supervised.pendingEvents.splice(terminalIndex, 0, event);
-}
-
-function enqueueSupervisionEvent(supervised: ActiveSupervisedHandoff, event: PairMessageV2): void {
-  const eventName = event.name ?? "";
-  const terminalQueued = hasQueuedTerminal(supervised.pendingEvents);
-
-  if (isTerminalSupervisionEvent(eventName)) {
-    supervised.pendingEvents = supervised.pendingEvents.filter((queued) => {
-      const queuedName = queued.name ?? "";
-      return queuedName !== "progress" && !isTerminalSupervisionEvent(queuedName);
-    });
-    upsertQueuedEvent(supervised, event, false);
-  } else if (terminalQueued) {
-    if (eventName !== "progress") {
-      upsertQueuedEvent(supervised, event, true);
-    }
-  } else {
-    upsertQueuedEvent(supervised, event, false);
-  }
-
-  if (supervised.pendingEvents.length > MAX_PENDING_SUPERVISION_EVENTS) {
-    throw new Error(`Lead supervision queue exceeded bound of ${MAX_PENDING_SUPERVISION_EVENTS} events.`);
-  }
-}
-
-async function resolveLeadSupervisionModel(ctx: ExtensionContext): Promise<{ model: NonNullable<ReturnType<ExtensionContext["modelRegistry"]["find"]>>; apiKey: string }> {
-  const provider = rt.lastObservedLeadModel.provider ?? ctx.model?.provider;
-  const modelId = rt.lastObservedLeadModel.modelId ?? ctx.model?.id;
-  if (!provider || !modelId) {
-    throw new Error("Lead supervision requires an active lead model, but none is currently selected.");
-  }
-
-  const model = ctx.modelRegistry.find(provider, modelId);
-  if (!model) {
-    throw new Error(`Lead supervision requires the active lead model ${provider}/${modelId} to be present in the local registry.`);
-  }
-
-  const registry = ctx.modelRegistry as unknown as Record<string, unknown>;
-  if (typeof registry.getApiKeyAndHeaders !== "function") {
-    throw new Error(`Lead supervision requires modelRegistry.getApiKeyAndHeaders (unavailable in current runtime).`);
-  }
-  const auth = await (registry.getApiKeyAndHeaders as (m: unknown) => Promise<{ ok?: boolean; apiKey?: string }>)(model);
-  if (!auth?.ok || !auth.apiKey) {
-    throw new Error(`Lead supervision requires API credentials for the active lead model ${provider}/${modelId}.`);
-  }
-
-  return { model, apiKey: auth.apiKey };
-}
-
-async function analyzeWorkerEvent(
-  model: NonNullable<ReturnType<ExtensionContext["modelRegistry"]["find"]>>,
-  supervised: ActiveSupervisedHandoff,
-  apiKey: string,
-): Promise<SupervisorDecision> {
-  const stagnating = supervised.steerCount >= MAX_SUPERVISED_STEERS;
-  const recentEventText = supervised.recentEvents
-    .slice(-MAX_SUPERVISED_RECENT_EVENTS)
-    .map((e) => `[${e.name ?? e.type}] ${e.body ?? ""}`)
-    .join("\n");
-
-  const response = await complete(
-    model,
-    {
-      systemPrompt: [
-        "You are the lead-side supervisor for a lead-worker coding session.",
-        "Analyze the worker's progress against the stated outcome and decide what to do.",
-        stagnating ? `The worker has been steered ${supervised.steerCount} times without completing. Lean toward escalate.` : "",
-        "You MUST call the report_supervisor_decision tool.",
-      ].filter(Boolean).join(" "),
-      messages: [
-        {
-          role: "user" as const,
-          content: [
-            {
-              type: "text" as const,
-              text: [
-                `Outcome: ${supervised.outcome}`,
-                "",
-                "Handoff spec:",
-                supervised.spec,
-                "",
-                "Recent worker events:",
-                recentEventText || "(none yet)",
-              ].join("\n"),
-            },
-          ],
-          timestamp: Date.now(),
-        },
-      ],
-      tools: [SUPERVISOR_DECISION_TOOL],
-    },
-    { apiKey },
-  );
-
-  const toolCall = response.content.find((c: any) => c.type === "toolCall" && c.name === SUPERVISOR_DECISION_TOOL.name);
-  if (!toolCall || toolCall.type !== "toolCall") {
-    throw new Error("Lead supervision analysis did not return a report_supervisor_decision tool call.");
-  }
-  const args = toolCall.arguments as Record<string, unknown>;
-  return {
-    action: (args.action as SupervisorDecision["action"]) ?? "continue",
-    message: typeof args.message === "string" ? args.message : undefined,
-    confidence: typeof args.confidence === "number" ? args.confidence : 0,
-    reasoning: typeof args.reasoning === "string" ? args.reasoning : "",
-  };
-}
-
-async function processLeadSupervisionEvent(pi: ExtensionAPI, ctx: ExtensionContext, supervised: ActiveSupervisedHandoff, event: PairMessageV2): Promise<void> {
-  supervised.recentEvents.push(event);
-  trimRecentSupervisionEvents(supervised);
-
-  const eventName = event.name ?? "";
-  const isTerminal = isTerminalSupervisionEvent(eventName);
-  if (!isTerminal && hasQueuedTerminal(supervised.pendingEvents)) {
-    return;
-  }
-
-  const { model, apiKey } = await resolveLeadSupervisionModel(ctx);
-
-  let decision: SupervisorDecision;
-  if (isTerminal) {
-    decision = await analyzeWorkerEvent(model, supervised, apiKey);
-    if (decision.action === "steer") {
-      decision = { action: "escalate", confidence: decision.confidence, reasoning: `terminal event with steer suggestion converted to escalate: ${decision.reasoning}` };
-    }
-    rt.activeSupervisedHandoff = undefined;
-  } else if (supervised.steerCount >= MAX_SUPERVISED_STEERS) {
-    decision = { action: "escalate", confidence: 1, reasoning: "stagnation threshold reached" };
-    rt.activeSupervisedHandoff = undefined;
-  } else {
-    decision = await analyzeWorkerEvent(model, supervised, apiKey);
-  }
-
-  if (decision.action === "continue") return;
-
-  if (decision.action === "steer" && decision.message) {
-    supervised.steerCount++;
-    try {
-      await sendOneWayEvent(pi, ctx, {
-        name: "steer",
-        body: decision.message,
-        handoffId: supervised.id,
-        autoStart: false,
-        failIfUnavailable: false,
-      });
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      throw new Error(`Lead supervision failed to deliver steer message: ${err.message}`);
-    }
-    return;
-  }
-
-  if (decision.action === "done") {
-    notify(ctx,
-      `Lead supervisor: outcome achieved for handoff ${supervised.id.slice(0, 8)}.`,
-      "info",
-    );
-    rt.activeSupervisedHandoff = undefined;
-    return;
-  }
-
-  if (decision.action === "escalate") {
-    const summary = [
-      `Lead supervisor escalating handoff ${supervised.id.slice(0, 8)} — needs your attention.`,
-      `Outcome: ${supervised.outcome}`,
-      `Steer count: ${supervised.steerCount}`,
-      decision.message ? `Reason: ${decision.message}` : `Reason: ${decision.reasoning}`,
-    ].join(" | ");
-    notify(ctx, summary, "warning");
-    pi.sendUserMessage(
-      [
-        "[LEAD-WORKER SUPERVISOR ESCALATION]",
-        `handoff_id: ${supervised.id}`,
-        `outcome: ${supervised.outcome}`,
-        `steer_count: ${supervised.steerCount}`,
-        `reason: ${decision.message ?? decision.reasoning}`,
-        "",
-        "Review the latest worker events and decide the next action.",
-      ].join("\n"),
-      { deliverAs: "followUp" },
-    );
-    rt.activeSupervisedHandoff = undefined;
-  }
-}
-
-async function maybeRunLeadSupervision(pi: ExtensionAPI, ctx: ExtensionContext, event: PairMessageV2): Promise<void> {
-  if (currentPairRole() !== "lead") return;
-  const supervised = rt.activeSupervisedHandoff;
-  if (!supervised) return;
-  if (event.handoffId && event.handoffId !== supervised.id) return;
-
-  const eventName = event.name ?? "";
-  if (!isMeaningfulSupervisionEvent(eventName)) return;
-
-  enqueueSupervisionEvent(supervised, event);
-  if (supervised.supervisionRunning) return;
-  supervised.supervisionRunning = true;
-
-  try {
-    while (rt.activeSupervisedHandoff === supervised && supervised.pendingEvents.length > 0) {
-      const nextEvent = supervised.pendingEvents.shift();
-      if (!nextEvent) continue;
-      await processLeadSupervisionEvent(pi, ctx, supervised, nextEvent);
-    }
-  } catch (error) {
-    if (rt.activeSupervisedHandoff === supervised) {
-      rt.activeSupervisedHandoff = undefined;
-    }
-    const err = error instanceof Error ? error : new Error(String(error));
-    throw new Error(`Lead supervision failed for handoff ${supervised.id}: ${err.message}`);
-  } finally {
-    if (rt.activeSupervisedHandoff === supervised) {
-      supervised.supervisionRunning = false;
-    }
-  }
 }
 
 function buildHandoffText(ctx: ExtensionContext, extraInstructions: string, handoffId: string): string | null {
@@ -2283,7 +1187,7 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
           return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: result };
         }
 
-        const status = await runControlAction(pi, ctx, params.action);
+        const status = await runControlAction(pi, ctx, params.action, maybePrimeLeadConnection);
         return { content: [{ type: "text", text: JSON.stringify(status, null, 2) }], details: status };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -2317,7 +1221,7 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
     }
 
     try {
-      const status = await runControlAction(pi, ctx, action);
+      const status = await runControlAction(pi, ctx, action, maybePrimeLeadConnection);
       emitInfo(pi, formatStatusMarkdown(status), BUILD_HANDOFF_MESSAGE_TYPE);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -2340,7 +1244,7 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
 
     try {
       if (trimmed === "status") {
-        emitInfo(pi, await queryWorkerStatusPassive(pi, ctx), BUILD_HANDOFF_MESSAGE_TYPE);
+        emitInfo(pi, await queryWorkerStatusPassive(pi, ctx, ensureLeadConnection, startRpc), BUILD_HANDOFF_MESSAGE_TYPE);
         return;
       }
 

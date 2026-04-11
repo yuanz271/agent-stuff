@@ -7,6 +7,20 @@
 
 The whole point of the extension is to let the worker run autonomously. `/worker build` is therefore always supervised by the lead via event analysis and steering.
 
+## Implementation structure
+
+The current implementation is intentionally split by concern:
+
+| File | Responsibility |
+|---|---|
+| `runtime.ts` | shared runtime state (`rt`), shared types, repo-wide constants, and small cross-cutting helpers |
+| `control.ts` | lead mode lifecycle, status rendering, tool/model switching, and lead-only control actions |
+| `relay.ts` | worker event surfacing, reply prompting, worker status formatting, and passive `/worker status` |
+| `supervision.ts` | outcome synthesis, supervision analysis, and event queue handling |
+| `index.ts` | transport/RPC, queued event delivery, worker socket server, handoff/build orchestration, and extension registration |
+
+`index.ts` deliberately still owns transport and extension wiring in the first refactor pass because those paths remain the most coupled and correctness-sensitive.
+
 ## Architecture
 
 ### Roles
