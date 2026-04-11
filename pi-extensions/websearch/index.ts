@@ -232,22 +232,33 @@ function selectChunkSourceRecords(
 }
 
 async function resolveChunkSourceRecords(records: ChunkSourceRecord[], signal?: AbortSignal): Promise<ChunkSourceRecord[]> {
-  return Promise.all(
-    records.map(async ({ chunkIndex, source }) => {
-      if (!source.isGroundingRedirect) return { chunkIndex, source };
+  const redirectUrls = [...new Set(records.filter(({ source }) => source.isGroundingRedirect).map(({ source }) => source.url))];
+  const resolvedUrlByRawUrl = new Map<string, string>();
 
-      const resolvedUrl = await resolveGroundingRedirectUrl(source.url, signal);
-      return {
-        chunkIndex,
-        source: {
-          ...source,
-          url: resolvedUrl,
-          domain: getUrlDomain(resolvedUrl),
-          groundingUrl: source.url,
-        },
-      };
+  await Promise.all(
+    redirectUrls.map(async (rawUrl) => {
+      resolvedUrlByRawUrl.set(rawUrl, await resolveGroundingRedirectUrl(rawUrl, signal));
     }),
   );
+
+  return records.map(({ chunkIndex, source }) => {
+    if (!source.isGroundingRedirect) return { chunkIndex, source };
+
+    const resolvedUrl = resolvedUrlByRawUrl.get(source.url);
+    if (!resolvedUrl) {
+      throw new Error(`Missing resolved grounding URL for ${source.url}`);
+    }
+
+    return {
+      chunkIndex,
+      source: {
+        ...source,
+        url: resolvedUrl,
+        domain: getUrlDomain(resolvedUrl),
+        groundingUrl: source.url,
+      },
+    };
+  });
 }
 
 function buildVisibleSources(records: ChunkSourceRecord[]): { sources: WebsearchSource[]; chunkIndexToSourceNumber: Map<number, number> } {
