@@ -516,14 +516,10 @@ export default function (pi: ExtensionAPI) {
           ? sources.map((s, i) => `${i + 1}. ${s.url}`).join("\n")
           : sources.map((s) => s.url).join("\n");
 
-        const sourceSummary = sources.length > 0
-          ? `Showing ${sources.length} ${hasInlineCitations ? "cited" : "grounded"} source${sources.length === 1 ? "" : "s"}.`
-          : "No grounded sources returned.";
-
         const visibleOutput = [
-          answer ? `Summary:\n${answer}` : "Summary: (model returned no text)",
+          `Query: ${query}`,
           "",
-          sourceSummary,
+          answer ? `Summary:\n${answer}` : "Summary: (model returned no text)",
           "",
           showSources
             ? (sources.length > 0 ? `Sources:\n${sourceLines}` : "Sources: none returned by grounding metadata")
