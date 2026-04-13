@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import type { LeadWorkerSettings } from "./settings.js";
 
-const STATE_VERSION = 2;
+const STATE_VERSION = 3;
 const CAPTURE_LINES = 40;
 const LOG_TAIL_BYTES = 32 * 1024;
 const TMUX_FORMAT = "#{session_id}\t#{window_id}\t#{pane_id}";
@@ -23,6 +23,15 @@ export type LeadWorkerAction = "start" | "status" | "stop";
 export type LeadSessionBinding = {
   sessionId: string;
   sessionFile?: string;
+};
+
+export type PendingClarificationDelivery = "live" | "durable";
+
+export type PendingClarificationSnapshot = {
+  handoffId?: string;
+  question: string;
+  askedAt: string;
+  delivery: PendingClarificationDelivery;
 };
 
 export type WorkerState = {
@@ -47,6 +56,7 @@ export type WorkerState = {
   thinking: ThinkingLevel;
   startedAt?: string;
   lastStoppedAt?: string;
+  pendingClarification?: PendingClarificationSnapshot;
 };
 
 export type WorkerStatus = {
@@ -75,6 +85,7 @@ export type WorkerStatus = {
   thinking: ThinkingLevel;
   startedAt?: string;
   lastStoppedAt?: string;
+  pendingClarification?: PendingClarificationSnapshot;
   warnings: string[];
   backlog: string[];
 };
@@ -249,6 +260,19 @@ async function tmuxSessionExists(pi: ExtensionAPI, session: string, cwd: string)
   return result.code === 0;
 }
 
+function normalizePendingClarificationSnapshot(value: unknown): PendingClarificationSnapshot | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const snapshot = value as Record<string, unknown>;
+  const question = typeof snapshot.question === "string" ? snapshot.question.trim() : "";
+  const askedAt = typeof snapshot.askedAt === "string" ? snapshot.askedAt.trim() : "";
+  const delivery = snapshot.delivery;
+  const handoffId = typeof snapshot.handoffId === "string" && snapshot.handoffId.trim()
+    ? snapshot.handoffId.trim()
+    : undefined;
+  if (!question || !askedAt || (delivery !== "live" && delivery !== "durable")) return undefined;
+  return { handoffId, question, askedAt, delivery };
+}
+
 async function loadState(stateFile: string): Promise<WorkerState | null> {
   let raw: string;
   try {
@@ -261,7 +285,11 @@ async function loadState(stateFile: string): Promise<WorkerState | null> {
     throw new Error(`Failed to read worker state ${stateFile}: ${error instanceof Error ? error.message : String(error)}`);
   }
   try {
-    return JSON.parse(raw) as WorkerState;
+    const parsed = JSON.parse(raw) as WorkerState & { pendingClarification?: unknown };
+    return {
+      ...parsed,
+      pendingClarification: normalizePendingClarificationSnapshot(parsed.pendingClarification),
+    };
   } catch (error) {
     throw new Error(`Corrupt worker state ${stateFile}: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -270,6 +298,37 @@ async function loadState(stateFile: string): Promise<WorkerState | null> {
 async function saveState(stateFile: string, state: WorkerState): Promise<void> {
   await fs.mkdir(dirname(stateFile), { recursive: true });
   await fs.writeFile(stateFile, JSON.stringify(state, null, 2) + "\n", "utf8");
+}
+
+const EMPTY_LEAD_SESSION: LeadSessionBinding = { sessionId: "" };
+
+export async function setWorkerPendingClarification(
+  pi: ExtensionAPI,
+  cwd: string,
+  settings: LeadWorkerSettings,
+  pendingClarification: PendingClarificationSnapshot,
+): Promise<void> {
+  const { paths, desiredState, existingState } = await resolveState(pi, cwd, settings, EMPTY_LEAD_SESSION);
+  const nextState: WorkerState = {
+    ...(existingState ?? desiredState),
+    version: STATE_VERSION,
+    pendingClarification,
+  };
+  await saveState(paths.stateFile, nextState);
+}
+
+export async function clearWorkerPendingClarification(
+  pi: ExtensionAPI,
+  cwd: string,
+  settings: LeadWorkerSettings,
+): Promise<void> {
+  const { paths, existingState } = await resolveState(pi, cwd, settings, EMPTY_LEAD_SESSION);
+  if (!existingState?.pendingClarification) return;
+  await saveState(paths.stateFile, {
+    ...existingState,
+    version: STATE_VERSION,
+    pendingClarification: undefined,
+  });
 }
 
 async function readTailFromFile(path: string): Promise<string[]> {
@@ -333,7 +392,9 @@ function buildSystemPrompt(settings: LeadWorkerSettings, pairId: string): string
     "",
     "Role:",
     "- You are the write-enabled worker counterpart for this repository.",
-    '- Use lead_worker({ action: "message", message: "..." }) for concise one-way updates to the active lead.',
+    '- Use lead_worker({ action: "message", name: "progress" | "blocker" | "clarification_needed", message: "..." }) for concise one-way updates to the active lead.',
+    '- Use lead_worker({ action: "ask", name: "clarification", message: "..." }) when you need a live answer from an attached lead before continuing.',
+    '- Use lead_worker({ action: "message", name: "clarification_needed", message: "..." }) when the clarification must remain visible across disconnects or resume.',
     '- Use lead_worker({ action: "reply", replyTo: "...", message: "..." }) when answering a direct worker-side request.',
     "- Do not send acknowledgements or chatter.",
     "- For each delegated handoff, you MUST send exactly one terminal update to the lead when you finish or stop.",
@@ -360,10 +421,12 @@ function buildStartupPrompt(settings: LeadWorkerSettings, pairId: string): strin
     "",
     "Startup checklist:",
     `1. Reply with a short readiness note that explicitly says you are ready for pair ${pairId}.`,
-    '2. If you need to contact the lead later, use lead_worker({ action: "message", message: "..." }).',
-    '3. If you receive a direct request that expects an answer, respond with lead_worker({ action: "reply", replyTo: "...", message: "..." }).',
-    '4. For every delegated handoff, send exactly one terminal update back to the lead with: handoff_id, status, files changed, validation result, and blockers/next action (if any).',
-    "5. Then wait for further instructions.",
+    '2. For one-way updates, use lead_worker({ action: "message", name: "progress" | "blocker" | "clarification_needed", message: "..." }).',
+    '3. If you need a live answer from an attached lead before continuing, use lead_worker({ action: "ask", name: "clarification", message: "..." }).',
+    '4. If the clarification must remain visible across disconnects or resume, use lead_worker({ action: "message", name: "clarification_needed", message: "..." }).',
+    '5. If you receive a direct request that expects an answer, respond with lead_worker({ action: "reply", replyTo: "...", message: "..." }).',
+    '6. For every delegated handoff, send exactly one terminal update back to the lead with: handoff_id, status, files changed, validation result, and blockers/next action (if any).',
+    "7. Then wait for further instructions.",
     "",
     "Do not modify files during this startup handshake.",
   ];
@@ -437,11 +500,14 @@ function withStateOverrides(
     ...baseState(paths, settings, leadSession),
     ...(state
       ? {
+          ...(leadSession.sessionId ? {} : { leadSessionId: state.leadSessionId }),
+          ...(leadSession.sessionFile ? {} : { leadSessionFile: state.leadSessionFile }),
           startedAt: state.startedAt,
           lastStoppedAt: state.lastStoppedAt,
           tmuxSessionId: state.tmuxSessionId,
           tmuxWindowId: state.tmuxWindowId,
           tmuxPaneId: state.tmuxPaneId,
+          pendingClarification: state.pendingClarification,
         }
       : {}),
     ...patch,
@@ -509,6 +575,7 @@ async function buildStatus(
     thinking: state.thinking,
     startedAt: state.startedAt,
     lastStoppedAt: state.lastStoppedAt,
+    pendingClarification: state.pendingClarification,
     warnings,
     backlog,
   };
@@ -620,6 +687,7 @@ export async function stopWorker(
 
   const nextState = withStateOverrides(paths, settings, leadSession, state, {
     lastStoppedAt: new Date().toISOString(),
+    pendingClarification: undefined,
   });
   try {
     await fs.unlink(paths.socketPath);

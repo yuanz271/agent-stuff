@@ -15,6 +15,7 @@ import {
   getLeadSessionBinding,
   isTerminalSupervisionEvent,
   refreshSettings,
+  truncate,
 } from "./runtime.js";
 
 export type EnsureLeadConnection = (
@@ -86,9 +87,41 @@ export function deliverIncomingProtocolMessage(pi: ExtensionAPI, message: PairMe
   );
 }
 
+function formatClarificationAge(askedAt: string): string {
+  const parsed = Date.parse(askedAt);
+  if (!Number.isFinite(parsed)) return "unknown";
+  const seconds = Math.max(0, Math.floor((Date.now() - parsed) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+function formatClarificationLines(
+  pending:
+    | { handoffId?: string; question: string; askedAt: string; delivery: "live" | "durable"; canReplyNow?: boolean }
+    | undefined,
+  fallbackReplyAvailability = false,
+): string[] {
+  if (!pending) {
+    return ["- waiting for clarification: no"];
+  }
+
+  return [
+    "- waiting for clarification: yes",
+    ...(pending.handoffId ? [`- clarification handoff id: ${pending.handoffId}`] : []),
+    `- clarification delivery: ${pending.delivery}`,
+    `- clarification age: ${formatClarificationAge(pending.askedAt)}`,
+    `- reply available now: ${(pending.canReplyNow ?? fallbackReplyAvailability) ? "yes" : "no"}`,
+    `- clarification question: ${truncate(pending.question, 160)}`,
+  ];
+}
+
 export function promptForReply(pi: ExtensionAPI, message: PairMessageV2): void {
   const instruction = [
-    `${message.from === "worker" ? "Worker" : "Lead"} asked a direct question${message.name ? ` (${message.name})` : ""}.`,
+    `${message.from === "worker" ? "Worker needs clarification" : "Lead asked a direct question"}${message.name ? ` (${message.name})` : ""}.`,
     `Reply exactly once with lead_worker({ action: "reply", replyTo: "${message.id}", message: "..." }).`,
     ...(message.handoffId ? [`handoff_id: ${message.handoffId}`] : []),
     "",
@@ -142,6 +175,7 @@ export function formatWorkerStatusReply(pi: ExtensionAPI, ctx: ExtensionContext)
     `- model: ${ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "unknown"}`,
     `- thinking: ${pi.getThinkingLevel()}`,
     ...(rt.pendingWorkerHandoff ? [`- pending handoff id: ${rt.pendingWorkerHandoff.id}`] : []),
+    ...formatClarificationLines(rt.pendingClarification),
   ].join("\n");
 }
 
@@ -158,6 +192,7 @@ function formatPassiveWorkerStatusMarkdown(worker: WorkerStatus, note?: string):
     `- session file: ${worker.sessionFile}`,
     `- log file: ${worker.logFile}`,
     `- socket path: ${worker.socketPath}`,
+    ...formatClarificationLines(worker.pendingClarification, false),
   ];
 
   if (note) lines.push(`- note: ${note}`);

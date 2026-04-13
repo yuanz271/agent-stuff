@@ -138,6 +138,17 @@ Worker → lead events carry `handoffId` when associated with a delegated task.
 - `cancelled` — terminal: task was abandoned
 - `busy` — rejected second-lead attachment attempt
 
+### Clarification state
+Unresolved worker clarification is tracked as semantic handoff state, not only as an in-memory transport detail.
+
+- live worker `ask` requests are surfaced as `waiting for clarification` while the reply path is still active
+- if the worker issues `ask` while no lead is attached, it automatically degrades into durable `clarification_needed` state and is queued for later delivery
+- if the worker reports `clarification_needed`, the unresolved question is persisted in `worker-state.json`
+- persisted clarification state survives reconnects/resume and appears in `/worker status`
+- persisted state does **not** preserve raw `replyTo` ids; after resume, status may show the unresolved question even when an immediate `reply` is no longer possible
+- lead-side supervision pauses steering/escalation while clarification remains unresolved, and resumes after reply or terminal outcome
+- new accepted handoffs, terminal worker events, explicit interrupts, and worker stop clear clarification state
+
 ### Lead → worker steering
 When lead-side supervision decides to steer, it sends a `message` event to the worker via `lead_worker({ action: "message", name: "steer", message: "..." })`. This is not a named worker event but a lead-originated event delivered over the same protocol channel.
 
@@ -171,6 +182,7 @@ The lead analyzes incoming worker events against the handoff spec:
 - auth/availability: if the active lead model is unavailable or lacks credentials, supervision fails fast and surfaces an explicit error rather than silently downgrading to unsupervised execution
 - output: `{ action: "continue" | "steer" | "done" | "escalate", message?, confidence, reasoning }`
 - trigger: on every meaningful worker event (`progress`, `blocker`, `clarification_needed`, terminal)
+- clarification pause: if the worker is explicitly waiting for clarification on the active handoff, supervision records the event but pauses steering/escalation until the clarification is resolved or a terminal event arrives
 - concurrency: events are analyzed serially per handoff so bursts of `progress` updates cannot race into duplicate steering or premature escalation
 - queue policy: queued supervision events are bounded structurally by coalescing same-kind updates (`progress`, `blocker`, `clarification_needed`), while terminal events preempt only stale `progress` and retain queued `blocker` / `clarification_needed` context for final analysis
 
@@ -201,7 +213,7 @@ This keeps lead-worker supervision observable and attributable:
 
 ### Slash commands
 - `/lead [start|on|status|off|stop]` — lead mode control
-- `/worker status` — passive worker status query; uses direct protocol status when available but never auto-starts the worker
+- `/worker status` — passive worker status query; uses direct protocol status when available, never auto-starts the worker, and shows pending clarification state
 - `/worker build [instructions]` — supervised task delegation
 - `/worker /<command>` — escape hatch for worker-local slash commands
 

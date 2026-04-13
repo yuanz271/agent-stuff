@@ -7,7 +7,7 @@ import {
   type LeadWorkerSettingsLoadResult,
   type LeadWorkerSource,
 } from "./settings.js";
-import type { LeadSessionBinding, WorkerStatus } from "./utils.js";
+import type { LeadSessionBinding, PendingClarificationSnapshot, WorkerStatus } from "./utils.js";
 import type { PairMessageV2, PairRole } from "./protocol.js";
 
 export const STATUS_KEY = "lead-worker";
@@ -80,6 +80,8 @@ export type PendingRpc = {
 export type PendingInboundRequest = {
   from: PairRole;
   name?: string;
+  body?: string;
+  handoffId?: string;
   receivedAtMs: number;
 };
 
@@ -96,6 +98,11 @@ export type PendingWorkerHandoff = {
   receivedAtMs: number;
   pairId: string;
   terminalEventSentAtMs?: number;
+};
+
+export type PendingClarification = PendingClarificationSnapshot & {
+  replyTo?: string;
+  canReplyNow: boolean;
 };
 
 export type SupervisorDecision = {
@@ -123,6 +130,7 @@ export interface LeadWorkerRuntime {
   currentSettings: LeadWorkerSettingsLoadResult | undefined;
   latestPairContext: ExtensionContext | undefined;
   pendingWorkerHandoff: PendingWorkerHandoff | undefined;
+  pendingClarification: PendingClarification | undefined;
   lastWorkerRelayFingerprint: string | undefined;
   lastWorkerRelayAtMs: number | undefined;
   reportedWorkerEventKeys: Set<string>;
@@ -148,6 +156,7 @@ export const rt: LeadWorkerRuntime = {
   currentSettings: undefined,
   latestPairContext: undefined,
   pendingWorkerHandoff: undefined,
+  pendingClarification: undefined,
   lastWorkerRelayFingerprint: undefined,
   lastWorkerRelayAtMs: undefined,
   reportedWorkerEventKeys: new Set<string>(),

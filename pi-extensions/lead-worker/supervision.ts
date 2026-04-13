@@ -77,6 +77,25 @@ export function isMeaningfulSupervisionEvent(eventName: string): boolean {
   return ["progress", "blocker", "clarification_needed", "completed", "failed", "cancelled"].includes(eventName);
 }
 
+function pendingClarificationForHandoff(supervised: ActiveSupervisedHandoff) {
+  const pending = rt.pendingClarification;
+  if (!pending) return undefined;
+  if (pending.handoffId && pending.handoffId !== supervised.id) return undefined;
+  return pending;
+}
+
+function formatPendingClarificationForSupervisor(supervised: ActiveSupervisedHandoff): string {
+  const pending = pendingClarificationForHandoff(supervised);
+  if (!pending) return "Pending clarification: none";
+  return [
+    "Pending clarification: yes",
+    ...(pending.handoffId ? [`Handoff id: ${pending.handoffId}`] : []),
+    `Delivery: ${pending.delivery}`,
+    `Reply available now: ${pending.canReplyNow ? "yes" : "no"}`,
+    `Question: ${pending.question}`,
+  ].join("\n");
+}
+
 function queuedTerminalIndex(events: PairMessageV2[]): number {
   return events.findIndex((queued) => isTerminalSupervisionEvent(queued.name ?? ""));
 }
@@ -163,6 +182,7 @@ async function analyzeWorkerEvent(
   apiKey: string,
 ): Promise<SupervisorDecision> {
   const stagnating = supervised.steerCount >= MAX_SUPERVISED_STEERS;
+  const pendingClarification = pendingClarificationForHandoff(supervised);
   const recentEventText = supervised.recentEvents
     .slice(-MAX_SUPERVISED_RECENT_EVENTS)
     .map((e) => `[${e.name ?? e.type}] ${e.body ?? ""}`)
@@ -174,6 +194,9 @@ async function analyzeWorkerEvent(
       systemPrompt: [
         "You are the lead-side supervisor for a lead-worker coding session.",
         "Analyze the worker's progress against the stated outcome and decide what to do.",
+        pendingClarification
+          ? "The worker is explicitly waiting for clarification from the lead. While clarification is pending, prefer continue rather than steer or escalate unless there is clear evidence the task is irrecoverably off track."
+          : "",
         stagnating ? `The worker has been steered ${supervised.steerCount} times without completing. Lean toward escalate.` : "",
         "You MUST call the report_supervisor_decision tool.",
       ].filter(Boolean).join(" "),
@@ -188,6 +211,8 @@ async function analyzeWorkerEvent(
                 "",
                 "Handoff spec:",
                 supervised.spec,
+                "",
+                formatPendingClarificationForSupervisor(supervised),
                 "",
                 "Recent worker events:",
                 recentEventText || "(none yet)",
@@ -228,6 +253,10 @@ async function processLeadSupervisionEvent(
   const eventName = event.name ?? "";
   const isTerminal = isTerminalSupervisionEvent(eventName);
   if (!isTerminal && hasQueuedTerminal(supervised.pendingEvents)) {
+    return;
+  }
+
+  if (!isTerminal && pendingClarificationForHandoff(supervised)) {
     return;
   }
 

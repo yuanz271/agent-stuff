@@ -17,16 +17,20 @@ import {
   type PairRole,
 } from "./protocol.js";
 import {
+  clearWorkerPendingClarification,
   getWorkerStatus,
   resolvePairRuntimePaths,
   resolveProjectRoot,
+  setWorkerPendingClarification,
   startWorker,
   stopWorker,
+  type PendingClarificationSnapshot,
   type WorkerStatus,
 } from "./utils.js";
 import {
   BUILD_HANDOFF_MESSAGE_TYPE,
   CONTEXT_MESSAGE_TYPE,
+  MAX_CONTEXT_MESSAGE_CHARS,
   MAX_HANDOFF_CHARS,
   MAX_TRACKED_REPORTED_HANDOFF_IDS,
   SOCKET_WAIT_INTERVAL_MS,
@@ -46,6 +50,7 @@ import {
   type ActiveConnection,
   type ActiveSupervisedHandoff,
   type LeadWorkerControlAction,
+  type PendingClarification,
   type PendingInboundRequest,
   type PendingRpc,
 } from "./runtime.js";
@@ -157,6 +162,72 @@ function markPendingWorkerHandoffTerminalEvent(message: PairMessageV2): void {
 function sendProtocolMessage(socket: Socket, message: PairMessageV2): void {
   writeMessage(socket, message);
   markPendingWorkerHandoffTerminalEvent(message);
+}
+
+function pendingClarificationSnapshot(
+  question: string,
+  askedAt: string,
+  delivery: PendingClarification["delivery"],
+  handoffId?: string,
+): PendingClarificationSnapshot {
+  const normalizedQuestion = truncate(question.trim() || "(no clarification text provided)", MAX_CONTEXT_MESSAGE_CHARS);
+  return {
+    ...(handoffId ? { handoffId } : {}),
+    question: normalizedQuestion,
+    askedAt: askedAt.trim() || new Date().toISOString(),
+    delivery,
+  };
+}
+
+function pendingClarificationFromMessage(
+  message: Pick<PairMessageV2, "body" | "timestamp" | "handoffId">,
+  delivery: PendingClarification["delivery"],
+  canReplyNow: boolean,
+  replyTo?: string,
+): PendingClarification {
+  return {
+    ...pendingClarificationSnapshot(message.body ?? "", message.timestamp ?? new Date().toISOString(), delivery, message.handoffId),
+    ...(replyTo ? { replyTo } : {}),
+    canReplyNow,
+  };
+}
+
+async function rememberPendingClarification(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  clarification: PendingClarification,
+): Promise<void> {
+  rt.pendingClarification = clarification;
+  if (currentPairRole() !== "worker") return;
+  const settings = rt.currentSettings?.settings ?? (await refreshSettings(ctx.cwd ?? process.cwd())).settings;
+  const { handoffId, question, askedAt, delivery } = clarification;
+  await setWorkerPendingClarification(pi, ctx.cwd ?? process.cwd(), settings, {
+    ...(handoffId ? { handoffId } : {}),
+    question,
+    askedAt,
+    delivery,
+  });
+}
+
+async function clearPendingClarification(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+  rt.pendingClarification = undefined;
+  if (currentPairRole() !== "worker") return;
+  const settings = rt.currentSettings?.settings ?? (await refreshSettings(ctx.cwd ?? process.cwd())).settings;
+  await clearWorkerPendingClarification(pi, ctx.cwd ?? process.cwd(), settings);
+}
+
+function restorePendingClarificationFromStatus(worker: WorkerStatus): void {
+  rt.pendingClarification = worker.pendingClarification
+    ? { ...worker.pendingClarification, canReplyNow: false }
+    : undefined;
+}
+
+async function restorePendingClarificationState(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+  if (rt.pendingClarification) return;
+  const cwd = ctx.cwd ?? process.cwd();
+  const { settings } = rt.currentSettings ?? await refreshSettings(cwd);
+  const worker = await getWorkerStatus(pi, cwd, settings, getLeadSessionBinding(ctx));
+  restorePendingClarificationFromStatus(worker);
 }
 
 async function resolveRuntimeContext(pi: ExtensionAPI, ctx: ExtensionContext): Promise<{
@@ -478,6 +549,8 @@ function registerInboundRequest(message: PairMessageV2): void {
   rt.pendingInboundRequests.set(message.id, {
     from: message.from,
     name: message.name,
+    body: message.body,
+    handoffId: message.handoffId,
     receivedAtMs: Date.now(),
   });
 }
@@ -555,6 +628,7 @@ async function handleWorkerCommand(
   }
 
   if (name === "interrupt") {
+    await clearPendingClarification(pi, ctx);
     await ctx.abort();
     return createMessage({
       type: "reply",
@@ -611,6 +685,7 @@ async function handleWorkerCommand(
     if (!handoffId) throw new Error("handoffId is required for worker handoff command.");
     if (!handoffText) throw new Error("handoff text is required for worker handoff command.");
 
+    await clearPendingClarification(pi, ctx);
     rt.pendingWorkerHandoff = {
       id: handoffId,
       receivedAtMs: Date.now(),
@@ -708,9 +783,15 @@ async function handleIncomingMessage(pi: ExtensionAPI, message: PairMessageV2, s
   if (!activeConnectionMatches(message, sourceSocket)) throw new Error(`Wrong pairId ${message.pairId} for active connection.`);
 
   if (message.type === "reply") {
-    const pending = rt.pendingRpc.get(message.replyTo ?? "");
+    const replyTo = message.replyTo ?? "";
+    const pending = rt.pendingRpc.get(replyTo);
     if (pending) {
-      clearPendingRpc(message.replyTo ?? "");
+      clearPendingRpc(replyTo);
+      if (currentPairRole() === "worker" && rt.pendingClarification?.replyTo === replyTo) {
+        void clearPendingClarification(pi, ctx).catch((err) => {
+          notify(ctx, `lead-worker clarification state clear failed: ${err instanceof Error ? err.message : String(err)}`, "warning");
+        });
+      }
       pending.resolve(message);
       return;
     }
@@ -727,19 +808,27 @@ async function handleIncomingMessage(pi: ExtensionAPI, message: PairMessageV2, s
       if (eventName === "busy") {
         rt.connectionError = message.body ?? "Worker is already attached to another active lead connection.";
         notify(ctx, rt.connectionError, "error");
-      } else if (eventName === "progress" || eventName === "readiness") {
-        notify(ctx, message.body ?? `Worker event: ${eventName}`, "info");
-        if (eventName === "progress") {
+      } else {
+        if (eventName === "clarification_needed") {
+          await rememberPendingClarification(pi, ctx, pendingClarificationFromMessage(message, "durable", false));
+        } else if (isTerminalSupervisionEvent(eventName)) {
+          await clearPendingClarification(pi, ctx);
+        }
+
+        if (eventName === "progress" || eventName === "readiness") {
+          notify(ctx, message.body ?? `Worker event: ${eventName}`, "info");
+          if (eventName === "progress") {
+            void maybeRunLeadSupervision(pi, ctx, message, sendOneWayEvent).catch((err) => {
+              notify(ctx, `lead-worker supervision error: ${err instanceof Error ? err.message : String(err)}`, "warning");
+            });
+          }
+        } else {
+          deliverIncomingProtocolMessage(pi, message, true);
+          maybeRelayWorkerEventToUser(pi, message);
           void maybeRunLeadSupervision(pi, ctx, message, sendOneWayEvent).catch((err) => {
             notify(ctx, `lead-worker supervision error: ${err instanceof Error ? err.message : String(err)}`, "warning");
           });
         }
-      } else {
-        deliverIncomingProtocolMessage(pi, message, true);
-        maybeRelayWorkerEventToUser(pi, message);
-        void maybeRunLeadSupervision(pi, ctx, message, sendOneWayEvent).catch((err) => {
-          notify(ctx, `lead-worker supervision error: ${err instanceof Error ? err.message : String(err)}`, "warning");
-        });
       }
     } else {
       deliverIncomingProtocolMessage(pi, message, true);
@@ -749,6 +838,9 @@ async function handleIncomingMessage(pi: ExtensionAPI, message: PairMessageV2, s
 
   if (message.type === "request") {
     registerInboundRequest(message);
+    if (currentPairRole() === "lead" && message.from === "worker") {
+      await rememberPendingClarification(pi, ctx, pendingClarificationFromMessage(message, "live", true, message.id));
+    }
     deliverIncomingProtocolMessage(pi, message, true);
     promptForReply(pi, message);
     return;
@@ -821,10 +913,32 @@ async function sendAskAction(pi: ExtensionAPI, ctx: ExtensionContext, name: stri
   const socket = role === "lead"
     ? (await ensureLeadConnection(pi, ctx, { autoStart: true, failIfUnavailable: true })).socket
     : activeSocketForRole("worker");
+
+  if (role === "worker" && (!socket || socket.destroyed)) {
+    const handoffId = rt.pendingWorkerHandoff?.id;
+    const fallback = await sendOneWayEvent(pi, ctx, {
+      name: "clarification_needed",
+      body: text,
+      handoffId,
+      autoStart: false,
+      failIfUnavailable: true,
+    });
+    await rememberPendingClarification(pi, ctx, {
+      ...pendingClarificationSnapshot(text, new Date().toISOString(), "durable", handoffId),
+      canReplyNow: false,
+    });
+    return {
+      ok: true,
+      action: "ask",
+      pairId: runtime.pairId,
+      name,
+      fallback: "clarification_needed",
+      ...(fallback.queued ? { queued: true } : {}),
+    };
+  }
+
   if (!socket) {
-    throw new Error(role === "worker"
-      ? "Lead is not currently attached to the worker, so worker ask cannot be delivered."
-      : "Worker is not currently attached to an active lead connection.");
+    throw new Error("Worker is not currently attached to an active lead connection.");
   }
 
   const message = createMessage({
@@ -834,10 +948,37 @@ async function sendAskAction(pi: ExtensionAPI, ctx: ExtensionContext, name: stri
     pairId: runtime.pairId,
     name,
     body: text,
+    ...(role === "worker" && rt.pendingWorkerHandoff?.id ? { handoffId: rt.pendingWorkerHandoff.id } : {}),
   });
-  const reply = await startRpc(message, socket);
-  if (!reply.ok) throw new Error(reply.error ?? reply.body ?? `Request '${name ?? message.id}' failed.`);
-  return { ok: true, action: "ask", pairId: runtime.pairId, name, reply };
+  const workerClarification = role === "worker"
+    ? pendingClarificationFromMessage(message, "live", true, message.id)
+    : undefined;
+  if (workerClarification) {
+    await rememberPendingClarification(pi, ctx, workerClarification);
+  }
+
+  try {
+    const reply = await startRpc(message, socket);
+    if (workerClarification) {
+      await clearPendingClarification(pi, ctx);
+    }
+    if (!reply.ok) throw new Error(reply.error ?? reply.body ?? `Request '${name ?? message.id}' failed.`);
+    return { ok: true, action: "ask", pairId: runtime.pairId, name, reply };
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    if (workerClarification) {
+      if (/timed out/i.test(err.message)) {
+        await rememberPendingClarification(pi, ctx, {
+          ...workerClarification,
+          replyTo: undefined,
+          canReplyNow: false,
+        });
+      } else {
+        await clearPendingClarification(pi, ctx);
+      }
+    }
+    throw err;
+  }
 }
 
 async function sendCommandAction(pi: ExtensionAPI, ctx: ExtensionContext, name: string, text: string): Promise<unknown> {
@@ -889,6 +1030,9 @@ async function sendReplyAction(pi: ExtensionAPI, ctx: ExtensionContext, replyTo:
   });
   sendProtocolMessage(socket, reply);
   clearInboundRequest(replyTo);
+  if (role === "lead" && pending.from === "worker") {
+    await clearPendingClarification(pi, ctx);
+  }
   return { ok: true, action: "reply", pairId: runtime.pairId, replyTo };
 }
 
@@ -905,7 +1049,14 @@ async function sendMessageAction(pi: ExtensionAPI, ctx: ExtensionContext, rawMes
     autoStart: false,
     failIfUnavailable: true,
   });
+  if (role === "worker" && inferredName === "clarification_needed") {
+    await rememberPendingClarification(pi, ctx, {
+      ...pendingClarificationSnapshot(trimmed, new Date().toISOString(), "durable", pendingHandoffId),
+      canReplyNow: false,
+    });
+  }
   if (role === "worker" && isTerminalSupervisionEvent(inferredName)) {
+    await clearPendingClarification(pi, ctx);
     rt.pendingWorkerHandoff = undefined;
   }
   return result;
@@ -920,7 +1071,7 @@ function buildHandoffText(ctx: ExtensionContext, extraInstructions: string, hand
     `Lead handoff from session ${ctx.sessionManager.getSessionId()} in ${ctx.cwd ?? process.cwd()}.`,
     "Implement the agreed plan in the repo-scoped worker. The lead should avoid direct repo edits.",
     `handoff_id: ${handoffId}`,
-    'Direct paired communication is available through lead_worker({ action: "message", name: "progress", message: "..." }) and lead_worker({ action: "reply", replyTo: "...", message: "..." }).',
+    'Direct paired communication is available through lead_worker({ action: "message", name: "progress" | "blocker" | "clarification_needed", message: "..." }), lead_worker({ action: "ask", name: "clarification", message: "..." }), and lead_worker({ action: "reply", replyTo: "...", message: "..." }).',
     "",
   ];
 
@@ -941,6 +1092,8 @@ function buildHandoffText(ctx: ExtensionContext, extraInstructions: string, hand
     "- run the smallest relevant validation",
     '- send exactly one terminal update to the lead for this handoff via lead_worker({ action: "message", name: "completed" | "failed" | "cancelled", message: "..." }) including handoff_id, status, files changed, and validation results',
     '- send progress/blocker/clarification updates only when materially useful',
+    '- use lead_worker({ action: "ask", ... }) only when you need a live answer from an attached lead before continuing',
+    '- if the clarification should remain visible across disconnects or resume, send lead_worker({ action: "message", name: "clarification_needed", ... })',
     "- if blocked on the task itself, report the minimal blocker and the next action needed",
   );
 
@@ -1012,6 +1165,7 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
     });
     const reply = await startRpc(command, connection.socket);
     if (!reply.ok) throw new Error(reply.error ?? reply.body ?? `Worker rejected handoff ${handoffId}.`);
+    await clearPendingClarification(pi, ctx);
 
     const haikuModel = getModel(SUPERVISOR_MODEL_PROVIDER, SUPERVISOR_MODEL_ID);
     if (haikuModel) {
@@ -1379,6 +1533,10 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
     } else {
       await maybePrimeLeadConnection(pi, ctx);
     }
+    await restorePendingClarificationState(pi, ctx).catch((err) => {
+      console.warn("[lead-worker] restorePendingClarificationState failed:", err);
+      notify(ctx, `lead-worker clarification restore failed: ${err instanceof Error ? err.message : String(err)}`, "warning");
+    });
   };
 
   pi.on("session_start", restore);

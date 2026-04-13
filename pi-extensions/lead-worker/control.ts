@@ -396,6 +396,7 @@ async function statusOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: Lea
 
 async function stopOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: LeadWorkerSettings): Promise<LeadWorkerStatus> {
   rt.activeSupervisedHandoff = undefined;
+  rt.pendingClarification = undefined;
   const worker = await stopWorker(pi, ctx.cwd ?? process.cwd(), settings, getLeadSessionBinding(ctx));
 
   if (rt.modeEnabled) {
