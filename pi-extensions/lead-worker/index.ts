@@ -17,18 +17,14 @@ import {
   type PairRole,
 } from "./protocol.js";
 import {
-  clearWorkerPendingClarification,
   getWorkerStatus,
   resolvePairRuntimePaths,
-  setWorkerPendingClarification,
   startWorker,
-  type PendingClarificationSnapshot,
   type WorkerStatus,
 } from "./utils.js";
 import {
   BUILD_HANDOFF_MESSAGE_TYPE,
   CONTEXT_MESSAGE_TYPE,
-  MAX_CONTEXT_MESSAGE_CHARS,
   MAX_HANDOFF_CHARS,
   MAX_TRACKED_REPORTED_HANDOFF_IDS,
   SOCKET_WAIT_INTERVAL_MS,
@@ -49,7 +45,6 @@ import {
   type ActiveConnection,
   type ActiveSupervisedHandoff,
   type LeadWorkerControlAction,
-  type PendingClarification,
   type PendingInboundRequest,
   type PendingRpc,
 } from "./runtime.js";
@@ -82,6 +77,14 @@ import {
   type ExecutionUpdatePayload,
   type HighSignalUpdateStatus,
 } from "./execution-updates.js";
+import {
+  clarificationStateFromExecutionUpdate,
+  clearPendingClarification,
+  pendingClarificationFromMessage,
+  pendingClarificationSnapshot,
+  rememberPendingClarification,
+  restorePendingClarificationState,
+} from "./clarification.js";
 
 const CORE_BLOCKED_BASH_PATTERNS = [
   /\brm\b/i,
@@ -132,10 +135,6 @@ function requireLatestPairContext(): ExtensionContext {
   const ctx = rt.latestPairContext;
   if (!ctx) throw new Error("No active extension context available for lead-worker message handling.");
   return ctx;
-}
-
-async function settingsForContext(ctx: ExtensionContext) {
-  return rt.currentSettings?.settings ?? (await refreshSettings(getContextCwd(ctx))).settings;
 }
 
 function scheduleLeadSupervision(pi: ExtensionAPI, ctx: ExtensionContext, message: PairMessageV2): void {
@@ -307,88 +306,6 @@ function normalizeWorkerExecutionUpdatePayload(
     candidate.handoffArtifactSha256 = defaults.handoffArtifactSha256;
   }
   return parseExecutionUpdatePayload(candidate, status);
-}
-
-function clarificationStateFromExecutionUpdate(
-  payload: ExecutionUpdatePayload,
-  delivery: PendingClarification["delivery"],
-  canReplyNow: boolean,
-  replyTo?: string,
-): PendingClarification {
-  if (payload.status !== "clarification_needed") {
-    throw new Error(`clarification state requires clarification_needed payload, got '${payload.status}'`);
-  }
-  return {
-    ...pendingClarificationSnapshot(payload.question ?? payload.summary, new Date().toISOString(), delivery, payload.handoffId),
-    ...(replyTo ? { replyTo } : {}),
-    canReplyNow,
-  };
-}
-
-function pendingClarificationSnapshot(
-  question: string,
-  askedAt: string,
-  delivery: PendingClarification["delivery"],
-  handoffId?: string,
-): PendingClarificationSnapshot {
-  const normalizedQuestion = truncate(question.trim() || "(no clarification text provided)", MAX_CONTEXT_MESSAGE_CHARS);
-  return {
-    ...(handoffId ? { handoffId } : {}),
-    question: normalizedQuestion,
-    askedAt: askedAt.trim() || new Date().toISOString(),
-    delivery,
-  };
-}
-
-function pendingClarificationFromMessage(
-  message: Pick<PairMessageV2, "body" | "timestamp" | "handoffId">,
-  delivery: PendingClarification["delivery"],
-  canReplyNow: boolean,
-  replyTo?: string,
-): PendingClarification {
-  return {
-    ...pendingClarificationSnapshot(message.body ?? "", message.timestamp ?? new Date().toISOString(), delivery, message.handoffId),
-    ...(replyTo ? { replyTo } : {}),
-    canReplyNow,
-  };
-}
-
-async function rememberPendingClarification(
-  pi: ExtensionAPI,
-  ctx: ExtensionContext,
-  clarification: PendingClarification,
-): Promise<void> {
-  rt.pendingClarification = clarification;
-  if (currentPairRole() !== "worker") return;
-  const settings = await settingsForContext(ctx);
-  const { handoffId, question, askedAt, delivery } = clarification;
-  await setWorkerPendingClarification(pi, getContextCwd(ctx), settings, {
-    ...(handoffId ? { handoffId } : {}),
-    question,
-    askedAt,
-    delivery,
-  });
-}
-
-async function clearPendingClarification(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
-  rt.pendingClarification = undefined;
-  if (currentPairRole() !== "worker") return;
-  const settings = await settingsForContext(ctx);
-  await clearWorkerPendingClarification(pi, getContextCwd(ctx), settings);
-}
-
-function restorePendingClarificationFromStatus(worker: WorkerStatus): void {
-  rt.pendingClarification = worker.pendingClarification
-    ? { ...worker.pendingClarification, canReplyNow: false }
-    : undefined;
-}
-
-async function restorePendingClarificationState(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
-  if (rt.pendingClarification) return;
-  const cwd = getContextCwd(ctx);
-  const { settings } = rt.currentSettings ?? await refreshSettings(cwd);
-  const worker = await getWorkerStatus(pi, cwd, settings, getLeadSessionBinding(ctx));
-  restorePendingClarificationFromStatus(worker);
 }
 
 async function resolveRuntimeContext(pi: ExtensionAPI, ctx: ExtensionContext): Promise<{
