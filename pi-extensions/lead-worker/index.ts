@@ -78,6 +78,13 @@ import {
   resolveLeadSupervisionModel,
   synthesizeOutcome,
 } from "./supervision.js";
+import {
+  buildExecutionUpdatePayload,
+  isHighSignalWorkerEvent,
+  parseExecutionUpdatePayload,
+  type ExecutionUpdatePayload,
+  type HighSignalUpdateStatus,
+} from "./execution-updates.js";
 
 const CORE_BLOCKED_BASH_PATTERNS = [
   /\brm\b/i,
@@ -257,6 +264,52 @@ function buildHandoffPointerText(params: {
     "Read the handoff artifact above and treat it as the authoritative spec for this handoff.",
     "Implement it in the worker session, then report progress and exactly one terminal update as usual.",
   ].join("\n");
+}
+
+function currentWorkerExecutionUpdateDefaults() {
+  return {
+    handoffId: rt.pendingWorkerHandoff?.id,
+    handoffArtifactPath: rt.pendingWorkerHandoff?.artifactPath,
+    handoffArtifactSha256: rt.pendingWorkerHandoff?.artifactSha256,
+  };
+}
+
+function normalizeWorkerExecutionUpdatePayload(
+  status: HighSignalUpdateStatus,
+  rawPayload: unknown,
+): ExecutionUpdatePayload {
+  if (typeof rawPayload !== "object" || rawPayload === null || Array.isArray(rawPayload)) {
+    throw new Error(`worker ${status} event requires a structured payload object`);
+  }
+
+  const candidate: Record<string, unknown> = { ...(rawPayload as Record<string, unknown>) };
+  const defaults = currentWorkerExecutionUpdateDefaults();
+  if (candidate.handoffId === undefined && defaults.handoffId) {
+    candidate.handoffId = defaults.handoffId;
+  }
+  if (candidate.handoffArtifactPath === undefined && defaults.handoffArtifactPath) {
+    candidate.handoffArtifactPath = defaults.handoffArtifactPath;
+  }
+  if (candidate.handoffArtifactSha256 === undefined && defaults.handoffArtifactSha256) {
+    candidate.handoffArtifactSha256 = defaults.handoffArtifactSha256;
+  }
+  return parseExecutionUpdatePayload(candidate, status);
+}
+
+function clarificationStateFromExecutionUpdate(
+  payload: ExecutionUpdatePayload,
+  delivery: PendingClarification["delivery"],
+  canReplyNow: boolean,
+  replyTo?: string,
+): PendingClarification {
+  if (payload.status !== "clarification_needed") {
+    throw new Error(`clarification state requires clarification_needed payload, got '${payload.status}'`);
+  }
+  return {
+    ...pendingClarificationSnapshot(payload.question ?? payload.summary, new Date().toISOString(), delivery, payload.handoffId),
+    ...(replyTo ? { replyTo } : {}),
+    canReplyNow,
+  };
 }
 
 function pendingClarificationSnapshot(
@@ -922,12 +975,26 @@ async function handleIncomingMessage(pi: ExtensionAPI, message: PairMessageV2, s
   if (message.type === "event") {
     if (currentPairRole() === "lead") {
       const eventName = message.name ?? "event";
+      let structuredUpdate: ExecutionUpdatePayload | undefined;
+      if (message.from === "worker" && isHighSignalWorkerEvent(eventName)) {
+        try {
+          structuredUpdate = parseExecutionUpdatePayload(message.payload, eventName);
+        } catch (error) {
+          notify(ctx, `lead-worker invalid structured ${eventName} payload: ${error instanceof Error ? error.message : String(error)}`, "warning");
+        }
+      }
+
       if (eventName === "busy") {
         rt.connectionError = message.body ?? "Worker is already attached to another active lead connection.";
         notify(ctx, rt.connectionError, "error");
       } else {
         if (eventName === "clarification_needed") {
-          await rememberPendingClarification(pi, ctx, pendingClarificationFromMessage(message, "durable", false));
+          if (structuredUpdate?.status === "clarification_needed") {
+            await rememberPendingClarification(pi, ctx, {
+              ...pendingClarificationSnapshot(structuredUpdate.question ?? structuredUpdate.summary, message.timestamp, "durable", structuredUpdate.handoffId),
+              canReplyNow: false,
+            });
+          }
         } else if (isTerminalSupervisionEvent(eventName)) {
           await clearPendingClarification(pi, ctx);
         }
@@ -992,7 +1059,7 @@ async function handleIncomingMessage(pi: ExtensionAPI, message: PairMessageV2, s
 async function sendOneWayEvent(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
-  params: { name: string; body: string; handoffId?: string; autoStart: boolean; failIfUnavailable: boolean },
+  params: { name: string; body: string; handoffId?: string; payload?: unknown; autoStart: boolean; failIfUnavailable: boolean },
 ): Promise<{ ok: true; action: "message"; pairId: string; to: PairRole; name: string; handoffId?: string; queued?: boolean }> {
   const role = currentPairRole();
   const runtime = await resolveRuntimeContext(pi, ctx);
@@ -1007,6 +1074,7 @@ async function sendOneWayEvent(
     pairId: runtime.pairId,
     name: params.name,
     body: params.body,
+    ...(params.payload !== undefined ? { payload: params.payload } : {}),
     handoffId: params.handoffId,
   });
 
@@ -1033,17 +1101,28 @@ async function sendAskAction(pi: ExtensionAPI, ctx: ExtensionContext, name: stri
 
   if (role === "worker" && (!socket || socket.destroyed)) {
     const handoffId = rt.pendingWorkerHandoff?.id;
+    if (!handoffId) {
+      throw new Error("worker ask fallback requires an active handoff id so the durable clarification can be tracked.");
+    }
+    const defaults = currentWorkerExecutionUpdateDefaults();
+    const fallbackPayload = buildExecutionUpdatePayload({
+      status: "clarification_needed",
+      handoffId,
+      summary: text,
+      question: text,
+      nextStep: "Lead must answer the clarification before execution can continue.",
+      ...(defaults.handoffArtifactPath ? { handoffArtifactPath: defaults.handoffArtifactPath } : {}),
+      ...(defaults.handoffArtifactSha256 ? { handoffArtifactSha256: defaults.handoffArtifactSha256 } : {}),
+    });
     const fallback = await sendOneWayEvent(pi, ctx, {
       name: "clarification_needed",
-      body: text,
+      body: fallbackPayload.summary,
       handoffId,
+      payload: fallbackPayload,
       autoStart: false,
       failIfUnavailable: true,
     });
-    await rememberPendingClarification(pi, ctx, {
-      ...pendingClarificationSnapshot(text, new Date().toISOString(), "durable", handoffId),
-      canReplyNow: false,
-    });
+    await rememberPendingClarification(pi, ctx, clarificationStateFromExecutionUpdate(fallbackPayload, "durable", false));
     return {
       ok: true,
       action: "ask",
@@ -1153,24 +1232,43 @@ async function sendReplyAction(pi: ExtensionAPI, ctx: ExtensionContext, replyTo:
   return { ok: true, action: "reply", pairId: runtime.pairId, replyTo };
 }
 
-async function sendMessageAction(pi: ExtensionAPI, ctx: ExtensionContext, rawMessage: string | undefined, name?: string): Promise<unknown> {
-  const trimmed = (rawMessage ?? "").trim();
-  if (!trimmed) throw new Error("message text is required");
+async function sendMessageAction(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  rawMessage: string | undefined,
+  name?: string,
+  rawPayload?: unknown,
+): Promise<unknown> {
   const role = currentPairRole();
+  const trimmed = (rawMessage ?? "").trim();
   const pendingHandoffId = role === "worker" ? rt.pendingWorkerHandoff?.id : undefined;
   const inferredName = name?.trim() || (role === "worker" ? inferWorkerEventName(trimmed, rt.pendingWorkerHandoff) : "message");
+
+  let body = trimmed;
+  let payload = rawPayload;
+  let handoffId = pendingHandoffId;
+
+  if (role === "worker" && isHighSignalWorkerEvent(inferredName)) {
+    const structured = normalizeWorkerExecutionUpdatePayload(inferredName, rawPayload);
+    body = structured.summary;
+    payload = structured;
+    handoffId = structured.handoffId;
+  } else if (!body) {
+    throw new Error("message text is required for non-structured events");
+  }
+
   const result = await sendOneWayEvent(pi, ctx, {
     name: inferredName,
-    body: trimmed,
-    handoffId: pendingHandoffId,
+    body,
+    handoffId,
+    payload,
     autoStart: false,
     failIfUnavailable: true,
   });
-  if (role === "worker" && inferredName === "clarification_needed") {
-    await rememberPendingClarification(pi, ctx, {
-      ...pendingClarificationSnapshot(trimmed, new Date().toISOString(), "durable", pendingHandoffId),
-      canReplyNow: false,
-    });
+
+  if (role === "worker" && inferredName === "clarification_needed" && payload) {
+    const structured = payload as ExecutionUpdatePayload;
+    await rememberPendingClarification(pi, ctx, clarificationStateFromExecutionUpdate(structured, "durable", false));
   }
   if (role === "worker" && isTerminalSupervisionEvent(inferredName)) {
     await clearPendingClarification(pi, ctx);
@@ -1188,7 +1286,7 @@ function buildHandoffText(ctx: ExtensionContext, extraInstructions: string, hand
     `Lead handoff from session ${ctx.sessionManager.getSessionId()} in ${ctx.cwd ?? process.cwd()}.`,
     "Implement the agreed plan in the repo-scoped worker. The lead should avoid direct repo edits.",
     `handoff_id: ${handoffId}`,
-    'Direct paired communication is available through lead_worker({ action: "message", name: "progress" | "blocker" | "clarification_needed", message: "..." }), lead_worker({ action: "ask", name: "clarification", message: "..." }), and lead_worker({ action: "reply", replyTo: "...", message: "..." }).',
+    'Direct paired communication is available through lead_worker({ action: "message", name: "progress", message: "..." }), structured execution-update events via lead_worker({ action: "message", name: "completed" | "failed" | "cancelled" | "blocker" | "clarification_needed", message: "short summary", payload: {...} }), live clarification via lead_worker({ action: "ask", name: "clarification", message: "..." }), and lead_worker({ action: "reply", replyTo: "...", message: "..." }).',
     "",
   ];
 
@@ -1207,10 +1305,12 @@ function buildHandoffText(ctx: ExtensionContext, extraInstructions: string, hand
     "- do not send concrete code snippets, patches, or copy-paste-ready implementation blocks to the worker",
     "- implement the requested change in the worker session",
     "- run the smallest relevant validation",
-    '- send exactly one terminal update to the lead for this handoff via lead_worker({ action: "message", name: "completed" | "failed" | "cancelled", message: "..." }) including handoff_id, status, files changed, and validation results',
+    '- send exactly one terminal update to the lead for this handoff via lead_worker({ action: "message", name: "completed" | "failed" | "cancelled", message: "short summary", payload: {...} })',
+    '- terminal payloads must match lead-worker/execution-update@1 and include handoffId, summary, filesChanged, validation, and nextStep when relevant',
+    '- blocker and clarification_needed updates should also use structured execution-update payloads',
     '- send progress/blocker/clarification updates only when materially useful',
     '- use lead_worker({ action: "ask", ... }) only when you need a live answer from an attached lead before continuing',
-    '- if the clarification should remain visible across disconnects or resume, send lead_worker({ action: "message", name: "clarification_needed", ... })',
+    '- if the clarification should remain visible across disconnects or resume, send lead_worker({ action: "message", name: "clarification_needed", message: "short summary", payload: {...} })',
     "- if blocked on the task itself, report the minimal blocker and the next action needed",
   );
 
@@ -1464,19 +1564,20 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
     description:
       "Manage lead-worker mode and the current repo-scoped worker configured by lead-worker-settings.yaml. " +
       "Actions: start, on, status, off, stop, message, ask, command, reply. " +
-      "Control actions start/on/status/off/stop are lead-only: start spawns the worker without changing mode; on enables no-direct-repo-edit lead mode, switches the lead to the configured planning model, and starts the worker if needed; off restores normal lead behavior and restores the previous model/thinking while leaving the worker alone; stop forcibly terminates the worker and, if lead-worker mode is on, also returns the lead to normal mode; message sends a one-way paired event from either side; ask sends a blocking paired request from the lead or an attached worker; command sends a blocking operational command from the lead to the worker; reply answers a pending paired request. For lead-side worker inspection and direct worker slash commands, use /worker.",
+      "Control actions start/on/status/off/stop are lead-only: start spawns the worker without changing mode; on enables no-direct-repo-edit lead mode, switches the lead to the configured planning model, and starts the worker if needed; off restores normal lead behavior and restores the previous model/thinking while leaving the worker alone; stop forcibly terminates the worker and, if lead-worker mode is on, also returns the lead to normal mode; message sends a one-way paired event from either side and may include a structured payload; ask sends a blocking paired request from the lead or an attached worker; command sends a blocking operational command from the lead to the worker; reply answers a pending paired request. Worker high-signal events (completed/failed/cancelled/blocker/clarification_needed) require a structured execution-update payload. For lead-side worker inspection and direct worker slash commands, use /worker.",
     parameters: Type.Object({
       action: StringEnum(["start", "on", "status", "off", "stop", "message", "ask", "command", "reply"] as const, {
         description: "Lead-worker control or communication action",
       }),
       name: Type.Optional(Type.String({ description: "Required for action='command'. Optional event/request name for action='message' or action='ask'." })),
-      message: Type.Optional(Type.String({ description: "Required for actions 'message', 'ask', and 'reply'. Optional command argument text for action='command'." })),
+      message: Type.Optional(Type.String({ description: "Required for 'ask' and 'reply'. For 'message', required for generic events and used as the short summary for structured execution updates." })),
+      payload: Type.Optional(Type.Object({}, { additionalProperties: true, description: "Optional structured payload for action='message'. Required for worker high-signal events: completed, failed, cancelled, blocker, clarification_needed." })),
       replyTo: Type.Optional(Type.String({ description: "Required for action='reply'. The pending request id to answer." })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
         if (params.action === "message") {
-          const result = await sendMessageAction(pi, ctx, params.message, params.name);
+          const result = await sendMessageAction(pi, ctx, params.message, params.name, params.payload);
           return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: result };
         }
         if (params.action === "ask") {

@@ -15,6 +15,7 @@ The current implementation is intentionally split by concern:
 |---|---|
 | `runtime.ts` | shared runtime state (`rt`), shared types, repo-wide constants, and small cross-cutting helpers |
 | `control.ts` | lead mode lifecycle, status rendering, tool/model switching, and lead-only control actions |
+| `execution-updates.ts` | structured execution-update payload schema, parsing, and rendering helpers |
 | `relay.ts` | worker event surfacing, reply prompting, worker status formatting, and passive `/worker status` |
 | `supervision.ts` | outcome synthesis, supervision analysis, and event queue handling |
 | `index.ts` | transport/RPC, queued event delivery, worker socket server, handoff/build orchestration, and extension registration |
@@ -138,12 +139,57 @@ Worker → lead events carry `handoffId` when associated with a delegated task.
 - `cancelled` — terminal: task was abandoned
 - `busy` — rejected second-lead attachment attempt
 
+### Structured execution-update payloads
+Worker high-signal events (`completed`, `failed`, `cancelled`, `blocker`, `clarification_needed`) must carry a structured payload tagged as `lead-worker/execution-update@1`. `message.body` is only the short human summary; the payload is the source of truth for rendering and supervision.
+
+```ts
+type ValidationRecord = {
+  command: string;
+  result: "passed" | "failed" | "skipped";
+  details?: string;
+};
+
+type TerminalExecutionUpdate = {
+  schema: "lead-worker/execution-update@1";
+  kind: "terminal";
+  status: "completed" | "failed" | "cancelled";
+  handoffId: string;
+  summary: string;
+  filesChanged: string[];
+  validation: ValidationRecord[];
+  nextStep?: string;
+  handoffArtifactPath?: string;
+  handoffArtifactSha256?: string;
+};
+
+type AttentionExecutionUpdate = {
+  schema: "lead-worker/execution-update@1";
+  kind: "attention";
+  status: "blocker" | "clarification_needed";
+  handoffId: string;
+  summary: string;
+  nextStep: string;
+  blocker?: string;
+  question?: string;
+  filesChanged?: string[];
+  validation?: ValidationRecord[];
+  handoffArtifactPath?: string;
+  handoffArtifactSha256?: string;
+};
+```
+
+Invariants:
+- terminal payloads must include `filesChanged` and `validation`
+- `blocker` must include `blocker`
+- `clarification_needed` must include `question`
+- renderer and supervision consume the structured payload directly rather than parsing the summary text
+
 ### Clarification state
 Unresolved worker clarification is tracked as semantic handoff state, not only as an in-memory transport detail.
 
 - live worker `ask` requests are surfaced as `waiting for clarification` while the reply path is still active
 - if the worker issues `ask` while no lead is attached, it automatically degrades into durable `clarification_needed` state and is queued for later delivery
-- if the worker reports `clarification_needed`, the unresolved question is persisted in `worker-state.json`
+- if the worker reports `clarification_needed`, the unresolved question from the structured payload is persisted in `worker-state.json`
 - persisted clarification state survives reconnects/resume and appears in `/worker status`
 - persisted state does **not** preserve raw `replyTo` ids; after resume, status may show the unresolved question even when an immediate `reply` is no longer possible
 - lead-side supervision pauses steering/escalation while clarification remains unresolved, and resumes after reply or terminal outcome
@@ -222,6 +268,8 @@ This keeps lead-worker supervision observable and attributable:
 `lead_worker(...)` actions:
 - control (lead-only): `start`, `on`, `status`, `off`, `stop`
 - communication: `message`, `ask`, `command`, `reply`
+
+`action: "message"` may include an optional object `payload`. For worker high-signal events, that structured payload is required.
 
 ---
 

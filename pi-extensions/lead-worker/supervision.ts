@@ -3,6 +3,12 @@ import { complete, getModel } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
 import type { PairMessageV2 } from "./protocol.js";
 import {
+  formatExecutionUpdateForSupervision,
+  hasFailedValidation,
+  isHighSignalWorkerEvent,
+  parseExecutionUpdatePayload,
+} from "./execution-updates.js";
+import {
   MAX_PENDING_SUPERVISION_EVENTS,
   MAX_SUPERVISED_RECENT_EVENTS,
   MAX_SUPERVISED_STEERS,
@@ -19,7 +25,7 @@ import {
 export type SendOneWayEvent = (
   pi: ExtensionAPI,
   ctx: ExtensionContext,
-  params: { name: string; body: string; handoffId?: string; autoStart: boolean; failIfUnavailable: boolean },
+  params: { name: string; body: string; handoffId?: string; payload?: unknown; autoStart: boolean; failIfUnavailable: boolean },
 ) => Promise<unknown>;
 
 const SUPERVISOR_DECISION_TOOL = {
@@ -176,6 +182,30 @@ export async function resolveLeadSupervisionModel(ctx: ExtensionContext): Promis
   return { model, apiKey: auth.apiKey };
 }
 
+function formatEventForSupervision(event: PairMessageV2): string {
+  const eventName = event.name ?? "";
+  if (isHighSignalWorkerEvent(eventName)) {
+    try {
+      return formatExecutionUpdateForSupervision(parseExecutionUpdatePayload(event.payload, eventName));
+    } catch (error) {
+      return `[${eventName}] invalid structured payload: ${error instanceof Error ? error.message : String(error)}\n${event.body ?? ""}`;
+    }
+  }
+  return `[${event.name ?? event.type}] ${event.body ?? ""}`;
+}
+
+function recentEventsHaveCompletedFailure(supervised: ActiveSupervisedHandoff): boolean {
+  return supervised.recentEvents.some((event) => {
+    const eventName = event.name ?? "";
+    if (eventName !== "completed" || !isHighSignalWorkerEvent(eventName)) return false;
+    try {
+      return hasFailedValidation(parseExecutionUpdatePayload(event.payload, eventName));
+    } catch {
+      return false;
+    }
+  });
+}
+
 async function analyzeWorkerEvent(
   model: NonNullable<ReturnType<ExtensionContext["modelRegistry"]["find"]>>,
   supervised: ActiveSupervisedHandoff,
@@ -183,10 +213,11 @@ async function analyzeWorkerEvent(
 ): Promise<SupervisorDecision> {
   const stagnating = supervised.steerCount >= MAX_SUPERVISED_STEERS;
   const pendingClarification = pendingClarificationForHandoff(supervised);
+  const completedWithFailedValidation = recentEventsHaveCompletedFailure(supervised);
   const recentEventText = supervised.recentEvents
     .slice(-MAX_SUPERVISED_RECENT_EVENTS)
-    .map((e) => `[${e.name ?? e.type}] ${e.body ?? ""}`)
-    .join("\n");
+    .map(formatEventForSupervision)
+    .join("\n\n");
 
   const response = await complete(
     model,
@@ -196,6 +227,9 @@ async function analyzeWorkerEvent(
         "Analyze the worker's progress against the stated outcome and decide what to do.",
         pendingClarification
           ? "The worker is explicitly waiting for clarification from the lead. While clarification is pending, prefer continue rather than steer or escalate unless there is clear evidence the task is irrecoverably off track."
+          : "",
+        completedWithFailedValidation
+          ? "A worker event claimed completion but included failed validation. Do not treat that as a clean success."
           : "",
         stagnating ? `The worker has been steered ${supervised.steerCount} times without completing. Lean toward escalate.` : "",
         "You MUST call the report_supervisor_decision tool.",

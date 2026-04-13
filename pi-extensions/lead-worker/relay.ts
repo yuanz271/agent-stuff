@@ -17,6 +17,12 @@ import {
   refreshSettings,
   truncate,
 } from "./runtime.js";
+import {
+  formatExecutionUpdateMarkdown,
+  formatExecutionUpdateRelaySummary,
+  isHighSignalWorkerEvent,
+  parseExecutionUpdatePayload,
+} from "./execution-updates.js";
 
 export type EnsureLeadConnection = (
   pi: ExtensionAPI,
@@ -32,7 +38,8 @@ function normalizeWhitespaceLower(text: string): string {
 
 function pairRelayFingerprint(message: PairMessageV2): string {
   const handoffId = message.handoffId ?? "";
-  return `${message.from}|${message.to}|${message.type}|${message.name ?? ""}|${message.pairId}|${handoffId}|${normalizeWhitespaceLower(message.body ?? "")}`;
+  const payloadFingerprint = message.payload === undefined ? "" : JSON.stringify(message.payload);
+  return `${message.from}|${message.to}|${message.type}|${message.name ?? ""}|${message.pairId}|${handoffId}|${normalizeWhitespaceLower(message.body ?? "")}|${payloadFingerprint}`;
 }
 
 export function inferWorkerEventName(text: string, pendingHandoff: PendingWorkerHandoff | undefined): string {
@@ -59,6 +66,25 @@ function rememberReportedWorkerEventKey(key: string): void {
 }
 
 function formatIncomingProtocolMessage(message: PairMessageV2): string {
+  if (message.type === "event" && message.from === "worker" && isHighSignalWorkerEvent(message.name ?? "")) {
+    try {
+      return formatExecutionUpdateMarkdown(
+        parseExecutionUpdatePayload(message.payload, message.name ?? undefined),
+        { fromLabel: message.from, pairId: message.pairId },
+      );
+    } catch (error) {
+      return [
+        `**lead-worker invalid ${message.name ?? "event"} payload from ${message.from}**`,
+        "",
+        `- pair id: ${message.pairId}`,
+        ...(message.handoffId ? [`- handoff id: ${message.handoffId}`] : []),
+        `- error: ${error instanceof Error ? error.message : String(error)}`,
+        "",
+        message.body ?? "(no body)",
+      ].join("\n");
+    }
+  }
+
   const heading = message.type === "event"
     ? `**lead-worker event from ${message.from}: ${message.name ?? "event"}**`
     : message.type === "request"
@@ -134,6 +160,7 @@ export function maybeRelayWorkerEventToUser(pi: ExtensionAPI, message: PairMessa
   if (currentPairRole() !== "lead" || message.from !== "worker" || message.type !== "event") return;
   if (!["completed", "failed", "cancelled", "blocker", "clarification_needed"].includes(message.name ?? "")) return;
 
+  let structuredPayloadHandoffId: string | undefined;
   const handoffId = message.handoffId;
   const relayKey = workerRelayDedupKey(message);
   if (relayKey && rt.reportedWorkerEventKeys.has(relayKey)) return;
@@ -147,14 +174,28 @@ export function maybeRelayWorkerEventToUser(pi: ExtensionAPI, message: PairMessa
   rt.lastWorkerRelayAtMs = now;
   if (relayKey) rememberReportedWorkerEventKey(relayKey);
 
+  let structuredSummary: string | undefined;
+  if (isHighSignalWorkerEvent(message.name ?? "")) {
+    try {
+      const structuredPayload = parseExecutionUpdatePayload(message.payload, message.name ?? undefined);
+      structuredPayloadHandoffId = structuredPayload.handoffId;
+      structuredSummary = formatExecutionUpdateRelaySummary(structuredPayload);
+    } catch (error) {
+      structuredSummary = [
+        `Worker sent event '${message.name ?? "event"}' but its structured payload was invalid.`,
+        `Error: ${error instanceof Error ? error.message : String(error)}`,
+        message.body ?? "",
+      ].filter(Boolean).join("\n");
+    }
+  }
+
   const relayPrompt = [
     "Worker sent an execution update.",
     "Reply to the USER now with a concise status update.",
     "Include: (1) status, (2) files changed, (3) validation result, (4) next step.",
-    ...(handoffId ? ["", `handoff_id: ${handoffId}`] : []),
+    ...(handoffId || structuredPayloadHandoffId ? ["", `handoff_id: ${handoffId ?? structuredPayloadHandoffId}`] : []),
     "",
-    `Worker event (${message.name}):`,
-    message.body ?? "",
+    structuredSummary ? structuredSummary : [`Worker event (${message.name}):`, message.body ?? ""].join("\n"),
   ].join("\n");
 
   pi.sendUserMessage(relayPrompt, { deliverAs: "followUp" });
