@@ -577,6 +577,21 @@ function workerCommandPayload(message: PairMessageV2): Record<string, unknown> {
     : {};
 }
 
+function payloadTextValue(payload: Record<string, unknown>, key: string, body: string | undefined): string {
+  return key in payload ? String(payload[key]) : (body ?? "").trim();
+}
+
+function optionalPayloadString(payload: Record<string, unknown>, key: string): string | undefined {
+  const value = payload[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function artifactMetaFields(artifactMeta: { artifactPath: string; artifactSha256: string } | undefined) {
+  return artifactMeta
+    ? { artifactPath: artifactMeta.artifactPath, artifactSha256: artifactMeta.artifactSha256 }
+    : undefined;
+}
+
 function createWorkerReply(
   message: PairMessageV2,
   body: string,
@@ -651,9 +666,7 @@ async function runWorkerThinkingCommand(
   message: PairMessageV2,
 ): Promise<PairMessageV2> {
   const payload = workerCommandPayload(message);
-  const level = "level" in payload
-    ? String(payload.level)
-    : (message.body ?? "").trim();
+  const level = payloadTextValue(payload, "level", message.body);
   if (!["off", "minimal", "low", "medium", "high", "xhigh"].includes(level)) {
     throw new Error(`Invalid thinking level '${level}'.`);
   }
@@ -667,9 +680,7 @@ async function runWorkerModelCommand(
   message: PairMessageV2,
 ): Promise<PairMessageV2> {
   const payload = workerCommandPayload(message);
-  const ref = "ref" in payload
-    ? String(payload.ref)
-    : (message.body ?? "").trim();
+  const ref = payloadTextValue(payload, "ref", message.body);
   const model = await resolveModelSelection(ctx, ref);
   const ok = await pi.setModel(model);
   if (!ok) throw new Error(`No API key available for ${model.provider}/${model.id}.`);
@@ -682,13 +693,13 @@ async function runWorkerHandoffCommand(
   message: PairMessageV2,
 ): Promise<PairMessageV2> {
   const payload = workerCommandPayload(message);
-  const handoffId = typeof payload.handoffId === "string" && payload.handoffId.trim() ? payload.handoffId : message.handoffId;
+  const handoffId = optionalPayloadString(payload, "handoffId") ?? message.handoffId;
   if (!handoffId) throw new Error("handoffId is required for worker handoff command.");
 
   const runtime = await resolveRuntimeContext(pi, ctx);
-  const summary = typeof payload.summary === "string" && payload.summary.trim() ? payload.summary.trim() : undefined;
-  const artifactPath = typeof payload.artifactPath === "string" && payload.artifactPath.trim() ? payload.artifactPath.trim() : "";
-  const handoffText = typeof payload.text === "string" && payload.text.trim() ? payload.text : (message.body ?? "").trim();
+  const summary = optionalPayloadString(payload, "summary");
+  const artifactPath = optionalPayloadString(payload, "artifactPath") ?? "";
+  const handoffText = optionalPayloadString(payload, "text") ?? (message.body ?? "").trim();
 
   let artifactMeta: { artifactPath: string; artifactSha256: string } | undefined;
   let steerText: string;
@@ -710,12 +721,14 @@ async function runWorkerHandoffCommand(
     ].join("\n");
   }
 
+  const artifactFields = artifactMetaFields(artifactMeta);
+
   await clearPendingClarification(pi, ctx);
   rt.pendingWorkerHandoff = {
     id: handoffId,
     receivedAtMs: Date.now(),
     pairId: message.pairId,
-    ...(artifactMeta ? { artifactPath: artifactMeta.artifactPath, artifactSha256: artifactMeta.artifactSha256 } : {}),
+    ...(artifactFields ?? {}),
   };
 
   pi.sendMessage(
@@ -726,7 +739,7 @@ async function runWorkerHandoffCommand(
       details: {
         handoffId,
         pairId: message.pairId,
-        ...(artifactMeta ? { artifactPath: artifactMeta.artifactPath, artifactSha256: artifactMeta.artifactSha256 } : {}),
+        ...(artifactFields ?? {}),
       },
     },
     { triggerTurn: true, deliverAs: "steer" },
@@ -737,7 +750,7 @@ async function runWorkerHandoffCommand(
     artifactMeta ? `Accepted handoff ${handoffId} via artifact ${artifactMeta.artifactPath}.` : `Accepted handoff ${handoffId}.`,
     {
       handoffId,
-      ...(artifactMeta ? { payload: { artifactPath: artifactMeta.artifactPath, artifactSha256: artifactMeta.artifactSha256 } } : {}),
+      ...(artifactFields ? { payload: artifactFields } : {}),
     },
   );
 }
@@ -748,7 +761,7 @@ async function runWorkerSlashCommand(
   message: PairMessageV2,
 ): Promise<PairMessageV2> {
   const payload = workerCommandPayload(message);
-  const commandText = typeof payload.command === "string" && payload.command.trim() ? payload.command.trim() : (message.body ?? "").trim();
+  const commandText = optionalPayloadString(payload, "command") ?? (message.body ?? "").trim();
   if (!commandText.startsWith("/")) {
     throw new Error("worker slash command must start with '/'.");
   }
@@ -1242,6 +1255,7 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
   }
 
   const cwd = getContextCwd(ctx);
+  const leadSession = getLeadSessionBinding(ctx);
   const { settings } = await refreshSettings(cwd);
   const handoffId = randomUUID();
   const handoff = buildHandoffText(ctx, args, handoffId);
@@ -1252,19 +1266,20 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
 
   await resolveLeadSupervisionModel(ctx);
 
-  let worker = await getWorkerStatus(pi, cwd, settings, getLeadSessionBinding(ctx));
+  let worker = await getWorkerStatus(pi, cwd, settings, leadSession);
   if (!worker.running) {
-    worker = await startWorker(pi, cwd, settings, getLeadSessionBinding(ctx));
+    worker = await startWorker(pi, cwd, settings, leadSession);
     updateStatusLine(ctx, worker);
   }
 
   const runtime = await resolveRuntimeContext(pi, ctx);
   const handoffArtifact = await writeHandoffArtifact(runtime.runtimeDir, handoffId, handoff);
+  const { artifactPath, artifactSha256, artifactBytes } = handoffArtifact;
   const handoffSummary = truncate(handoff, 500);
   const handoffPointer = buildHandoffPointerText({
     handoffId,
-    artifactPath: handoffArtifact.artifactPath,
-    artifactSha256: handoffArtifact.artifactSha256,
+    artifactPath,
+    artifactSha256,
     summary: handoffSummary,
   });
 
@@ -1273,8 +1288,8 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
     id: handoffId,
     spec: handoff,
     outcome: handoffSummary,
-    artifactPath: handoffArtifact.artifactPath,
-    artifactSha256: handoffArtifact.artifactSha256,
+    artifactPath,
+    artifactSha256,
     steerCount: 0,
     recentEvents: [],
     pendingEvents: [],
@@ -1293,9 +1308,9 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
       body: handoffPointer,
       payload: {
         handoffId,
-        artifactPath: handoffArtifact.artifactPath,
-        artifactSha256: handoffArtifact.artifactSha256,
-        artifactBytes: handoffArtifact.artifactBytes,
+        artifactPath,
+        artifactSha256,
+        artifactBytes,
         summary: handoffSummary,
       },
     });
@@ -1326,8 +1341,8 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
       worker,
       connection.pairId,
       handoffId,
-      handoffArtifact.artifactPath,
-      handoffArtifact.artifactSha256,
+      artifactPath,
+      artifactSha256,
     ),
     BUILD_HANDOFF_MESSAGE_TYPE,
   );
