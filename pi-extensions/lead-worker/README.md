@@ -4,6 +4,8 @@ Lead-worker mode controller for a persistent tmux-backed worker session scoped t
 
 Worker clarification is modeled as durable handoff state rather than just a transient RPC detail: a live worker `ask` can show up in status while it is pending, an unresolved `clarification_needed` event remains visible across reconnects/resume even when no direct reply handle is available anymore, and if the worker issues `ask` while no lead is attached it automatically degrades into durable `clarification_needed` state instead of failing silently. Lead-side supervision treats that state as waiting rather than drift until the clarification is resolved or a terminal event arrives.
 
+`/worker build` now writes the full handoff spec to a repo-local artifact under `.pi/lead-worker/<pair-id-prefix>/handoffs/<handoff-id>.md` and sends the worker a short pointer packet with the artifact path and SHA-256 digest. That keeps the protocol payload small while leaving the full handoff durable and inspectable on disk.
+
 ## Settings
 
 Settings are loaded in this order (later layers override earlier ones field-by-field):

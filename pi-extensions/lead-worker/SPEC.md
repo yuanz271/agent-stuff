@@ -117,7 +117,7 @@ type PairMessageV2 = {
 - `slash_command` — escape hatch for worker-local slash commands
 
 ### Why `handoff` is the delegation primitive
-`handoff` carries the full spec — goal, files, constraints, validation criteria, `handoffId` — as a single typed command. The worker accepts it, starts executing, and emits typed progress events back.
+`handoff` is the structured delegation primitive. The lead writes the full spec to a repo-local artifact under `.pi/lead-worker/<pair-id-prefix>/handoffs/<handoff-id>.md`, then sends a typed `handoff` command carrying the `handoffId`, artifact path, artifact digest, and a short summary/pointer body. The worker validates the artifact before accepting it, then starts executing and emits typed progress events back.
 
 ### `slash_command` policy
 Exists to preserve coverage without mirroring every worker slash command into the protocol. Keep as escape hatch only.
@@ -168,11 +168,12 @@ The whole point of `lead-worker` is autonomous worker execution. An unsupervised
 
 1. Gather recent lead context
 2. Build spec-oriented handoff with `handoffId`
-3. Validate that lead-side supervision can run with the active lead model and credentials
-4. Register lead-side supervision state before issuing the handoff so early worker events cannot be missed
-5. Send `handoff` command → wait for worker ack
-6. Synthesize a one-line outcome string from the handoff spec using a cheap model call
-7. Analyze meaningful worker events and steer when needed
+3. Write the full handoff to a repo-local artifact and compute its SHA-256 digest
+4. Validate that lead-side supervision can run with the active lead model and credentials
+5. Register lead-side supervision state before issuing the handoff so early worker events cannot be missed
+6. Send `handoff` command with artifact metadata → wait for worker ack
+7. Synthesize a one-line outcome string from the handoff spec using a cheap model call
+8. Analyze meaningful worker events and steer when needed
 
 ### Lead-side supervision
 The lead analyzes incoming worker events against the handoff spec:
@@ -253,6 +254,7 @@ This keeps lead-worker supervision observable and attributable:
 - different-lead reconnect: busy error
 - in-flight RPCs on disconnected lead fail immediately
 - worker events while lead is disconnected are queued to disk and flushed on reattach
+- handoff artifacts remain on disk under the repo-local lead-worker runtime directory for inspection/debugging across reconnects and resume
 - stale `worker.sock` is cleaned on worker startup and on `/lead stop`
 - compact lead status shows logical state only, not full tmux session names
 

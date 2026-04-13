@@ -2,10 +2,10 @@ import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { getModel, StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { join } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   createMessage,
@@ -162,6 +162,101 @@ function markPendingWorkerHandoffTerminalEvent(message: PairMessageV2): void {
 function sendProtocolMessage(socket: Socket, message: PairMessageV2): void {
   writeMessage(socket, message);
   markPendingWorkerHandoffTerminalEvent(message);
+}
+
+function handoffArtifactsDir(runtimeDir: string): string {
+  return join(runtimeDir, "handoffs");
+}
+
+function handoffArtifactPath(runtimeDir: string, handoffId: string): string {
+  return join(handoffArtifactsDir(runtimeDir), `${handoffId}.md`);
+}
+
+function sha256Hex(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+async function writeHandoffArtifact(runtimeDir: string, handoffId: string, spec: string): Promise<{
+  artifactPath: string;
+  artifactSha256: string;
+  artifactBytes: number;
+}> {
+  const dir = handoffArtifactsDir(runtimeDir);
+  const artifactPath = handoffArtifactPath(runtimeDir, handoffId);
+  const content = spec.trimEnd() + "\n";
+  const artifactSha256 = sha256Hex(content);
+  const tempPath = join(dir, `.${handoffId}.${randomUUID()}.tmp`);
+
+  await fs.mkdir(dir, { recursive: true });
+  try {
+    await fs.writeFile(tempPath, content, "utf8");
+    await fs.rename(tempPath, artifactPath);
+  } catch (error) {
+    await fs.unlink(tempPath).catch(() => undefined);
+    throw new Error(`Failed to write handoff artifact ${artifactPath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  return {
+    artifactPath,
+    artifactSha256,
+    artifactBytes: Buffer.byteLength(content, "utf8"),
+  };
+}
+
+async function validateHandoffArtifact(
+  runtimeDir: string,
+  handoffId: string,
+  payload: Record<string, unknown>,
+): Promise<{ artifactPath: string; artifactSha256: string }> {
+  const artifactPath = typeof payload.artifactPath === "string" && payload.artifactPath.trim()
+    ? payload.artifactPath.trim()
+    : "";
+  if (!artifactPath) throw new Error("handoff artifactPath is required.");
+
+  const expectedPath = resolvePath(handoffArtifactPath(runtimeDir, handoffId));
+  const resolvedArtifactPath = resolvePath(artifactPath);
+  if (resolvedArtifactPath !== expectedPath) {
+    throw new Error(`handoff artifact path mismatch: expected ${expectedPath}`);
+  }
+
+  let artifactText: string;
+  try {
+    artifactText = await fs.readFile(resolvedArtifactPath, "utf8");
+  } catch (error) {
+    throw new Error(`Failed to read handoff artifact ${resolvedArtifactPath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!artifactText.trim()) throw new Error(`Handoff artifact ${resolvedArtifactPath} is empty.`);
+
+  const artifactSha256 = sha256Hex(artifactText);
+  const expectedSha256 = typeof payload.artifactSha256 === "string" && payload.artifactSha256.trim()
+    ? payload.artifactSha256.trim()
+    : "";
+  if (expectedSha256 && artifactSha256 !== expectedSha256) {
+    throw new Error(`handoff artifact checksum mismatch for ${resolvedArtifactPath}`);
+  }
+
+  return { artifactPath: resolvedArtifactPath, artifactSha256 };
+}
+
+function buildHandoffPointerText(params: {
+  handoffId: string;
+  artifactPath: string;
+  artifactSha256: string;
+  summary?: string;
+}): string {
+  const summary = typeof params.summary === "string" && params.summary.trim()
+    ? truncate(params.summary.trim(), 500)
+    : undefined;
+  return [
+    "[LEAD-WORKER HANDOFF]",
+    `handoff_id: ${params.handoffId}`,
+    `artifact_path: ${params.artifactPath}`,
+    `artifact_sha256: ${params.artifactSha256}`,
+    ...(summary ? ["", "Summary:", summary] : []),
+    "",
+    "Read the handoff artifact above and treat it as the authoritative spec for this handoff.",
+    "Implement it in the worker session, then report progress and exactly one terminal update as usual.",
+  ].join("\n");
 }
 
 function pendingClarificationSnapshot(
@@ -681,30 +776,51 @@ async function handleWorkerCommand(
   if (name === "handoff") {
     const payload = typeof message.payload === "object" && message.payload !== null ? (message.payload as Record<string, unknown>) : {};
     const handoffId = typeof payload.handoffId === "string" && payload.handoffId.trim() ? payload.handoffId : message.handoffId;
-    const handoffText = typeof payload.text === "string" && payload.text.trim() ? payload.text : (message.body ?? "").trim();
     if (!handoffId) throw new Error("handoffId is required for worker handoff command.");
-    if (!handoffText) throw new Error("handoff text is required for worker handoff command.");
+
+    const runtime = await resolveRuntimeContext(pi, ctx);
+    const summary = typeof payload.summary === "string" && payload.summary.trim() ? payload.summary.trim() : undefined;
+    const artifactPath = typeof payload.artifactPath === "string" && payload.artifactPath.trim() ? payload.artifactPath.trim() : "";
+    const handoffText = typeof payload.text === "string" && payload.text.trim() ? payload.text : (message.body ?? "").trim();
+
+    let artifactMeta: { artifactPath: string; artifactSha256: string } | undefined;
+    let steerText: string;
+    if (artifactPath) {
+      artifactMeta = await validateHandoffArtifact(runtime.runtimeDir, handoffId, payload);
+      steerText = buildHandoffPointerText({
+        handoffId,
+        artifactPath: artifactMeta.artifactPath,
+        artifactSha256: artifactMeta.artifactSha256,
+        summary,
+      });
+    } else {
+      if (!handoffText) throw new Error("handoff artifact metadata or inline handoff text is required for worker handoff command.");
+      steerText = [
+        "[LEAD-WORKER HANDOFF]",
+        `handoff_id: ${handoffId}`,
+        "",
+        handoffText,
+      ].join("\n");
+    }
 
     await clearPendingClarification(pi, ctx);
     rt.pendingWorkerHandoff = {
       id: handoffId,
       receivedAtMs: Date.now(),
       pairId: message.pairId,
+      ...(artifactMeta ? { artifactPath: artifactMeta.artifactPath, artifactSha256: artifactMeta.artifactSha256 } : {}),
     };
-
-    const steerText = [
-      "[LEAD-WORKER HANDOFF]",
-      `handoff_id: ${handoffId}`,
-      "",
-      handoffText,
-    ].join("\n");
 
     pi.sendMessage(
       {
         customType: BUILD_HANDOFF_MESSAGE_TYPE,
         content: steerText,
         display: true,
-        details: { handoffId, pairId: message.pairId },
+        details: {
+          handoffId,
+          pairId: message.pairId,
+          ...(artifactMeta ? { artifactPath: artifactMeta.artifactPath, artifactSha256: artifactMeta.artifactSha256 } : {}),
+        },
       },
       { triggerTurn: true, deliverAs: "steer" },
     );
@@ -717,7 +833,8 @@ async function handleWorkerCommand(
       replyTo: message.id,
       ok: true,
       handoffId,
-      body: `Accepted handoff ${handoffId}.`,
+      body: artifactMeta ? `Accepted handoff ${handoffId} via artifact ${artifactMeta.artifactPath}.` : `Accepted handoff ${handoffId}.`,
+      ...(artifactMeta ? { payload: { artifactPath: artifactMeta.artifactPath, artifactSha256: artifactMeta.artifactSha256 } } : {}),
     });
   }
 
@@ -1101,7 +1218,13 @@ function buildHandoffText(ctx: ExtensionContext, extraInstructions: string, hand
   return joined.length <= MAX_HANDOFF_CHARS ? joined : joined.slice(0, MAX_HANDOFF_CHARS - 1) + "…";
 }
 
-function formatBuildQueuedMarkdown(worker: WorkerStatus, pairId: string, handoffId: string): string {
+function formatBuildQueuedMarkdown(
+  worker: WorkerStatus,
+  pairId: string,
+  handoffId: string,
+  artifactPath: string,
+  artifactSha256: string,
+): string {
   return [
     `**worker build delegated**`,
     "",
@@ -1111,6 +1234,8 @@ function formatBuildQueuedMarkdown(worker: WorkerStatus, pairId: string, handoff
     `- worker running: ${worker.running ? "yes" : "no"}`,
     `- worker session: ${worker.tmuxSession}`,
     `- handoff id: ${handoffId}`,
+    `- handoff artifact: ${artifactPath}`,
+    `- handoff sha256: ${artifactSha256}`,
     `- paired transport: protocol-v2 worker socket`,
   ].join("\n");
 }
@@ -1140,11 +1265,23 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
     updateStatusLine(ctx, worker);
   }
 
+  const runtime = await resolveRuntimeContext(pi, ctx);
+  const handoffArtifact = await writeHandoffArtifact(runtime.runtimeDir, handoffId, handoff);
+  const handoffSummary = truncate(handoff, 500);
+  const handoffPointer = buildHandoffPointerText({
+    handoffId,
+    artifactPath: handoffArtifact.artifactPath,
+    artifactSha256: handoffArtifact.artifactSha256,
+    summary: handoffSummary,
+  });
+
   const connection = await ensureLeadConnection(pi, ctx, { autoStart: true, failIfUnavailable: true });
   const supervised: ActiveSupervisedHandoff = {
     id: handoffId,
     spec: handoff,
-    outcome: truncate(handoff, 500),
+    outcome: handoffSummary,
+    artifactPath: handoffArtifact.artifactPath,
+    artifactSha256: handoffArtifact.artifactSha256,
     steerCount: 0,
     recentEvents: [],
     pendingEvents: [],
@@ -1160,8 +1297,14 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
       pairId: connection.pairId,
       name: "handoff",
       handoffId,
-      body: handoff,
-      payload: { handoffId, text: handoff },
+      body: handoffPointer,
+      payload: {
+        handoffId,
+        artifactPath: handoffArtifact.artifactPath,
+        artifactSha256: handoffArtifact.artifactSha256,
+        artifactBytes: handoffArtifact.artifactBytes,
+        summary: handoffSummary,
+      },
     });
     const reply = await startRpc(command, connection.socket);
     if (!reply.ok) throw new Error(reply.error ?? reply.body ?? `Worker rejected handoff ${handoffId}.`);
@@ -1184,7 +1327,17 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
     throw error;
   }
 
-  emitInfo(pi, formatBuildQueuedMarkdown(worker, connection.pairId, handoffId), BUILD_HANDOFF_MESSAGE_TYPE);
+  emitInfo(
+    pi,
+    formatBuildQueuedMarkdown(
+      worker,
+      connection.pairId,
+      handoffId,
+      handoffArtifact.artifactPath,
+      handoffArtifact.artifactSha256,
+    ),
+    BUILD_HANDOFF_MESSAGE_TYPE,
+  );
 }
 
 type WorkerInterruptState = { tmuxSession: string; tmuxPaneId?: string; agentName?: string };

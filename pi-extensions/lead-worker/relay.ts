@@ -175,6 +175,7 @@ export function formatWorkerStatusReply(pi: ExtensionAPI, ctx: ExtensionContext)
     `- model: ${ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "unknown"}`,
     `- thinking: ${pi.getThinkingLevel()}`,
     ...(rt.pendingWorkerHandoff ? [`- pending handoff id: ${rt.pendingWorkerHandoff.id}`] : []),
+    ...(rt.pendingWorkerHandoff?.artifactPath ? [`- pending handoff artifact: ${truncate(rt.pendingWorkerHandoff.artifactPath, 160)}`] : []),
     ...formatClarificationLines(rt.pendingClarification),
   ].join("\n");
 }

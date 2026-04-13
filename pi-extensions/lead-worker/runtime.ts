@@ -97,6 +97,8 @@ export type PendingWorkerHandoff = {
   id: string;
   receivedAtMs: number;
   pairId: string;
+  artifactPath?: string;
+  artifactSha256?: string;
   terminalEventSentAtMs?: number;
 };
 
@@ -116,6 +118,8 @@ export type ActiveSupervisedHandoff = {
   id: string;
   spec: string;
   outcome: string;
+  artifactPath?: string;
+  artifactSha256?: string;
   steerCount: number;
   recentEvents: PairMessageV2[];
   pendingEvents: PairMessageV2[];
