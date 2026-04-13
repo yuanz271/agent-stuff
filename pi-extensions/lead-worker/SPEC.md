@@ -51,6 +51,13 @@ The worker socket uses a short user-scoped runtime path so deep repository roots
 `pair-id = sha256(realpath(projectRoot) + ":default")`  
 Full hash is protocol identity; filesystem paths use a short prefix.
 
+### Control plane vs durability plane
+`lead-worker` intentionally uses **one interactive transport** and **one durability layer** rather than two competing communication systems.
+
+- **control plane: socket** — all live paired interaction (`request`, `reply`, `command`, `event`) flows over the worker-owned Unix socket
+- **durability plane: files** — handoff artifacts, persisted worker state, and queued worker events across lead disconnects live on disk
+- files are **not** a second general-purpose mailbox/RPC transport; they exist to preserve state and inspectability when no live socket is attached
+
 ---
 
 ## Protocol
@@ -333,6 +340,7 @@ This keeps lead-worker supervision observable and attributable:
 - repo-scoped paired lead/worker architecture
 - worker-owned Unix socket with framed typed messages
 - protocol v2: `request` / `reply` / `command` / `event`
+- socket is the only interactive control plane; files are durability support, not a parallel message transport
 - stable repo-scoped `pairId`, not lead-session identity
 - same-lead reconnect takes over cleanly; different-lead gets busy error
 - worker events queued to disk across lead disconnects
