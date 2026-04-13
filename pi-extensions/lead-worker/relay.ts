@@ -12,6 +12,7 @@ import {
   type PendingWorkerHandoff,
   rt,
   currentPairRole,
+  getContextCwd,
   getLeadSessionBinding,
   isTerminalSupervisionEvent,
   refreshSettings,
@@ -27,7 +28,7 @@ import {
 export type EnsureLeadConnection = (
   pi: ExtensionAPI,
   ctx: ExtensionContext,
-  opts: { autoStart: boolean; failIfUnavailable: boolean },
+  opts: { autoStart: boolean },
 ) => Promise<ActiveConnection>;
 
 export type StartRpc = (message: PairMessageV2, socket: ActiveConnection["socket"]) => Promise<PairMessageV2>;
@@ -209,7 +210,7 @@ export function maybeAutoReportWorkerCompletion(): void {
 }
 
 export function formatWorkerStatusReply(pi: ExtensionAPI, ctx: ExtensionContext): string {
-  const cwd = ctx.cwd ?? process.cwd();
+  const cwd = getContextCwd(ctx);
   return [
     "Worker status",
     `- cwd: ${cwd}`,
@@ -261,7 +262,7 @@ export async function queryWorkerStatusPassive(
   ensureLeadConnection: EnsureLeadConnection,
   startRpc: StartRpc,
 ): Promise<string> {
-  const cwd = ctx.cwd ?? process.cwd();
+  const cwd = getContextCwd(ctx);
   const { settings } = await refreshSettings(cwd);
   const worker = await getWorkerStatus(pi, cwd, settings, getLeadSessionBinding(ctx));
   if (!worker.running) {
@@ -269,7 +270,7 @@ export async function queryWorkerStatusPassive(
   }
 
   try {
-    const connection = await ensureLeadConnection(pi, ctx, { autoStart: false, failIfUnavailable: false });
+    const connection = await ensureLeadConnection(pi, ctx, { autoStart: false });
     const message = createMessage({
       type: "command",
       from: "lead",

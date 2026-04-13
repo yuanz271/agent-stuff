@@ -4,7 +4,7 @@ import { getModel, StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
-import { createConnection, createServer, type Server, type Socket } from "node:net";
+import { createConnection, createServer, type Socket } from "node:net";
 import { join, resolve as resolvePath } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
@@ -20,10 +20,8 @@ import {
   clearWorkerPendingClarification,
   getWorkerStatus,
   resolvePairRuntimePaths,
-  resolveProjectRoot,
   setWorkerPendingClarification,
   startWorker,
-  stopWorker,
   type PendingClarificationSnapshot,
   type WorkerStatus,
 } from "./utils.js";
@@ -40,6 +38,7 @@ import {
   TOOL_NAME,
   rt,
   currentPairRole,
+  getContextCwd,
   getLeadSessionBinding,
   getMessagesSinceLastUser,
   isTerminalSupervisionEvent,
@@ -56,9 +55,7 @@ import {
 } from "./runtime.js";
 import {
   emitInfo,
-  formatLeadModel,
   formatStatusMarkdown,
-  getCurrentLeadSelection,
   resolveCommandAction,
   restoreModeState,
   runControlAction,
@@ -129,6 +126,22 @@ function workerSessionReference(): string {
 
 function notify(ctx: ExtensionContext | undefined, message: string, severity: "info" | "warning" | "error" = "info"): void {
   if (ctx?.hasUI) ctx.ui.notify(message, severity);
+}
+
+function requireLatestPairContext(): ExtensionContext {
+  const ctx = rt.latestPairContext;
+  if (!ctx) throw new Error("No active extension context available for lead-worker message handling.");
+  return ctx;
+}
+
+async function settingsForContext(ctx: ExtensionContext) {
+  return rt.currentSettings?.settings ?? (await refreshSettings(getContextCwd(ctx))).settings;
+}
+
+function scheduleLeadSupervision(pi: ExtensionAPI, ctx: ExtensionContext, message: PairMessageV2): void {
+  void maybeRunLeadSupervision(pi, ctx, message, sendOneWayEvent).catch((err) => {
+    notify(ctx, `lead-worker supervision error: ${err instanceof Error ? err.message : String(err)}`, "warning");
+  });
 }
 
 function rememberExpiredRpc(id: string): void {
@@ -347,9 +360,9 @@ async function rememberPendingClarification(
 ): Promise<void> {
   rt.pendingClarification = clarification;
   if (currentPairRole() !== "worker") return;
-  const settings = rt.currentSettings?.settings ?? (await refreshSettings(ctx.cwd ?? process.cwd())).settings;
+  const settings = await settingsForContext(ctx);
   const { handoffId, question, askedAt, delivery } = clarification;
-  await setWorkerPendingClarification(pi, ctx.cwd ?? process.cwd(), settings, {
+  await setWorkerPendingClarification(pi, getContextCwd(ctx), settings, {
     ...(handoffId ? { handoffId } : {}),
     question,
     askedAt,
@@ -360,8 +373,8 @@ async function rememberPendingClarification(
 async function clearPendingClarification(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
   rt.pendingClarification = undefined;
   if (currentPairRole() !== "worker") return;
-  const settings = rt.currentSettings?.settings ?? (await refreshSettings(ctx.cwd ?? process.cwd())).settings;
-  await clearWorkerPendingClarification(pi, ctx.cwd ?? process.cwd(), settings);
+  const settings = await settingsForContext(ctx);
+  await clearWorkerPendingClarification(pi, getContextCwd(ctx), settings);
 }
 
 function restorePendingClarificationFromStatus(worker: WorkerStatus): void {
@@ -372,7 +385,7 @@ function restorePendingClarificationFromStatus(worker: WorkerStatus): void {
 
 async function restorePendingClarificationState(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
   if (rt.pendingClarification) return;
-  const cwd = ctx.cwd ?? process.cwd();
+  const cwd = getContextCwd(ctx);
   const { settings } = rt.currentSettings ?? await refreshSettings(cwd);
   const worker = await getWorkerStatus(pi, cwd, settings, getLeadSessionBinding(ctx));
   restorePendingClarificationFromStatus(worker);
@@ -387,7 +400,7 @@ async function resolveRuntimeContext(pi: ExtensionAPI, ctx: ExtensionContext): P
   protocolDir: string;
   socketPath: string;
 }> {
-  const cwd = ctx.cwd ?? process.cwd();
+  const cwd = getContextCwd(ctx);
   const paths = await resolvePairRuntimePaths(pi, cwd);
   return {
     role: currentPairRole(),
@@ -583,18 +596,19 @@ function onConnectionClosed(reason: string): void {
 async function ensureLeadConnection(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
-  opts: { autoStart: boolean; failIfUnavailable: boolean },
+  opts: { autoStart: boolean },
 ): Promise<ActiveConnection> {
   if (currentPairRole() !== "lead") {
     throw new Error("Only the lead session can initiate a worker socket connection.");
   }
 
-  const { settings } = await refreshSettings(ctx.cwd ?? process.cwd());
+  const cwd = getContextCwd(ctx);
+  const { settings } = await refreshSettings(cwd);
   const leadSession = getLeadSessionBinding(ctx);
-  let worker = await getWorkerStatus(pi, ctx.cwd ?? process.cwd(), settings, leadSession);
+  let worker = await getWorkerStatus(pi, cwd, settings, leadSession);
   if (!worker.running) {
     if (opts.autoStart) {
-      worker = await startWorker(pi, ctx.cwd ?? process.cwd(), settings, leadSession);
+      worker = await startWorker(pi, cwd, settings, leadSession);
       updateStatusLine(ctx, worker);
     } else {
       throw new Error(`Worker ${worker.agentName} is not running.`);
@@ -690,7 +704,7 @@ function startRpc(message: PairMessageV2, socket: Socket, timeoutMs = DEFAULT_RE
 
 async function maybePrimeLeadConnection(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
   if (currentPairRole() !== "lead") return;
-  await ensureLeadConnection(pi, ctx, { autoStart: false, failIfUnavailable: false }).catch(() => undefined);
+  await ensureLeadConnection(pi, ctx, { autoStart: false }).catch(() => undefined);
 }
 
 function registerInboundRequest(message: PairMessageV2): void {
@@ -724,6 +738,223 @@ async function resolveModelSelection(ctx: ExtensionContext, ref: string) {
   return matches[0];
 }
 
+type WorkerCommandHandler = (
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  message: PairMessageV2,
+  sourceSocket?: Socket,
+) => Promise<PairMessageV2>;
+
+function workerCommandPayload(message: PairMessageV2): Record<string, unknown> {
+  return typeof message.payload === "object" && message.payload !== null
+    ? (message.payload as Record<string, unknown>)
+    : {};
+}
+
+function createWorkerReply(
+  message: PairMessageV2,
+  body: string,
+  extras: { payload?: unknown; handoffId?: string } = {},
+): PairMessageV2 {
+  return createMessage({
+    type: "reply",
+    from: "worker",
+    to: "lead",
+    pairId: message.pairId,
+    replyTo: message.id,
+    ok: true,
+    body,
+    ...(extras.handoffId ? { handoffId: extras.handoffId } : {}),
+    ...(extras.payload !== undefined ? { payload: extras.payload } : {}),
+  });
+}
+
+async function runWorkerAttachCommand(
+  _pi: ExtensionAPI,
+  _ctx: ExtensionContext,
+  message: PairMessageV2,
+  sourceSocket?: Socket,
+): Promise<PairMessageV2> {
+  if (!sourceSocket) throw new Error("attach requires a source socket.");
+  const payload = workerCommandPayload(message);
+  const leadSessionId = typeof payload.leadSessionId === "string" && payload.leadSessionId.trim() ? payload.leadSessionId.trim() : "";
+  if (!leadSessionId) throw new Error("attach requires leadSessionId.");
+
+  const currentSocket = rt.activeLeadSocket;
+  const currentLeadSessionId = rt.activeLeadSessionId;
+  if (currentSocket && currentSocket !== sourceSocket && !currentSocket.destroyed) {
+    if (currentLeadSessionId !== leadSessionId) {
+      throw new Error("worker is already attached to another active lead connection");
+    }
+    rt.activeLeadSocket = sourceSocket;
+    rt.activeLeadSessionId = leadSessionId;
+    currentSocket.destroy(new Error("Superseded by reconnect from same lead session."));
+  } else {
+    rt.activeLeadSocket = sourceSocket;
+    rt.activeLeadSessionId = leadSessionId;
+  }
+
+  return createWorkerReply(message, `Attached lead session ${leadSessionId}.`, {
+    payload: { leadSessionId },
+  });
+}
+
+async function runWorkerStatusCommand(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  message: PairMessageV2,
+): Promise<PairMessageV2> {
+  return createWorkerReply(message, formatWorkerStatusReply(pi, ctx), {
+    payload: { pendingHandoffId: rt.pendingWorkerHandoff?.id },
+  });
+}
+
+async function runWorkerInterruptCommand(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  message: PairMessageV2,
+): Promise<PairMessageV2> {
+  await clearPendingClarification(pi, ctx);
+  await ctx.abort();
+  return createWorkerReply(message, "Worker interrupt requested.");
+}
+
+async function runWorkerThinkingCommand(
+  pi: ExtensionAPI,
+  _ctx: ExtensionContext,
+  message: PairMessageV2,
+): Promise<PairMessageV2> {
+  const payload = workerCommandPayload(message);
+  const level = "level" in payload
+    ? String(payload.level)
+    : (message.body ?? "").trim();
+  if (!["off", "minimal", "low", "medium", "high", "xhigh"].includes(level)) {
+    throw new Error(`Invalid thinking level '${level}'.`);
+  }
+  pi.setThinkingLevel(level as ThinkingLevel);
+  return createWorkerReply(message, `Worker thinking level set to ${level}.`);
+}
+
+async function runWorkerModelCommand(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  message: PairMessageV2,
+): Promise<PairMessageV2> {
+  const payload = workerCommandPayload(message);
+  const ref = "ref" in payload
+    ? String(payload.ref)
+    : (message.body ?? "").trim();
+  const model = await resolveModelSelection(ctx, ref);
+  const ok = await pi.setModel(model);
+  if (!ok) throw new Error(`No API key available for ${model.provider}/${model.id}.`);
+  return createWorkerReply(message, `Worker model set to ${model.provider}/${model.id}.`);
+}
+
+async function runWorkerHandoffCommand(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  message: PairMessageV2,
+): Promise<PairMessageV2> {
+  const payload = workerCommandPayload(message);
+  const handoffId = typeof payload.handoffId === "string" && payload.handoffId.trim() ? payload.handoffId : message.handoffId;
+  if (!handoffId) throw new Error("handoffId is required for worker handoff command.");
+
+  const runtime = await resolveRuntimeContext(pi, ctx);
+  const summary = typeof payload.summary === "string" && payload.summary.trim() ? payload.summary.trim() : undefined;
+  const artifactPath = typeof payload.artifactPath === "string" && payload.artifactPath.trim() ? payload.artifactPath.trim() : "";
+  const handoffText = typeof payload.text === "string" && payload.text.trim() ? payload.text : (message.body ?? "").trim();
+
+  let artifactMeta: { artifactPath: string; artifactSha256: string } | undefined;
+  let steerText: string;
+  if (artifactPath) {
+    artifactMeta = await validateHandoffArtifact(runtime.runtimeDir, handoffId, payload);
+    steerText = buildHandoffPointerText({
+      handoffId,
+      artifactPath: artifactMeta.artifactPath,
+      artifactSha256: artifactMeta.artifactSha256,
+      summary,
+    });
+  } else {
+    if (!handoffText) throw new Error("handoff artifact metadata or inline handoff text is required for worker handoff command.");
+    steerText = [
+      "[LEAD-WORKER HANDOFF]",
+      `handoff_id: ${handoffId}`,
+      "",
+      handoffText,
+    ].join("\n");
+  }
+
+  await clearPendingClarification(pi, ctx);
+  rt.pendingWorkerHandoff = {
+    id: handoffId,
+    receivedAtMs: Date.now(),
+    pairId: message.pairId,
+    ...(artifactMeta ? { artifactPath: artifactMeta.artifactPath, artifactSha256: artifactMeta.artifactSha256 } : {}),
+  };
+
+  pi.sendMessage(
+    {
+      customType: BUILD_HANDOFF_MESSAGE_TYPE,
+      content: steerText,
+      display: true,
+      details: {
+        handoffId,
+        pairId: message.pairId,
+        ...(artifactMeta ? { artifactPath: artifactMeta.artifactPath, artifactSha256: artifactMeta.artifactSha256 } : {}),
+      },
+    },
+    { triggerTurn: true, deliverAs: "steer" },
+  );
+
+  return createWorkerReply(
+    message,
+    artifactMeta ? `Accepted handoff ${handoffId} via artifact ${artifactMeta.artifactPath}.` : `Accepted handoff ${handoffId}.`,
+    {
+      handoffId,
+      ...(artifactMeta ? { payload: { artifactPath: artifactMeta.artifactPath, artifactSha256: artifactMeta.artifactSha256 } } : {}),
+    },
+  );
+}
+
+async function runWorkerSlashCommand(
+  pi: ExtensionAPI,
+  _ctx: ExtensionContext,
+  message: PairMessageV2,
+): Promise<PairMessageV2> {
+  const payload = workerCommandPayload(message);
+  const commandText = typeof payload.command === "string" && payload.command.trim() ? payload.command.trim() : (message.body ?? "").trim();
+  if (!commandText.startsWith("/")) {
+    throw new Error("worker slash command must start with '/'.");
+  }
+
+  const [commandName] = commandText.slice(1).split(/\s+/, 1);
+  if (!commandName) {
+    throw new Error("worker slash command name is required.");
+  }
+
+  const registered = pi.getCommands().some((command) => command.name === commandName);
+  if (!registered) {
+    throw new Error(`Worker slash command '/${commandName}' is not registered in the current worker session.`);
+  }
+
+  await pi.sendUserMessage(commandText);
+  return createWorkerReply(
+    message,
+    `Submitted worker slash command ${commandText} (fire-and-forget; async failures will not be reported back).`,
+    { payload: { command: commandText } },
+  );
+}
+
+const WORKER_COMMAND_HANDLERS: Record<string, WorkerCommandHandler> = {
+  attach: runWorkerAttachCommand,
+  status: runWorkerStatusCommand,
+  interrupt: runWorkerInterruptCommand,
+  thinking: runWorkerThinkingCommand,
+  model: runWorkerModelCommand,
+  handoff: runWorkerHandoffCommand,
+  slash_command: runWorkerSlashCommand,
+};
+
 async function handleWorkerCommand(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
@@ -731,340 +962,218 @@ async function handleWorkerCommand(
   sourceSocket?: Socket,
 ): Promise<PairMessageV2> {
   const name = message.name ?? "";
-  if (name === "attach") {
-    if (!sourceSocket) throw new Error("attach requires a source socket.");
-    const payload = typeof message.payload === "object" && message.payload !== null ? (message.payload as Record<string, unknown>) : {};
-    const leadSessionId = typeof payload.leadSessionId === "string" && payload.leadSessionId.trim() ? payload.leadSessionId.trim() : "";
-    if (!leadSessionId) throw new Error("attach requires leadSessionId.");
-
-    const currentSocket = rt.activeLeadSocket;
-    const currentLeadSessionId = rt.activeLeadSessionId;
-    if (currentSocket && currentSocket !== sourceSocket && !currentSocket.destroyed) {
-      if (currentLeadSessionId !== leadSessionId) {
-        throw new Error("worker is already attached to another active lead connection");
-      }
-      rt.activeLeadSocket = sourceSocket;
-      rt.activeLeadSessionId = leadSessionId;
-      currentSocket.destroy(new Error("Superseded by reconnect from same lead session."));
-    } else {
-      rt.activeLeadSocket = sourceSocket;
-      rt.activeLeadSessionId = leadSessionId;
-    }
-
-    return createMessage({
-      type: "reply",
-      from: "worker",
-      to: "lead",
-      pairId: message.pairId,
-      replyTo: message.id,
-      ok: true,
-      body: `Attached lead session ${leadSessionId}.`,
-      payload: { leadSessionId },
-    });
+  const handler = WORKER_COMMAND_HANDLERS[name];
+  if (!handler) {
+    throw new Error(`Unknown worker command '${name}'.`);
   }
-  if (name === "status") {
-    return createMessage({
-      type: "reply",
-      from: "worker",
-      to: "lead",
-      pairId: message.pairId,
-      replyTo: message.id,
-      ok: true,
-      body: formatWorkerStatusReply(pi, ctx),
-      payload: { pendingHandoffId: rt.pendingWorkerHandoff?.id },
-    });
-  }
-
-  if (name === "interrupt") {
-    await clearPendingClarification(pi, ctx);
-    await ctx.abort();
-    return createMessage({
-      type: "reply",
-      from: "worker",
-      to: "lead",
-      pairId: message.pairId,
-      replyTo: message.id,
-      ok: true,
-      body: "Worker interrupt requested.",
-    });
-  }
-
-  if (name === "thinking") {
-    const level = typeof message.payload === "object" && message.payload !== null && "level" in (message.payload as Record<string, unknown>)
-      ? String((message.payload as Record<string, unknown>).level)
-      : (message.body ?? "").trim();
-    if (!["off", "minimal", "low", "medium", "high", "xhigh"].includes(level)) {
-      throw new Error(`Invalid thinking level '${level}'.`);
-    }
-    pi.setThinkingLevel(level as ThinkingLevel);
-    return createMessage({
-      type: "reply",
-      from: "worker",
-      to: "lead",
-      pairId: message.pairId,
-      replyTo: message.id,
-      ok: true,
-      body: `Worker thinking level set to ${level}.`,
-    });
-  }
-
-  if (name === "model") {
-    const ref = typeof message.payload === "object" && message.payload !== null && "ref" in (message.payload as Record<string, unknown>)
-      ? String((message.payload as Record<string, unknown>).ref)
-      : (message.body ?? "").trim();
-    const model = await resolveModelSelection(ctx, ref);
-    const ok = await pi.setModel(model);
-    if (!ok) throw new Error(`No API key available for ${model.provider}/${model.id}.`);
-    return createMessage({
-      type: "reply",
-      from: "worker",
-      to: "lead",
-      pairId: message.pairId,
-      replyTo: message.id,
-      ok: true,
-      body: `Worker model set to ${model.provider}/${model.id}.`,
-    });
-  }
-
-  if (name === "handoff") {
-    const payload = typeof message.payload === "object" && message.payload !== null ? (message.payload as Record<string, unknown>) : {};
-    const handoffId = typeof payload.handoffId === "string" && payload.handoffId.trim() ? payload.handoffId : message.handoffId;
-    if (!handoffId) throw new Error("handoffId is required for worker handoff command.");
-
-    const runtime = await resolveRuntimeContext(pi, ctx);
-    const summary = typeof payload.summary === "string" && payload.summary.trim() ? payload.summary.trim() : undefined;
-    const artifactPath = typeof payload.artifactPath === "string" && payload.artifactPath.trim() ? payload.artifactPath.trim() : "";
-    const handoffText = typeof payload.text === "string" && payload.text.trim() ? payload.text : (message.body ?? "").trim();
-
-    let artifactMeta: { artifactPath: string; artifactSha256: string } | undefined;
-    let steerText: string;
-    if (artifactPath) {
-      artifactMeta = await validateHandoffArtifact(runtime.runtimeDir, handoffId, payload);
-      steerText = buildHandoffPointerText({
-        handoffId,
-        artifactPath: artifactMeta.artifactPath,
-        artifactSha256: artifactMeta.artifactSha256,
-        summary,
-      });
-    } else {
-      if (!handoffText) throw new Error("handoff artifact metadata or inline handoff text is required for worker handoff command.");
-      steerText = [
-        "[LEAD-WORKER HANDOFF]",
-        `handoff_id: ${handoffId}`,
-        "",
-        handoffText,
-      ].join("\n");
-    }
-
-    await clearPendingClarification(pi, ctx);
-    rt.pendingWorkerHandoff = {
-      id: handoffId,
-      receivedAtMs: Date.now(),
-      pairId: message.pairId,
-      ...(artifactMeta ? { artifactPath: artifactMeta.artifactPath, artifactSha256: artifactMeta.artifactSha256 } : {}),
-    };
-
-    pi.sendMessage(
-      {
-        customType: BUILD_HANDOFF_MESSAGE_TYPE,
-        content: steerText,
-        display: true,
-        details: {
-          handoffId,
-          pairId: message.pairId,
-          ...(artifactMeta ? { artifactPath: artifactMeta.artifactPath, artifactSha256: artifactMeta.artifactSha256 } : {}),
-        },
-      },
-      { triggerTurn: true, deliverAs: "steer" },
-    );
-
-    return createMessage({
-      type: "reply",
-      from: "worker",
-      to: "lead",
-      pairId: message.pairId,
-      replyTo: message.id,
-      ok: true,
-      handoffId,
-      body: artifactMeta ? `Accepted handoff ${handoffId} via artifact ${artifactMeta.artifactPath}.` : `Accepted handoff ${handoffId}.`,
-      ...(artifactMeta ? { payload: { artifactPath: artifactMeta.artifactPath, artifactSha256: artifactMeta.artifactSha256 } } : {}),
-    });
-  }
-
-  if (name === "slash_command") {
-    const payload = typeof message.payload === "object" && message.payload !== null ? (message.payload as Record<string, unknown>) : {};
-    const commandText = typeof payload.command === "string" && payload.command.trim() ? payload.command.trim() : (message.body ?? "").trim();
-    if (!commandText.startsWith("/")) {
-      throw new Error("worker slash command must start with '/'.");
-    }
-
-    const [commandName] = commandText.slice(1).split(/\s+/, 1);
-    if (!commandName) {
-      throw new Error("worker slash command name is required.");
-    }
-
-    const registered = pi.getCommands().some((command) => command.name === commandName);
-    if (!registered) {
-      throw new Error(`Worker slash command '/${commandName}' is not registered in the current worker session.`);
-    }
-
-    await pi.sendUserMessage(commandText);
-
-    return createMessage({
-      type: "reply",
-      from: "worker",
-      to: "lead",
-      pairId: message.pairId,
-      replyTo: message.id,
-      ok: true,
-      body: `Submitted worker slash command ${commandText} (fire-and-forget; async failures will not be reported back).`,
-      payload: { command: commandText },
-    });
-  }
-
-  throw new Error(`Unknown worker command '${name}'.`);
+  return handler(pi, ctx, message, sourceSocket);
 }
 
 async function handleLeadCommand(_pi: ExtensionAPI, _ctx: ExtensionContext, message: PairMessageV2): Promise<PairMessageV2> {
   throw new Error(`Lead command '${message.name ?? ""}' is not implemented.`);
 }
 
-function activeConnectionMatches(message: PairMessageV2, sourceSocket?: Socket): boolean {
-  if (currentPairRole() === "lead") {
+function activeConnectionMatches(role: PairRole, message: PairMessageV2, sourceSocket?: Socket): boolean {
+  if (role === "lead") {
     return !!rt.activeConnection && rt.activeConnection.pairId === message.pairId;
   }
   return !!rt.activeLeadSocket && rt.activeLeadSocket === sourceSocket && rt.workerServerPairId === message.pairId;
 }
 
-async function handleIncomingMessage(pi: ExtensionAPI, message: PairMessageV2, sourceSocket?: Socket): Promise<void> {
-  const ctx = rt.latestPairContext;
-  if (!ctx) throw new Error("No active extension context available for lead-worker message handling.");
-  if (message.to !== currentPairRole()) throw new Error(`Unexpected destination '${message.to}' for role '${currentPairRole()}'.`);
+async function handleWorkerAttachCommand(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  message: PairMessageV2,
+  sourceSocket?: Socket,
+): Promise<void> {
+  const socket = sourceSocket;
+  if (!socket) throw new Error("attach requires a source socket.");
+  const reply = await handleWorkerCommand(pi, ctx, message, socket);
+  sendProtocolMessage(socket, reply);
+  await flushQueuedWorkerEvents((await resolveRuntimeContext(pi, ctx)).protocolDir, socket, message.pairId);
+}
 
-  if (currentPairRole() === "worker" && message.type === "command" && message.name === "attach") {
-    const socket = sourceSocket;
-    if (!socket) throw new Error("attach requires a source socket.");
-    const reply = await handleWorkerCommand(pi, ctx, message, socket);
-    sendProtocolMessage(socket, reply);
-    await flushQueuedWorkerEvents((await resolveRuntimeContext(pi, ctx)).protocolDir, socket, message.pairId);
+function handleIncomingReply(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  role: PairRole,
+  message: PairMessageV2,
+): void {
+  const replyTo = message.replyTo ?? "";
+  const pending = rt.pendingRpc.get(replyTo);
+  if (pending) {
+    clearPendingRpc(replyTo);
+    if (role === "worker" && rt.pendingClarification?.replyTo === replyTo) {
+      void clearPendingClarification(pi, ctx).catch((err) => {
+        notify(ctx, `lead-worker clarification state clear failed: ${err instanceof Error ? err.message : String(err)}`, "warning");
+      });
+    }
+    pending.resolve(message);
+    return;
+  }
+  if (message.replyTo && rt.expiredRpcIds.has(message.replyTo)) {
+    notify(ctx, `lead-worker stale reply ignored: ${message.replyTo}`, "warning");
+    return;
+  }
+  throw new Error(`Unexpected reply for unknown request id '${message.replyTo ?? "(none)"}'.`);
+}
+
+function parseStructuredLeadEvent(
+  ctx: ExtensionContext,
+  message: PairMessageV2,
+): ExecutionUpdatePayload | undefined {
+  const eventName = message.name ?? "event";
+  if (message.from !== "worker" || !isHighSignalWorkerEvent(eventName)) return undefined;
+  try {
+    return parseExecutionUpdatePayload(message.payload, eventName);
+  } catch (error) {
+    notify(ctx, `lead-worker invalid structured ${eventName} payload: ${error instanceof Error ? error.message : String(error)}`, "warning");
+    return undefined;
+  }
+}
+
+async function handleLeadEvent(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  message: PairMessageV2,
+): Promise<void> {
+  const eventName = message.name ?? "event";
+  const structuredUpdate = parseStructuredLeadEvent(ctx, message);
+
+  if (eventName === "busy") {
+    rt.connectionError = message.body ?? "Worker is already attached to another active lead connection.";
+    notify(ctx, rt.connectionError, "error");
     return;
   }
 
-  if (!activeConnectionMatches(message, sourceSocket)) throw new Error(`Wrong pairId ${message.pairId} for active connection.`);
+  if (eventName === "clarification_needed") {
+    if (structuredUpdate?.status === "clarification_needed") {
+      await rememberPendingClarification(pi, ctx, {
+        ...pendingClarificationSnapshot(structuredUpdate.question ?? structuredUpdate.summary, message.timestamp, "durable", structuredUpdate.handoffId),
+        canReplyNow: false,
+      });
+    }
+  } else if (isTerminalSupervisionEvent(eventName)) {
+    await clearPendingClarification(pi, ctx);
+  }
+
+  if (eventName === "progress" || eventName === "readiness") {
+    notify(ctx, message.body ?? `Worker event: ${eventName}`, "info");
+    if (eventName === "progress") {
+      scheduleLeadSupervision(pi, ctx, message);
+    }
+    return;
+  }
+
+  deliverIncomingProtocolMessage(pi, message, true);
+  maybeRelayWorkerEventToUser(pi, message);
+  scheduleLeadSupervision(pi, ctx, message);
+}
+
+async function handleIncomingEvent(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  role: PairRole,
+  message: PairMessageV2,
+): Promise<void> {
+  if (role === "lead") {
+    await handleLeadEvent(pi, ctx, message);
+    return;
+  }
+  deliverIncomingProtocolMessage(pi, message, true);
+}
+
+async function handleIncomingRequest(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  role: PairRole,
+  message: PairMessageV2,
+): Promise<void> {
+  registerInboundRequest(message);
+  if (role === "lead" && message.from === "worker") {
+    await rememberPendingClarification(pi, ctx, pendingClarificationFromMessage(message, "live", true, message.id));
+  }
+  deliverIncomingProtocolMessage(pi, message, true);
+  promptForReply(pi, message);
+}
+
+function createCommandFailureReply(role: PairRole, message: PairMessageV2, error: Error): PairMessageV2 {
+  return createMessage({
+    type: "reply",
+    from: role,
+    to: pairedRole(role),
+    pairId: message.pairId,
+    replyTo: message.id,
+    ok: false,
+    error: error.message,
+    handoffId: message.handoffId,
+    body: error.message,
+  });
+}
+
+async function handleIncomingCommand(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  role: PairRole,
+  message: PairMessageV2,
+  sourceSocket?: Socket,
+): Promise<void> {
+  const socket = activeSocketForRole(role);
+  if (!socket) throw new Error("No active socket available for command reply.");
+  try {
+    const reply = role === "worker"
+      ? await handleWorkerCommand(pi, ctx, message, sourceSocket)
+      : await handleLeadCommand(pi, ctx, message);
+    sendProtocolMessage(socket, reply);
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    sendProtocolMessage(socket, createCommandFailureReply(role, message, err));
+  }
+}
+
+async function handleIncomingMessage(pi: ExtensionAPI, message: PairMessageV2, sourceSocket?: Socket): Promise<void> {
+  const ctx = requireLatestPairContext();
+  const role = currentPairRole();
+  if (message.to !== role) throw new Error(`Unexpected destination '${message.to}' for role '${role}'.`);
+
+  if (role === "worker" && message.type === "command" && message.name === "attach") {
+    await handleWorkerAttachCommand(pi, ctx, message, sourceSocket);
+    return;
+  }
+
+  if (!activeConnectionMatches(role, message, sourceSocket)) {
+    throw new Error(`Wrong pairId ${message.pairId} for active connection.`);
+  }
 
   if (message.type === "reply") {
-    const replyTo = message.replyTo ?? "";
-    const pending = rt.pendingRpc.get(replyTo);
-    if (pending) {
-      clearPendingRpc(replyTo);
-      if (currentPairRole() === "worker" && rt.pendingClarification?.replyTo === replyTo) {
-        void clearPendingClarification(pi, ctx).catch((err) => {
-          notify(ctx, `lead-worker clarification state clear failed: ${err instanceof Error ? err.message : String(err)}`, "warning");
-        });
-      }
-      pending.resolve(message);
-      return;
-    }
-    if (message.replyTo && rt.expiredRpcIds.has(message.replyTo)) {
-      notify(ctx, `lead-worker stale reply ignored: ${message.replyTo}`, "warning");
-      return;
-    }
-    throw new Error(`Unexpected reply for unknown request id '${message.replyTo ?? "(none)"}'.`);
+    handleIncomingReply(pi, ctx, role, message);
+    return;
   }
 
   if (message.type === "event") {
-    if (currentPairRole() === "lead") {
-      const eventName = message.name ?? "event";
-      let structuredUpdate: ExecutionUpdatePayload | undefined;
-      if (message.from === "worker" && isHighSignalWorkerEvent(eventName)) {
-        try {
-          structuredUpdate = parseExecutionUpdatePayload(message.payload, eventName);
-        } catch (error) {
-          notify(ctx, `lead-worker invalid structured ${eventName} payload: ${error instanceof Error ? error.message : String(error)}`, "warning");
-        }
-      }
-
-      if (eventName === "busy") {
-        rt.connectionError = message.body ?? "Worker is already attached to another active lead connection.";
-        notify(ctx, rt.connectionError, "error");
-      } else {
-        if (eventName === "clarification_needed") {
-          if (structuredUpdate?.status === "clarification_needed") {
-            await rememberPendingClarification(pi, ctx, {
-              ...pendingClarificationSnapshot(structuredUpdate.question ?? structuredUpdate.summary, message.timestamp, "durable", structuredUpdate.handoffId),
-              canReplyNow: false,
-            });
-          }
-        } else if (isTerminalSupervisionEvent(eventName)) {
-          await clearPendingClarification(pi, ctx);
-        }
-
-        if (eventName === "progress" || eventName === "readiness") {
-          notify(ctx, message.body ?? `Worker event: ${eventName}`, "info");
-          if (eventName === "progress") {
-            void maybeRunLeadSupervision(pi, ctx, message, sendOneWayEvent).catch((err) => {
-              notify(ctx, `lead-worker supervision error: ${err instanceof Error ? err.message : String(err)}`, "warning");
-            });
-          }
-        } else {
-          deliverIncomingProtocolMessage(pi, message, true);
-          maybeRelayWorkerEventToUser(pi, message);
-          void maybeRunLeadSupervision(pi, ctx, message, sendOneWayEvent).catch((err) => {
-            notify(ctx, `lead-worker supervision error: ${err instanceof Error ? err.message : String(err)}`, "warning");
-          });
-        }
-      }
-    } else {
-      deliverIncomingProtocolMessage(pi, message, true);
-    }
+    await handleIncomingEvent(pi, ctx, role, message);
     return;
   }
 
   if (message.type === "request") {
-    registerInboundRequest(message);
-    if (currentPairRole() === "lead" && message.from === "worker") {
-      await rememberPendingClarification(pi, ctx, pendingClarificationFromMessage(message, "live", true, message.id));
-    }
-    deliverIncomingProtocolMessage(pi, message, true);
-    promptForReply(pi, message);
+    await handleIncomingRequest(pi, ctx, role, message);
     return;
   }
 
   if (message.type === "command") {
-    const socket = activeSocketForRole(currentPairRole());
-    if (!socket) throw new Error("No active socket available for command reply.");
-    try {
-      const reply = currentPairRole() === "worker"
-        ? await handleWorkerCommand(pi, ctx, message, sourceSocket)
-        : await handleLeadCommand(pi, ctx, message);
-      sendProtocolMessage(socket, reply);
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      sendProtocolMessage(socket, createMessage({
-        type: "reply",
-        from: currentPairRole(),
-        to: pairedRole(currentPairRole()),
-        pairId: message.pairId,
-        replyTo: message.id,
-        ok: false,
-        error: err.message,
-        handoffId: message.handoffId,
-        body: err.message,
-      }));
-    }
-    return;
+    await handleIncomingCommand(pi, ctx, role, message, sourceSocket);
   }
 }
 
 async function sendOneWayEvent(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
-  params: { name: string; body: string; handoffId?: string; payload?: unknown; autoStart: boolean; failIfUnavailable: boolean },
+  params: { name: string; body: string; handoffId?: string; payload?: unknown; autoStart: boolean },
 ): Promise<{ ok: true; action: "message"; pairId: string; to: PairRole; name: string; handoffId?: string; queued?: boolean }> {
   const role = currentPairRole();
   const runtime = await resolveRuntimeContext(pi, ctx);
   const socket = role === "lead"
-    ? (await ensureLeadConnection(pi, ctx, { autoStart: params.autoStart, failIfUnavailable: params.failIfUnavailable })).socket
+    ? (await ensureLeadConnection(pi, ctx, { autoStart: params.autoStart })).socket
     : activeSocketForRole("worker");
 
   const message = createMessage({
@@ -1096,7 +1205,7 @@ async function sendAskAction(pi: ExtensionAPI, ctx: ExtensionContext, name: stri
   const role = currentPairRole();
   const runtime = await resolveRuntimeContext(pi, ctx);
   const socket = role === "lead"
-    ? (await ensureLeadConnection(pi, ctx, { autoStart: true, failIfUnavailable: true })).socket
+    ? (await ensureLeadConnection(pi, ctx, { autoStart: true })).socket
     : activeSocketForRole("worker");
 
   if (role === "worker" && (!socket || socket.destroyed)) {
@@ -1120,7 +1229,6 @@ async function sendAskAction(pi: ExtensionAPI, ctx: ExtensionContext, name: stri
       handoffId,
       payload: fallbackPayload,
       autoStart: false,
-      failIfUnavailable: true,
     });
     await rememberPendingClarification(pi, ctx, clarificationStateFromExecutionUpdate(fallbackPayload, "durable", false));
     return {
@@ -1182,7 +1290,7 @@ async function sendCommandAction(pi: ExtensionAPI, ctx: ExtensionContext, name: 
     throw new Error("lead_worker({ action: \"command\", ... }) is only implemented from the lead to the worker.");
   }
 
-  const connection = await ensureLeadConnection(pi, ctx, { autoStart: true, failIfUnavailable: true });
+  const connection = await ensureLeadConnection(pi, ctx, { autoStart: true });
   const payload = name === "model"
     ? { ref: text.trim() }
     : name === "thinking"
@@ -1211,7 +1319,7 @@ async function sendReplyAction(pi: ExtensionAPI, ctx: ExtensionContext, replyTo:
   const role = currentPairRole();
   const runtime = await resolveRuntimeContext(pi, ctx);
   const socket = role === "lead"
-    ? (await ensureLeadConnection(pi, ctx, { autoStart: true, failIfUnavailable: true })).socket
+    ? (await ensureLeadConnection(pi, ctx, { autoStart: true })).socket
     : activeSocketForRole("worker");
   if (!socket) throw new Error("Worker is not currently attached to an active lead connection.");
 
@@ -1263,7 +1371,6 @@ async function sendMessageAction(
     handoffId,
     payload,
     autoStart: false,
-    failIfUnavailable: true,
   });
 
   if (role === "worker" && inferredName === "clarification_needed" && payload) {
@@ -1283,7 +1390,7 @@ function buildHandoffText(ctx: ExtensionContext, extraInstructions: string, hand
   if (recent.length === 0 && !trimmedExtra) return null;
 
   const lines = [
-    `Lead handoff from session ${ctx.sessionManager.getSessionId()} in ${ctx.cwd ?? process.cwd()}.`,
+    `Lead handoff from session ${ctx.sessionManager.getSessionId()} in ${getContextCwd(ctx)}.`,
     "Implement the agreed plan in the repo-scoped worker. The lead should avoid direct repo edits.",
     `handoff_id: ${handoffId}`,
     'Direct paired communication is available through lead_worker({ action: "message", name: "progress", message: "..." }), structured execution-update events via lead_worker({ action: "message", name: "completed" | "failed" | "cancelled" | "blocker" | "clarification_needed", message: "short summary", payload: {...} }), live clarification via lead_worker({ action: "ask", name: "clarification", message: "..." }), and lead_worker({ action: "reply", replyTo: "...", message: "..." }).',
@@ -1349,7 +1456,8 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
     return;
   }
 
-  const { settings } = await refreshSettings(ctx.cwd ?? process.cwd());
+  const cwd = getContextCwd(ctx);
+  const { settings } = await refreshSettings(cwd);
   const handoffId = randomUUID();
   const handoff = buildHandoffText(ctx, args, handoffId);
   if (!handoff) {
@@ -1359,9 +1467,9 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
 
   await resolveLeadSupervisionModel(ctx);
 
-  let worker = await getWorkerStatus(pi, ctx.cwd ?? process.cwd(), settings, getLeadSessionBinding(ctx));
+  let worker = await getWorkerStatus(pi, cwd, settings, getLeadSessionBinding(ctx));
   if (!worker.running) {
-    worker = await startWorker(pi, ctx.cwd ?? process.cwd(), settings, getLeadSessionBinding(ctx));
+    worker = await startWorker(pi, cwd, settings, getLeadSessionBinding(ctx));
     updateStatusLine(ctx, worker);
   }
 
@@ -1375,7 +1483,7 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
     summary: handoffSummary,
   });
 
-  const connection = await ensureLeadConnection(pi, ctx, { autoStart: true, failIfUnavailable: true });
+  const connection = await ensureLeadConnection(pi, ctx, { autoStart: true });
   const supervised: ActiveSupervisedHandoff = {
     id: handoffId,
     spec: handoff,
@@ -1456,7 +1564,7 @@ function tmuxExecSucceeded(result: { code?: number | null }): boolean {
 async function resolveWorkerInterruptState(pi: ExtensionAPI, ctx: ExtensionContext): Promise<WorkerInterruptResolution | null> {
   if (!rt.modeEnabled || currentPairRole() !== "lead") return null;
 
-  const cwd = ctx.cwd ?? process.cwd();
+  const cwd = getContextCwd(ctx);
   const runtime = await resolveRuntimeContext(pi, ctx);
   const statePath = join(runtime.runtimeDir, "worker-state.json");
 

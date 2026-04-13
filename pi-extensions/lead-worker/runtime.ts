@@ -271,6 +271,10 @@ export function getLeadSessionBinding(ctx: ExtensionContext): LeadSessionBinding
   };
 }
 
+export function getContextCwd(ctx: ExtensionContext): string {
+  return ctx.cwd ?? process.cwd();
+}
+
 export function isTerminalSupervisionEvent(eventName: string): boolean {
   return ["completed", "failed", "cancelled"].includes(eventName);
 }

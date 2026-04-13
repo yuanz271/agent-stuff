@@ -18,6 +18,7 @@ import {
   rt,
   currentPairRole,
   getConfiguredLeadSelection,
+  getContextCwd,
   getLeadSessionBinding,
   requireCurrentSettings,
   refreshSettings,
@@ -280,7 +281,7 @@ export function emitInfo(pi: ExtensionAPI, markdown: string, customType = BUILD_
 }
 
 export async function restoreModeState(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
-  await refreshSettings(ctx.cwd ?? process.cwd());
+  await refreshSettings(getContextCwd(ctx));
 
   const restored = restorePersistedState(ctx);
   rt.modeEnabled = restored?.enabled ?? false;
@@ -295,7 +296,7 @@ export async function restoreModeState(pi: ExtensionAPI, ctx: ExtensionContext):
 
   const worker = await getWorkerStatus(
     pi,
-    ctx.cwd ?? process.cwd(),
+    getContextCwd(ctx),
     requireCurrentSettings().settings,
     getLeadSessionBinding(ctx),
   );
@@ -308,7 +309,7 @@ async function startOnly(
   settings: LeadWorkerSettings,
   primeLeadConnection: PrimeLeadConnection,
 ): Promise<LeadWorkerStatus> {
-  const worker = await startWorker(pi, ctx.cwd ?? process.cwd(), settings, getLeadSessionBinding(ctx));
+  const worker = await startWorker(pi, getContextCwd(ctx), settings, getLeadSessionBinding(ctx));
   updateStatusLine(ctx, worker);
   await primeLeadConnection(pi, ctx);
   return buildStatus("start", worker.message, worker, pi);
@@ -322,7 +323,7 @@ async function enableMode(
 ): Promise<LeadWorkerStatus> {
   const capturedTools = rt.modeEnabled ? rt.previousActiveTools : pi.getActiveTools();
   const capturedSelection = rt.modeEnabled ? rt.previousLeadSelection : getCurrentLeadSelection(pi, ctx);
-  const worker = await startWorker(pi, ctx.cwd ?? process.cwd(), settings, getLeadSessionBinding(ctx));
+  const worker = await startWorker(pi, getContextCwd(ctx), settings, getLeadSessionBinding(ctx));
   const configuredSelection = getConfiguredLeadSelection(settings);
 
   rt.modeEnabled = true;
@@ -373,7 +374,7 @@ async function restoreLeadMode(pi: ExtensionAPI, ctx: ExtensionContext, worker: 
 }
 
 async function disableMode(pi: ExtensionAPI, ctx: ExtensionContext, settings: LeadWorkerSettings): Promise<LeadWorkerStatus> {
-  const worker = await getWorkerStatus(pi, ctx.cwd ?? process.cwd(), settings, getLeadSessionBinding(ctx));
+  const worker = await getWorkerStatus(pi, getContextCwd(ctx), settings, getLeadSessionBinding(ctx));
   const restoreMessage = await restoreLeadMode(pi, ctx, worker);
   return buildStatus(
     "off",
@@ -384,7 +385,7 @@ async function disableMode(pi: ExtensionAPI, ctx: ExtensionContext, settings: Le
 }
 
 async function statusOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: LeadWorkerSettings): Promise<LeadWorkerStatus> {
-  const worker = await getWorkerStatus(pi, ctx.cwd ?? process.cwd(), settings, getLeadSessionBinding(ctx));
+  const worker = await getWorkerStatus(pi, getContextCwd(ctx), settings, getLeadSessionBinding(ctx));
   updateStatusLine(ctx, worker);
   return buildStatus(
     "status",
@@ -397,7 +398,7 @@ async function statusOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: Lea
 async function stopOnly(pi: ExtensionAPI, ctx: ExtensionContext, settings: LeadWorkerSettings): Promise<LeadWorkerStatus> {
   rt.activeSupervisedHandoff = undefined;
   rt.pendingClarification = undefined;
-  const worker = await stopWorker(pi, ctx.cwd ?? process.cwd(), settings, getLeadSessionBinding(ctx));
+  const worker = await stopWorker(pi, getContextCwd(ctx), settings, getLeadSessionBinding(ctx));
 
   if (rt.modeEnabled) {
     const restoreMessage = await restoreLeadMode(pi, ctx, worker);
@@ -418,7 +419,7 @@ export async function runControlAction(
     throw new Error(`Lead-worker control action '${action}' is only available from the lead session.`);
   }
 
-  const { settings } = await refreshSettings(ctx.cwd ?? process.cwd());
+  const { settings } = await refreshSettings(getContextCwd(ctx));
   switch (action) {
     case "start": return startOnly(pi, ctx, settings, primeLeadConnection);
     case "on": return enableMode(pi, ctx, settings, primeLeadConnection);

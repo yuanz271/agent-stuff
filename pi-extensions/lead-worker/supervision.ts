@@ -25,7 +25,7 @@ import {
 export type SendOneWayEvent = (
   pi: ExtensionAPI,
   ctx: ExtensionContext,
-  params: { name: string; body: string; handoffId?: string; payload?: unknown; autoStart: boolean; failIfUnavailable: boolean },
+  params: { name: string; body: string; handoffId?: string; payload?: unknown; autoStart: boolean },
 ) => Promise<unknown>;
 
 const SUPERVISOR_DECISION_TOOL = {
@@ -320,7 +320,6 @@ async function processLeadSupervisionEvent(
         body: decision.message,
         handoffId: supervised.id,
         autoStart: false,
-        failIfUnavailable: false,
       });
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
