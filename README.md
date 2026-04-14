@@ -37,7 +37,7 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 * [`files.ts`](pi-extensions/files.ts) - Unified file browser that merges git status (dirty first) with session references, plus reveal/open/edit and diff actions.
 * [`init.ts`](pi-extensions/init.ts) - Pi-specific `/init` bootstrap command that embeds its contributor-guide prompt and asks pi to generate the current repo's `AGENTS.md`.
 * [`loop.ts`](pi-extensions/loop.ts) - Runs a prompt loop for rapid iterative coding with optional auto-continue control.
-* [`review.ts`](pi-extensions/review.ts) - Code review command inspired by Codex. Supports reviewing uncommitted changes, against a base branch (PR style), specific commits, or with custom instructions, plus optional loop fixing mode that iterates review→fix until blocking findings are cleared. Includes Ctrl+R shortcut.
+* [`pi-review`](pi-extensions/pi-review) - Standalone code review workflow inspired by Codex. Supports reviewing uncommitted changes, base-branch diffs, specific commits, GitHub PRs via `gh`, and folder snapshots, with shared `REVIEW_GUIDELINES.md` instructions plus `/end-review` return/summarize/fix flow.
 * [`websearch`](pi-extensions/websearch) - Vertex AI Gemini grounded web search tool (`websearch`) that returns a concise summary and source URLs from grounding metadata. Defaults to `gemini-2.5-flash`; `gemini-3-flash-preview` is a currently validated experimental override on the global endpoint.
 * [`pi-schedule-prompt`](pi-extensions/pi-schedule-prompt) - Schedule one-shot or recurring future prompts with `schedule_prompt` and manage them via `/schedule-prompt`.
 * [`session-breakdown.ts`](pi-extensions/session-breakdown.ts) - TUI for 7/30/90-day session and cost analysis with usage graph.
