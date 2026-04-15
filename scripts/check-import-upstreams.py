@@ -7,10 +7,17 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 LINE_RE = re.compile(
-    r"^- `(?P<label>[^`]+)` → `(?P<url>https?://[^`]+)` @ `(?P<commit>[0-9a-f]{7,40})` \(`(?P<branch>origin/[^`]+)`\)$"
+    r"^- `(?P<label>[^`]+)` → `(?P<url>https?://[^`]+)` @ `(?P<commit>[0-9a-f]{7,40})` \(`(?P<branch>origin/[^`]+)`\)(?: \[upstream `(?P<upstream_path>[^`]+)`\])?$"
 )
+
+DEFAULT_UPSTREAM_PATH_HINTS: dict[str, str] = {
+    "files": "extensions/files.ts",
+    "control": "extensions/control.ts",
+    "loop": "extensions/loop.ts",
+}
 
 
 @dataclass
@@ -19,6 +26,7 @@ class SourceEntry:
     url: str
     branch: str
     pinned: str
+    upstream_path: Optional[str] = None
 
 
 @dataclass
@@ -58,12 +66,17 @@ def parse_entries(upstreams_path: Path) -> list[SourceEntry]:
         if not match:
             continue
 
+        upstream_path = match.group("upstream_path")
+        if upstream_path is None:
+            upstream_path = DEFAULT_UPSTREAM_PATH_HINTS.get(match.group("label"))
+
         entries.append(
             SourceEntry(
                 label=match.group("label"),
                 url=match.group("url"),
                 branch=match.group("branch").removeprefix("origin/"),
                 pinned=match.group("commit"),
+                upstream_path=upstream_path,
             )
         )
 
@@ -136,13 +149,17 @@ def render_upstreams(entries: list[SourceEntry], results: list[CheckResult]) -> 
         "# Upstream Pins",
         "",
         "This file records the last checked upstream commit for each imported skill or extension.",
+        "Entries may include an upstream path hint when the upstream layout differs from the local one.",
         "Run `scripts/check-import-upstreams.py` to refresh it after checking upstreams.",
         "",
     ]
 
     for entry, result in zip(entries, results):
         commit = result.head or result.pinned
-        lines.append(f"- `{entry.label}` → `{entry.url}` @ `{commit}` (`origin/{entry.branch}`)")
+        line = f"- `{entry.label}` → `{entry.url}` @ `{commit}` (`origin/{entry.branch}`)"
+        if entry.upstream_path:
+            line += f" [upstream `{entry.upstream_path}`]"
+        lines.append(line)
 
     lines.append("")
     return "\n".join(lines)
