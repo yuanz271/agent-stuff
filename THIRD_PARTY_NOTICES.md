@@ -7,8 +7,7 @@ This repository includes code copied/adapted from the project below.
 - **Source**: https://github.com/mitsuhiko/agent-stuff
 - **Included paths in this repo**:
   - `pi-extensions/files.ts`
-- **Copied from upstream revision**:
-  - `f0f29f95a03a3d4e00b6aaefabcef702e81c1719`
+- **Current pin record**: see `UPSTREAMS.md`
 - **Upstream license**: Apache License 2.0
 - **Upstream copyright note**: no explicit copyright line was identified in the upstream `LICENSE`; provenance is tracked via the upstream repository URL above.
 
@@ -20,8 +19,7 @@ Apache License 2.0 — same terms as stated in upstream `LICENSE`.
 - **Included paths in this repo**:
   - `pi-extensions/pi-review/package.json`
   - `pi-extensions/pi-review/review.ts`
-- **Copied from upstream revision**:
-  - `ed6db501d09a3a72ac5ab8ca604effa0ddcb65d5`
+- **Current pin record**: see `UPSTREAMS.md`
 - **Upstream license**: MIT License
 - **Upstream copyright**: Copyright (c) 2026 Earendil Inc.
 
@@ -33,8 +31,7 @@ MIT License — same terms as stated in upstream `LICENSE`.
 - **Included paths in this repo**:
   - `pi-extensions/control.ts`
   - `pi-extensions/loop.ts`
-- **Copied from upstream revision**:
-  - `d8d6a20edabc5f151ace1342dcd384aa5169b6fd`
+- **Current pin record**: see `UPSTREAMS.md`
 - **Upstream license**: Apache License 2.0
 - **Upstream copyright note**: no explicit copyright line was identified in the upstream `LICENSE`; provenance is tracked via the upstream repository URL above.
 

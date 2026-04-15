@@ -4,6 +4,7 @@ All notable changes to agent-stuff are documented here.
 
 ## Unreleased
 
+* Checked upstream/main and recorded the current pins in `UPSTREAMS.md`; no code sync was applied.
 * Removed `pi-messenger` extension and `/pi-messenger-crew` skill.
 * Removed `pi-subagents` extension.
 * Re-added `pi-subagents` extension (synced to latest upstream `tintinweb/pi-subagents` v0.5.1).
@@ -12,8 +13,8 @@ All notable changes to agent-stuff are documented here.
 * Removed `damage-control` extension.
 * Removed `lsp.ts` extension.
 * Synced `pi-subagents/agent-runner.ts` selectively to upstream `tintinweb/pi-subagents@94f7f78` to bind subagent extensions and ensure `session_start` handlers initialize.
-* Synced `control.ts` and `loop.ts` selectively to upstream `mitsuhiko/agent-stuff@d8d6a20` to migrate model auth calls from `getApiKey` to `getApiKeyAndHeaders`.
-* Removed `pi-extensions/review.ts` and copied in upstream `earendil-works/pi-review@ed6db50` under `pi-extensions/pi-review/`, removing the local loop-fixing variant and restoring the standalone `/review` + `/end-review` workflow.
+* Recorded the recent upstream inspection in `UPSTREAMS.md` and kept the codebase unchanged.
+* Removed `pi-extensions/review.ts` and copied in upstream `earendil-works/pi-review` under `pi-extensions/pi-review/`, removing the local loop-fixing variant and restoring the standalone `/review` + `/end-review` workflow.
 * Removed `answer.ts` extension.
 * Added `plan-build` as a planner/builder mode controller with explicit `start` / `on` / `status` / `off` / `stop`, read-only planner mode, planner-model switching with restore on `off`, `/build` delegation to a persistent tmux-backed builder session, planner-session-scoped builders (different planner sessions no longer share a builder), startup output that shows the paired planner session, an internal session-scoped planner↔builder mailbox with direct `plan_build({ action: "message", ... })` messaging, `stop` semantics that also exit planner mode when the builder is explicitly stopped, layered settings via bundled/global/project `plan-build-settings.yaml` files, split builder `model`/`thinking` settings (with legacy `model: provider/id:thinking` shorthand still accepted), default planner settings that omit `bash` unless re-enabled in global/project overrides, and a default builder target of `openai/gpt-5.3-codex` with thinking `off`.
 * Removed `pi-autoresearch` extension and `/autoresearch-create` skill.

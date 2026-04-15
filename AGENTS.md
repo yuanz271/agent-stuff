@@ -41,13 +41,7 @@ Default provenance: unless explicitly listed otherwise below, repository content
 
 Keep this list updated whenever importing or porting an extension/skill so source tracking stays explicit.
 
-- `default (all other repo content unless listed below)` → `https://github.com/mitsuhiko/agent-stuff` @ `80e1e96fa563ffc0c9d60422eac6dc9e67440385` (`origin/main`)
-- Selective sync note: `pi-extensions/files.ts` was copied from later `https://github.com/mitsuhiko/agent-stuff` revision `f0f29f95a03a` (`origin/main`). Keep the default pin unchanged because the broader default-sourced tree was not re-synced, and `scripts/check-import-upstreams.py` expects a single parsed pin per source/branch.
-- `pi-extensions/pi-review/*` → `https://github.com/earendil-works/pi-review` @ `ed6db501d09a3a72ac5ab8ca604effa0ddcb65d5` (`origin/main`)
-- Selective sync note: `pi-extensions/control.ts` and `pi-extensions/loop.ts` were copied from later `https://github.com/mitsuhiko/agent-stuff` revision `d8d6a20edabc5f151ace1342dcd384aa5169b6fd` (`origin/main`) to pick up the `getApiKeyAndHeaders` auth migration.
+- See `UPSTREAMS.md` for the canonical current upstream pins used by `scripts/check-import-upstreams.py`. It is maintained per skill/extension, not per file.
 - `pi-extensions/websearch/*` → original work, not ported from upstream
-- `pi-extensions/side-chat/*` → `https://github.com/nicobailon/pi-side-chat` @ `f1dba8bdb26e` (`origin/main`)
-- `pi-extensions/pi-schedule-prompt/*` → `https://github.com/tintinweb/pi-schedule-prompt` @ `ef7ab49f2988` (`origin/master`)
-- `skills/liteparse/*` → `https://github.com/run-llama/llamaparse-agent-skills` @ `1f10f60a9eba` (`origin/main`)
 
-Also update `THIRD_PARTY_NOTICES.md` whenever this list changes.
+Also update `THIRD_PARTY_NOTICES.md` whenever provenance records change.

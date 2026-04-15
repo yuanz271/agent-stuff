@@ -5,10 +5,8 @@ import argparse
 import re
 import subprocess
 import sys
-from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import DefaultDict
 
 LINE_RE = re.compile(
     r"^- `(?P<label>[^`]+)` → `(?P<url>https?://[^`]+)` @ `(?P<commit>[0-9a-f]{7,40})` \(`(?P<branch>origin/[^`]+)`\)$"
@@ -16,62 +14,60 @@ LINE_RE = re.compile(
 
 
 @dataclass
-class SourceGroup:
+class SourceEntry:
+    label: str
     url: str
     branch: str
-    pins_to_labels: DefaultDict[str, list[str]] = field(default_factory=lambda: defaultdict(list))
+    pinned: str
 
 
 @dataclass
 class CheckResult:
+    label: str
     url: str
     branch: str
     status: str
-    pinned: str | None
+    pinned: str
     head: str | None
-    labels: list[str]
     message: str | None = None
 
 
-def default_agents_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "AGENTS.md"
+def default_upstreams_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "UPSTREAMS.md"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Compare imported-source pins in AGENTS.md against upstream branch heads."
+        description="Compare imported-source pins in UPSTREAMS.md against upstream branch heads and rewrite the per-skill/per-extension ledger to the latest checked heads."
     )
     parser.add_argument(
-        "agents_path",
+        "upstreams_path",
         nargs="?",
-        default=str(default_agents_path()),
-        help="Path to AGENTS.md (default: repo root AGENTS.md)",
+        default=str(default_upstreams_path()),
+        help="Path to UPSTREAMS.md (default: repo root UPSTREAMS.md)",
     )
     return parser.parse_args()
 
 
-def parse_source_groups(agents_path: Path) -> list[SourceGroup]:
-    text = agents_path.read_text(encoding="utf-8")
-    groups: dict[tuple[str, str], SourceGroup] = {}
+def parse_entries(upstreams_path: Path) -> list[SourceEntry]:
+    text = upstreams_path.read_text(encoding="utf-8")
+    entries: list[SourceEntry] = []
 
     for line in text.splitlines():
         match = LINE_RE.match(line.strip())
         if not match:
             continue
 
-        label = match.group("label")
-        url = match.group("url")
-        commit = match.group("commit")
-        branch = match.group("branch").removeprefix("origin/")
+        entries.append(
+            SourceEntry(
+                label=match.group("label"),
+                url=match.group("url"),
+                branch=match.group("branch").removeprefix("origin/"),
+                pinned=match.group("commit"),
+            )
+        )
 
-        key = (url, branch)
-        group = groups.get(key)
-        if group is None:
-            group = SourceGroup(url=url, branch=branch)
-            groups[key] = group
-        group.pins_to_labels[commit].append(label)
-
-    return sorted(groups.values(), key=lambda g: (g.url, g.branch))
+    return entries
 
 
 def ls_remote_head(url: str, branch: str) -> tuple[str | None, str | None]:
@@ -97,82 +93,83 @@ def ls_remote_head(url: str, branch: str) -> tuple[str | None, str | None]:
     return head, None
 
 
-def check_group(group: SourceGroup) -> CheckResult:
-    pins = sorted(group.pins_to_labels)
-    labels = sorted(label for labels in group.pins_to_labels.values() for label in labels)
-    head, error = ls_remote_head(group.url, group.branch)
+def check_entry(entry: SourceEntry) -> CheckResult:
+    head, error = ls_remote_head(entry.url, entry.branch)
 
     if error is not None:
         return CheckResult(
-            url=group.url,
-            branch=group.branch,
+            label=entry.label,
+            url=entry.url,
+            branch=entry.branch,
             status="error",
-            pinned=pins[0] if len(pins) == 1 else None,
+            pinned=entry.pinned,
             head=None,
-            labels=labels,
             message=error,
         )
 
-    if len(pins) > 1:
-        short_pins = ", ".join(pin[:12] for pin in pins)
-        return CheckResult(
-            url=group.url,
-            branch=group.branch,
-            status="inconsistent_pins",
-            pinned=None,
-            head=head,
-            labels=labels,
-            message=f"multiple pinned commits for same source: {short_pins}",
-        )
-
-    pinned = pins[0]
     assert head is not None
-    head_str = head
-    status = "up_to_date" if head_str.startswith(pinned) else "behind"
+    status = "up_to_date" if head.startswith(entry.pinned) else "behind"
     message = None if status == "up_to_date" else "upstream head differs from pinned commit"
     return CheckResult(
-        url=group.url,
-        branch=group.branch,
+        label=entry.label,
+        url=entry.url,
+        branch=entry.branch,
         status=status,
-        pinned=pinned,
-        head=head_str,
-        labels=labels,
+        pinned=entry.pinned,
+        head=head,
         message=message,
     )
 
 
 def print_result(result: CheckResult) -> None:
     print(f"[{result.status}] {result.url} @ {result.branch}")
-    print(f"  pinned: {result.pinned or '-'}")
+    print(f"  label:  {result.label}")
+    print(f"  pinned: {result.pinned}")
     print(f"  head:   {result.head or '-'}")
     if result.message:
         print(f"  note:   {result.message}")
-    print("  labels:")
-    for label in result.labels:
-        print(f"    - {label}")
     print()
+
+
+def render_upstreams(entries: list[SourceEntry], results: list[CheckResult]) -> str:
+    lines = [
+        "# Upstream Pins",
+        "",
+        "This file records the last checked upstream commit for each imported skill or extension.",
+        "Run `scripts/check-import-upstreams.py` to refresh it after checking upstreams.",
+        "",
+    ]
+
+    for entry, result in zip(entries, results):
+        commit = result.head or result.pinned
+        lines.append(f"- `{entry.label}` → `{entry.url}` @ `{commit}` (`origin/{entry.branch}`)")
+
+    lines.append("")
+    return "\n".join(lines)
 
 
 def main() -> int:
     args = parse_args()
-    agents_path = Path(args.agents_path).expanduser().resolve()
+    upstreams_path = Path(args.upstreams_path).expanduser().resolve()
 
-    if not agents_path.exists():
-        print(f"error: AGENTS file not found: {agents_path}", file=sys.stderr)
+    if not upstreams_path.exists():
+        print(f"error: UPSTREAMS file not found: {upstreams_path}", file=sys.stderr)
         return 2
 
-    groups = parse_source_groups(agents_path)
-    if not groups:
-        print(f"error: no pinned upstream entries found in {agents_path}", file=sys.stderr)
+    entries = parse_entries(upstreams_path)
+    if not entries:
+        print(f"error: no pinned upstream entries found in {upstreams_path}", file=sys.stderr)
         return 2
 
-    print(f"AGENTS: {agents_path}")
-    print(f"Tracked upstream sources: {len(groups)}")
+    print(f"UPSTREAMS: {upstreams_path}")
+    print(f"Tracked upstream entries: {len(entries)}")
     print()
 
-    results = [check_group(group) for group in groups]
+    results = [check_entry(entry) for entry in entries]
     for result in results:
         print_result(result)
+
+    upstreams_path.write_text(render_upstreams(entries, results), encoding="utf-8")
 
     bad = [r for r in results if r.status != "up_to_date"]
     print(f"Summary: {len(results) - len(bad)} up_to_date, {len(bad)} non_green")
