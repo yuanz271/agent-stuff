@@ -1,6 +1,7 @@
 ---
 name: commit
 description: "Read this skill before making git commits"
+disable-model-invocation: true
 ---
 
 Create a git commit for the current changes using a concise Conventional Commits-style subject.

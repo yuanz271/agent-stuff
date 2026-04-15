@@ -1,18 +1,19 @@
 ---
 name: summarize
-description: "Fetch a URL or convert a local file (PDF/DOCX/HTML/etc.) into Markdown using `uvx markitdown`, optionally it can summarize"
+description: "Fetch a URL or convert a local file (PDF/DOCX/HTML/etc.) into Markdown using `uvx markitdown`, with optional structured summaries including research-grade paper critique for PDF papers"
 ---
 
 Turn “things” (URLs, PDFs, Word docs, PowerPoints, HTML pages, text files, etc.) into **Markdown** so they can be inspected/quoted/processed like normal text.
 
 `markitdown` can fetch URLs by itself; this skill mainly wraps it to make saving + summarizing convenient.
-For PDF inputs, use the `markitdown[pdf]` extra (or the wrapper below, which now does this automatically).
+For PDF inputs (including academic papers), use the `markitdown[pdf]` extra (or the wrapper below, which now does this automatically).
 
 ## When to use
 
 Use this skill when you need to:
 - pull down a web page as a document-like Markdown representation
 - convert binary docs (PDF/DOCX/PPTX) into Markdown for analysis
+- analyze academic paper PDFs with a structured, evidence-grounded critique
 - quickly produce a short summary of a long document before deeper work
 
 ## Quick usage
@@ -57,3 +58,31 @@ This will:
 1) convert to Markdown via `uvx --from 'markitdown[pdf]' markitdown`
 2) write the full Markdown to a temp `.md` file and print its path as a "Hint" line
 3) run `pi --model claude-haiku-4-5` (no-tools, no-session) to summarize using your extra prompt
+
+## Academic paper mode (PDF)
+
+When the input is a research paper PDF (or the user says "paper", "arxiv", "method", "results", "ablation"), produce a structured critique instead of a generic summary.
+
+### Required output sections
+
+- Problem statement
+- Main claim
+- Method overview
+- Experimental setup (datasets, baselines, metrics)
+- Key quantitative results (table)
+- Limitations / threats to validity
+- Reproducibility notes (code/data/seeds/hparams availability)
+- Open questions
+
+### Quality rules
+
+- Separate **paper claims** from **your critique**.
+- If a section is missing in extracted text, write `Not found`.
+- Do not invent numbers; quote extracted evidence when possible.
+- For weak extraction quality, state confidence explicitly.
+
+### Suggested paper prompt
+
+```bash
+node to-markdown.mjs paper.pdf --summary --prompt "Analyze this research paper. Output: problem, main claim, method, experimental setup, key quantitative results, limitations, reproducibility notes, and open questions. Separate claims vs evidence vs critique."
+```
