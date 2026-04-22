@@ -24,16 +24,17 @@ When porting or copying code from an external repository:
 
 ## Upstream sync reminder
 
-This repo is no longer in a GitHub fork network. Manually check upstream periodically:
+This repo is no longer in a GitHub fork network. Refresh the cached upstream checkout before syncing changes from it:
 - Upstream: `https://github.com/mitsuhiko/agent-stuff.git`
 - Suggested cadence: every Monday
 - Quick drift check for imported sources: `uv run scripts/check-import-upstreams.py`
 - Quick checklist:
   1. `git fetch upstream`
-  2. `git log --oneline main..upstream/main`
-  3. Cherry-pick selected fixes/features
-  4. Run minimal validation
-  5. `git push`
+  2. Inspect the updated remote state or refreshed cached checkout
+  3. `git log --oneline main..upstream/main`
+  4. Cherry-pick selected fixes/features
+  5. Run minimal validation
+  6. `git push`
 
 ## Import provenance (extensions/skills)
 
