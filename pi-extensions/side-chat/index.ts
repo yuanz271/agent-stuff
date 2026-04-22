@@ -5,9 +5,9 @@ import { buildSessionContext, ExtensionRunner } from "@mariozechner/pi-coding-ag
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { FileActivityTracker } from "./file-activity-tracker.js";
-import { SideChatOverlay, type ForkContext } from "./side-chat-overlay.js";
-import { extractWritePaths } from "./tool-wrapper.js";
+import { FileActivityTracker } from "./file-activity-tracker.ts";
+import { SideChatOverlay, type ForkContext } from "./side-chat-overlay.ts";
+import { extractWritePaths } from "./tool-wrapper.ts";
 
 // Patch to capture the runner instance for extension tool access in side chat.
 let capturedRunner: ExtensionRunner | null = null;

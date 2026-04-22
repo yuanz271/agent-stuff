@@ -1,5 +1,5 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
-import type { FileActivityTracker } from "./file-activity-tracker.js";
+import type { FileActivityTracker } from "./file-activity-tracker.ts";
 
 export function wrapToolsWithOverlapDetection(
   tools: AgentTool[],

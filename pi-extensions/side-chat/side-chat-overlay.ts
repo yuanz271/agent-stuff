@@ -12,9 +12,9 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { Editor, Key, matchesKey, truncateToWidth, visibleWidth, type Component, type Focusable, type TUI } from "@mariozechner/pi-tui";
-import type { FileActivityTracker } from "./file-activity-tracker.js";
-import { SideChatMessages } from "./side-chat-messages.js";
-import { wrapToolsWithOverlapDetection } from "./tool-wrapper.js";
+import type { FileActivityTracker } from "./file-activity-tracker.ts";
+import { SideChatMessages } from "./side-chat-messages.ts";
+import { wrapToolsWithOverlapDetection } from "./tool-wrapper.ts";
 
 export interface ForkContext {
   messages: AgentMessage[];
