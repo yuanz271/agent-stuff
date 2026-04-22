@@ -1059,6 +1059,14 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
+	pi.on("session_switch", async (_event, ctx) => {
+		await refreshServer(ctx);
+	});
+
+	pi.on("session_fork", async (_event, ctx) => {
+		await refreshServer(ctx);
+	});
+
 	pi.on("session_shutdown", async () => {
 		if (state.aliasTimer) {
 			clearInterval(state.aliasTimer);
