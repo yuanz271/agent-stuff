@@ -37,6 +37,8 @@ Read the extracted text. Map and report:
 - Evaluation metrics
 - Baselines compared against
 
+When you record equations, render them as display LaTeX blocks, not plain text, Markdown tables, or pipe-delimited ASCII approximations.
+
 Report findings before proceeding to Step 3.
 
 ---
@@ -101,14 +103,14 @@ The final report should be concise but complete. Include these sections once, in
 
 - **Title + metadata** — paper title, venue/year, one-line verdict
 - **Executive summary** — 4–6 bullets covering the problem, method, why it matters, and main result
-- **Technical method** — the key equation, model/algorithm description, what is optimized vs inferred, shared vs instance-specific parameters
+- **Technical method** — the key equation(s) rendered as display LaTeX blocks, model/algorithm description, what is optimized vs inferred, shared vs instance-specific parameters
 - **Evidence and results** — datasets, metrics, baselines, key results, and what is actually supported vs overclaimed
 - **Critique / limitations** — main weaknesses, assumptions, OOD risks, identifiability/confounds if relevant
 - **Synthesis / relation to prior work** — novelty, relation to existing work, and where it fits in the literature
 - **Next experiments** — 3–5 concrete follow-ups, prioritized by value
 - **Final recommendation** — keep as reference / candidate for implementation / requires more validation / not suitable, with a short reason
 
-The discussion notes do not need this structure; they are allowed to be messy and comprehensive.
+The discussion notes do not need this structure; they are allowed to be messy and comprehensive. Even there, equations should still be rendered as display LaTeX blocks so they remain copyable and viewer-friendly.
 
 ---
 
