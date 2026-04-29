@@ -1,9 +1,9 @@
 ---
 name: read-paper
-description: "Full research paper reading workflow: acquire PDF, extract text, structural scan, four reading passes, interrogation prompts, and layered deliverables (discussion notes, executive summary, formal critique memo, synthesis note). Use when asked to read, analyze, review, or summarize a research paper."
+description: "Full research paper reading workflow: acquire PDF, extract text, structural scan, four reading passes, interrogation prompts, raw discussion notes, and one self-contained final report. Use when asked to read, analyze, review, or summarize a research paper."
 ---
 
-Full structured workflow for reading and analyzing a research paper PDF. Produces layered deliverables from raw technical notes through synthesis.
+Full structured workflow for reading and analyzing a research paper PDF. Produces raw discussion notes plus one self-contained final report.
 
 ## Inputs
 
@@ -83,29 +83,32 @@ Answer each of these explicitly:
 
 ## Step 5 — Deliverables
 
-Produce in this order. Each file uses the format in Step 6.
+Produce these files in order. The final report must be self-contained; nobody should need to read the intermediate notes to understand the conclusion.
 
-All files written to the same directory as the PDF (`<pdf-dir>`):
+All files are written to the same directory as the PDF (`<pdf-dir>`):
 
-1. **`<stem>-discussion-notes.md`** — raw technical notes from all four passes + interrogation answers
-2. **`<stem>-executive-summary.md`** — one page; accessible to a lab member unfamiliar with the paper
-3. **`<stem>-formal-critique-memo.md`** — detailed critique; use the `critique` skill for structure if helpful
-4. **`<stem>-synthesis-note.md`** — final position, relation to existing work, extension ideas
+1. **`<stem>-discussion-notes.md`** — raw working notes from all four passes + interrogation answers; this is the only intermediate artifact
+2. **`<stem>-paper-report.md`** — the single final, self-contained report that replaces the separate executive summary / formal critique memo / synthesis note
 
 Optional:
-5. **`<slug>-comparison.md`** — cross-paper comparison if relevant (two or more papers)
+3. **`<slug>-comparison.md`** — cross-paper comparison if relevant (two or more papers)
 
 ---
 
-## Step 6 — Required format for each deliverable
+## Step 6 — Required format for the final report
 
-Every deliverable must include:
+The final report should be concise but complete. Include these sections once, in this order:
 
-- **Take-home** (2–4 bullets)
-- **Method in one equation block** (LaTeX)
-- **Strengths**
-- **Caveats / assumptions**
-- **What to test next**
+- **Title + metadata** — paper title, venue/year, one-line verdict
+- **Executive summary** — 4–6 bullets covering the problem, method, why it matters, and main result
+- **Technical method** — the key equation, model/algorithm description, what is optimized vs inferred, shared vs instance-specific parameters
+- **Evidence and results** — datasets, metrics, baselines, key results, and what is actually supported vs overclaimed
+- **Critique / limitations** — main weaknesses, assumptions, OOD risks, identifiability/confounds if relevant
+- **Synthesis / relation to prior work** — novelty, relation to existing work, and where it fits in the literature
+- **Next experiments** — 3–5 concrete follow-ups, prioritized by value
+- **Final recommendation** — keep as reference / candidate for implementation / requires more validation / not suitable, with a short reason
+
+The discussion notes do not need this structure; they are allowed to be messy and comprehensive.
 
 ---
 
@@ -143,9 +146,7 @@ After deliverables, emit a completed checklist:
 
 ## F. Deliverables completed
 - [x] Discussion notes
-- [x] Executive summary
-- [x] Formal critique memo
-- [x] Synthesis note
+- [x] Final report
 - [ ] Cross-paper comparison (if relevant)
 
 ## G. Final recommendation
@@ -172,9 +173,7 @@ All files co-located with the PDF in `<pdf-dir>`, named after the PDF filename s
 |---|---|
 | `<stem>-paper.md` | Extracted markdown |
 | `<stem>-discussion-notes.md` | Pass A–D notes + interrogation |
-| `<stem>-executive-summary.md` | One-page summary |
-| `<stem>-formal-critique-memo.md` | Detailed critique |
-| `<stem>-synthesis-note.md` | Final position + extensions |
+| `<stem>-paper-report.md` | Single self-contained final report |
 
 ---
 
@@ -183,4 +182,4 @@ All files co-located with the PDF in `<pdf-dir>`, named after the PDF filename s
 - Do not skip passes or merge them — the layered structure is intentional.
 - Separate **paper claims** from **your analysis** throughout.
 - If extracted text quality is poor (garbled equations, missing sections), state confidence explicitly and re-invoke the `pdf-extract` skill.
-- For the formal critique memo, the `critique` skill's prompt format (C1, C2, … with type/severity/quoted passage) is a good match.
+- The final report should subsume summary, critique, and synthesis so the intermediate notes are not needed for comprehension.
