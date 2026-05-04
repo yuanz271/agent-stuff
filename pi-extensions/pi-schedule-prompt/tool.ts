@@ -1,17 +1,20 @@
-import type { ToolDefinition, Theme } from "@mariozechner/pi-coding-agent";
+import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { nanoid } from "nanoid";
-import type { CronToolParamsType, CronToolDetails, CronJob, CronJobType } from "./types.js";
-import { CronToolParams } from "./types.js";
-import type { CronStorage } from "./storage.js";
 import { CronScheduler } from "./scheduler.js";
+import type { JobScope } from "./settings.js";
+import type { CronStorage } from "./storage.js";
+import type { CronJob, CronJobType, CronToolDetails, } from "./types.js";
+import { CronToolParams } from "./types.js";
 
 /**
- * Create the schedule_prompt tool definition
+ * Create the schedule_prompt tool definition.
+ * `getDefaultScope` is a getter so live setting toggles affect the next `add`.
  */
 export function createCronTool(
   getStorage: () => CronStorage,
-  getScheduler: () => CronScheduler
+  getScheduler: () => CronScheduler,
+  getDefaultScope: () => JobScope = () => "session",
 ): ToolDefinition<typeof CronToolParams, CronToolDetails> {
   return {
     name: "schedule_prompt",
@@ -57,6 +60,14 @@ export function createCronTool(
               );
             }
 
+            // Defense-in-depth — the schema also enforces this with minLength: 1,
+            // but tool callers can bypass the schema by passing params directly.
+            if (params.model !== undefined && params.model.length === 0) {
+              throw new Error(
+                "'model' must be a non-empty string. Omit the field for inline (no-model) jobs."
+              );
+            }
+
             // Generate name if not provided
             const jobName = params.name || `job-${nanoid(6)}`;
 
@@ -68,56 +79,14 @@ export function createCronTool(
             }
 
             const type = (params.type || "cron") as CronJobType;
-            let intervalMs: number | undefined;
-            let schedule = params.schedule;
-
-            // Parse and validate based on type
-            if (type === "interval") {
-              const parsed = CronScheduler.parseInterval(params.schedule);
-              intervalMs = parsed !== null ? parsed : undefined;
-              if (!intervalMs) {
-                throw new Error(
-                  `Invalid interval format: ${params.schedule}. Use format like '5m', '1h', '30s'`
-                );
-              }
-            } else if (type === "once") {
-              // Check for relative time first (e.g., "+10s", "+5m")
-              const relativeTime = CronScheduler.parseRelativeTime(params.schedule);
-              if (relativeTime) {
-                schedule = relativeTime;
-              } else {
-                // Try parsing as ISO timestamp
-                const date = new Date(params.schedule);
-                if (isNaN(date.getTime())) {
-                  throw new Error(
-                    `Invalid timestamp: ${params.schedule}. Use ISO format or relative time like '+10s', '+5m'`
-                  );
-                }
-                schedule = date.toISOString();
-                
-                // Warn if scheduled in the past or very near future
-                const now = Date.now();
-                const delay = date.getTime() - now;
-                if (delay < 0) {
-                  throw new Error(
-                    `Timestamp is in the past: ${schedule}. Current time: ${new Date().toISOString()}`
-                  );
-                } else if (delay < 5000) {
-                  // Less than 5 seconds warning
-                  throw new Error(
-                    `Timestamp is too soon (${Math.round(delay / 1000)}s). For delays under 5s, use relative time like '+${Math.ceil(delay / 1000)}s' instead, or schedule at least 5s in the future.`
-                  );
-                }
-              }
-            } else {
-              // Validate cron expression
-              const validation = CronScheduler.validateCronExpression(params.schedule);
-              if (!validation.valid) {
-                throw new Error(`Invalid cron expression: ${validation.error}`);
-              }
-            }
+            const validated = CronScheduler.validateSchedule(type, params.schedule);
+            if (!validated.ok) throw new Error(validated.error);
+            const schedule = validated.schedule;
+            const intervalMs = validated.intervalMs;
 
             const now = new Date().toISOString();
+            const session =
+              getDefaultScope() === "session" ? ctx.sessionManager.getSessionId() : undefined;
             const job: CronJob = {
               id: nanoid(10),
               name: jobName,
@@ -129,6 +98,9 @@ export function createCronTool(
               createdAt: now,
               runCount: 0,
               description: params.description,
+              model: params.model,
+              notify: params.notify,
+              session,
             };
 
             storage.addJob(job);
@@ -137,11 +109,14 @@ export function createCronTool(
             details.jobId = job.id;
             details.jobName = job.name;
 
+            const modelLine = job.model
+              ? `\nModel: ${job.model} (runs in subagent${job.notify ? ", notifies parent" : ""})`
+              : "";
             return {
               content: [
                 {
                   type: "text",
-                  text: `✓ Created cron job "${job.name}" (${job.id})\nType: ${job.type}\nSchedule: ${job.schedule}\nPrompt: ${job.prompt}`,
+                  text: `✓ Created cron job "${job.name}" (${job.id})\nType: ${job.type}\nSchedule: ${job.schedule}\nPrompt: ${job.prompt}${modelLine}`,
                 },
               ],
               details,
@@ -209,10 +184,13 @@ export function createCronTool(
           }
 
           case "cleanup": {
-            // Remove all disabled jobs
-            const allJobs = storage.getAllJobs();
-            const disabledJobs = allJobs.filter((j) => !j.enabled);
-            
+            // Only touch jobs this session can see — foreign-session jobs are
+            // owned by other pis. Unbound disabled jobs are fair game.
+            const mySessionId = ctx.sessionManager.getSessionId();
+            const disabledJobs = storage
+              .getAllJobs()
+              .filter((j) => !j.enabled && CronScheduler.isLoadedFor(j, mySessionId));
+
             if (disabledJobs.length === 0) {
               details.jobs = [];
               return {
@@ -254,35 +232,29 @@ export function createCronTool(
               throw new Error(`Job not found: ${params.jobId}`);
             }
 
+            // Reject empty-string model (schema also enforces minLength: 1).
+            // To switch a job from subagent → inline mode, remove and re-add
+            // it without `model` — there's no in-place clearing.
+            if (params.model !== undefined && params.model.length === 0) {
+              throw new Error(
+                "'model' must be a non-empty string. To switch a job from subagent back to inline, remove and re-add it without a model."
+              );
+            }
+
             const updates: Partial<CronJob> = {};
             if (params.name) updates.name = params.name;
             if (params.prompt) updates.prompt = params.prompt;
             if (params.description !== undefined) updates.description = params.description;
+            if (params.model !== undefined) updates.model = params.model;
+            if (params.notify !== undefined) updates.notify = params.notify;
 
             if (params.schedule) {
-              // Validate new schedule
-              const type = job.type;
-              if (type === "interval") {
-                const parsed = CronScheduler.parseInterval(params.schedule);
-                const intervalMs = parsed !== null ? parsed : undefined;
-                if (!intervalMs) {
-                  throw new Error(`Invalid interval format: ${params.schedule}`);
-                }
-                updates.schedule = params.schedule;
-                updates.intervalMs = intervalMs;
-              } else if (type === "once") {
-                const date = new Date(params.schedule);
-                if (isNaN(date.getTime())) {
-                  throw new Error(`Invalid timestamp: ${params.schedule}`);
-                }
-                updates.schedule = date.toISOString();
-              } else {
-                const validation = CronScheduler.validateCronExpression(params.schedule);
-                if (!validation.valid) {
-                  throw new Error(`Invalid cron expression: ${validation.error}`);
-                }
-                updates.schedule = params.schedule;
-              }
+              // Same resolution rules as `add`: relative time (`+5m`) → ISO,
+              // ISO accepted as-is, cron validated by croner.
+              const validated = CronScheduler.validateSchedule(job.type, params.schedule);
+              if (!validated.ok) throw new Error(validated.error);
+              updates.schedule = validated.schedule;
+              if (validated.intervalMs !== undefined) updates.intervalMs = validated.intervalMs;
             }
 
             storage.updateJob(params.jobId, updates);
@@ -305,7 +277,10 @@ export function createCronTool(
           }
 
           case "list": {
-            const jobs = storage.getAllJobs();
+            const mySessionId = ctx.sessionManager.getSessionId();
+            const jobs = storage
+              .getAllJobs()
+              .filter((j) => CronScheduler.isLoadedFor(j, mySessionId));
             details.jobs = jobs;
 
             if (jobs.length === 0) {
@@ -324,6 +299,9 @@ export function createCronTool(
 
               lines.push(`${status} ${job.name} (${job.id})`);
               lines.push(`  Type: ${job.type} | Schedule: ${job.schedule}`);
+              if (job.model) {
+                lines.push(`  Model: ${job.model} (runs in subagent${job.notify ? ", notifies parent" : ""})`);
+              }
               lines.push(`  Prompt: ${job.prompt}`);
               lines.push(`  ${lastStr} ${nextStr ? `| ${nextStr}` : ""}`);
               lines.push(`  Runs: ${job.runCount} | Status: ${job.lastStatus || "pending"}`);
@@ -414,6 +392,10 @@ export function createCronTool(
           lines.push(
             `  ${theme.fg("dim", "Type:")} ${job.type} ${theme.fg("dim", "| Schedule:")} ${job.schedule}`
           );
+          if (job.model) {
+            const subagentTag = job.notify ? "(subagent, notifies parent)" : "(subagent)";
+            lines.push(`  ${theme.fg("dim", "Model:")} ${job.model} ${theme.fg("dim", subagentTag)}`);
+          }
           lines.push(`  ${theme.fg("dim", "Prompt:")} ${job.prompt}`);
           if (job.lastRun) {
             lines.push(`  ${theme.fg("dim", "Last run:")} ${job.lastRun}`);
