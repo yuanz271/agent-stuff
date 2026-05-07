@@ -1,7 +1,7 @@
-import type { AgentMessage, AgentTool } from "@mariozechner/pi-agent-core";
-import type { ExtensionAPI, ExtensionContext, ExtensionUIContext } from "@mariozechner/pi-coding-agent";
-import type { OverlayHandle } from "@mariozechner/pi-tui";
-import { buildSessionContext, ExtensionRunner } from "@mariozechner/pi-coding-agent";
+import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
+import type { ExtensionAPI, ExtensionContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import type { OverlayHandle } from "@earendil-works/pi-tui";
+import { buildSessionContext, ExtensionRunner } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

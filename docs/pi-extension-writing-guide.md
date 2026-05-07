@@ -43,7 +43,7 @@ Extensions in auto-discovered locations can be hot-reloaded with `/reload`.
 ## 3. Minimal Extension (Hello World)
 
 ```typescript
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
 export default function (pi: ExtensionAPI) {
@@ -70,10 +70,10 @@ export default function (pi: ExtensionAPI) {
 
 | Package | Purpose |
 |---------|---------|
-| `@mariozechner/pi-coding-agent` | Extension types (`ExtensionAPI`, `ExtensionContext`, event types, type guards) |
+| `@earendil-works/pi-coding-agent` | Extension types (`ExtensionAPI`, `ExtensionContext`, event types, type guards) |
 | `@sinclair/typebox` | Schema definitions for tool parameters (`Type.Object`, `Type.String`, etc.) |
-| `@mariozechner/pi-ai` | AI utilities (`StringEnum` for Google-compatible enums, `complete()`, `getModel()`) |
-| `@mariozechner/pi-tui` | TUI components (`Text`, `Container`, `Markdown`, `matchesKey`, `Key`) |
+| `@earendil-works/pi-ai` | AI utilities (`StringEnum` for Google-compatible enums, `complete()`, `getModel()`) |
+| `@earendil-works/pi-tui` | TUI components (`Text`, `Container`, `Markdown`, `matchesKey`, `Key`) |
 
 Node.js built-ins (`node:fs`, `node:path`, etc.) are also available. npm dependencies work when a `package.json` is present.
 
@@ -140,7 +140,7 @@ Every handler receives `(event, ctx: ExtensionContext)`. Key events:
 
 ```typescript
 import { Type } from "@sinclair/typebox";
-import { StringEnum } from "@mariozechner/pi-ai";
+import { StringEnum } from "@earendil-works/pi-ai";
 
 pi.registerTool({
   name: "my_tool",
@@ -168,7 +168,7 @@ pi.registerTool({
 });
 ```
 
-**Important:** Use `StringEnum` from `@mariozechner/pi-ai` instead of `Type.Union`/`Type.Literal` for enum parameters (Google API compatibility).
+**Important:** Use `StringEnum` from `@earendil-works/pi-ai` instead of `Type.Union`/`Type.Literal` for enum parameters (Google API compatibility).
 
 ### 6.3 Register Command — `pi.registerCommand(name, options)`
 
@@ -391,7 +391,7 @@ A read-only planning extension often follows this pattern:
 Tools **must** truncate output to avoid context overflow. Built-in limit: **50KB / 2000 lines**.
 
 ```typescript
-import { truncateHead, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from "@mariozechner/pi-coding-agent";
+import { truncateHead, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from "@earendil-works/pi-coding-agent";
 
 const truncation = truncateHead(output, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
 let result = truncation.content;
@@ -407,7 +407,7 @@ if (truncation.truncated) {
 Tool definitions can include `renderCall` and `renderResult` for custom TUI display:
 
 ```typescript
-import { Text } from "@mariozechner/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 
 pi.registerTool({
   // ...

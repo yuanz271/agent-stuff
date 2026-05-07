@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ExecutionUpdatePayload } from "./execution-updates.js";
 import type { PairMessageV2 } from "./protocol.js";
 import {

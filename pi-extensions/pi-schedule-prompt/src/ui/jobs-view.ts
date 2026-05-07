@@ -4,8 +4,8 @@
  * separate group; actions (t/x/c) ignore them.
  */
 
-import type { Component } from "@mariozechner/pi-tui";
-import { matchesKey } from "@mariozechner/pi-tui";
+import type { Component } from "@earendil-works/pi-tui";
+import { matchesKey } from "@earendil-works/pi-tui";
 import { CronScheduler } from "../scheduler.js";
 import type { CronStorage } from "../storage.js";
 import type { CronJob } from "../types.js";

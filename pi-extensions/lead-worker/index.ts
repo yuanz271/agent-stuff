@@ -1,6 +1,6 @@
-import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { getModel, StringEnum } from "@mariozechner/pi-ai";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getModel, StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "@sinclair/typebox";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";

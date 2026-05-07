@@ -1,5 +1,5 @@
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { complete, getModel } from "@mariozechner/pi-ai";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { complete, getModel } from "@earendil-works/pi-ai";
 import { Type } from "@sinclair/typebox";
 import type { PairMessageV2 } from "./protocol.js";
 import {

@@ -25,9 +25,9 @@
     "remind"
   ],
   "peerDependencies": {
-    "@mariozechner/pi-ai": ">=0.70.5",
-    "@mariozechner/pi-coding-agent": ">=0.70.5",
-    "@mariozechner/pi-tui": ">=0.70.5"
+    "@earendil-works/pi-ai": ">=0.70.5",
+    "@earendil-works/pi-coding-agent": ">=0.70.5",
+    "@earendil-works/pi-tui": ">=0.70.5"
   },
   "dependencies": {
     "croner": "^10.0.1",
