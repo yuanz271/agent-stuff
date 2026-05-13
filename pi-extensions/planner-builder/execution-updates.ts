@@ -1,4 +1,4 @@
-const EXECUTION_UPDATE_SCHEMA = "lead-worker/execution-update@1" as const;
+const EXECUTION_UPDATE_SCHEMA = "planner-builder/execution-update@1" as const;
 
 export const TERMINAL_UPDATE_STATUSES = ["completed", "failed", "cancelled"] as const;
 export const ATTENTION_UPDATE_STATUSES = ["blocker", "clarification_needed"] as const;
@@ -100,7 +100,7 @@ function parseValidationRecords(value: unknown, required: boolean): ValidationRe
   return value.map(parseValidationRecord);
 }
 
-export function isHighSignalWorkerEvent(name: string): name is HighSignalUpdateStatus {
+export function isHighSignalBuilderEvent(name: string): name is HighSignalUpdateStatus {
   return HIGH_SIGNAL_UPDATE_STATUSES.includes(name as HighSignalUpdateStatus);
 }
 
@@ -203,7 +203,7 @@ export function formatExecutionUpdateMarkdown(
   payload: ExecutionUpdatePayload,
   opts?: { fromLabel?: string; pairId?: string },
 ): string {
-  const fromLabel = opts?.fromLabel ?? "worker";
+  const fromLabel = opts?.fromLabel ?? "builder";
   const lines = [
     `**${fromLabel} ${payload.status.replace(/_/g, " ")}**`,
     "",
@@ -229,7 +229,7 @@ export function formatExecutionUpdateMarkdown(
 
 export function formatExecutionUpdateRelaySummary(payload: ExecutionUpdatePayload): string {
   const lines = [
-    `Worker status: ${payload.status.replace(/_/g, " ")}`,
+    `Builder status: ${payload.status.replace(/_/g, " ")}`,
     `Summary: ${payload.summary}`,
   ];
   if (payload.filesChanged && payload.filesChanged.length > 0) {
@@ -314,7 +314,7 @@ export function buildExecutionUpdatePayload(params: {
     ...base,
     kind: "attention",
     status: params.status,
-    nextStep: params.nextStep ?? "Waiting for lead guidance.",
+    nextStep: params.nextStep ?? "Waiting for planner guidance.",
     ...(params.blocker ? { blocker: params.blocker } : {}),
     ...(params.question ? { question: params.question } : {}),
     ...(params.filesChanged ? { filesChanged: params.filesChanged } : {}),

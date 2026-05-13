@@ -2,23 +2,23 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Server, Socket } from "node:net";
 import {
-  loadLeadWorkerSettings,
-  type LeadWorkerSettings,
-  type LeadWorkerSettingsLoadResult,
-  type LeadWorkerSource,
+  loadPlannerBuilderSettings,
+  type PlannerBuilderSettings,
+  type PlannerBuilderSettingsLoadResult,
+  type PlannerBuilderSource,
 } from "./settings.js";
-import type { LeadSessionBinding, PendingClarificationSnapshot, WorkerStatus } from "./utils.js";
+import type { PlannerSessionBinding, PendingClarificationSnapshot, BuilderStatus } from "./utils.js";
 import type { PairMessageV2, PairRole } from "./protocol.js";
 
-export const STATUS_KEY = "lead-worker";
-export const TOOL_NAME = "lead_worker";
-export const STATE_ENTRY_TYPE = "lead-worker-state";
-export const CONTEXT_MESSAGE_TYPE = "lead-worker-context";
-export const BUILD_HANDOFF_MESSAGE_TYPE = "lead-worker";
-export const PAIR_MESSAGE_TYPE = "lead-worker";
+export const STATUS_KEY = "planner-builder";
+export const TOOL_NAME = "planner_builder";
+export const STATE_ENTRY_TYPE = "planner-builder-state";
+export const CONTEXT_MESSAGE_TYPE = "planner-builder-context";
+export const BUILD_HANDOFF_MESSAGE_TYPE = "planner-builder";
+export const PAIR_MESSAGE_TYPE = "planner-builder";
 export const MAX_CONTEXT_MESSAGE_CHARS = 4_000;
 export const MAX_HANDOFF_CHARS = 32_000;
-export const WORKER_RELAY_DEDUP_WINDOW_MS = 60_000;
+export const BUILDER_RELAY_DEDUP_WINDOW_MS = 60_000;
 export const MAX_TRACKED_REPORTED_HANDOFF_IDS = 256;
 export const MAX_SUPERVISED_STEERS = 5;
 export const SUPERVISOR_MODEL_PROVIDER = "anthropic";
@@ -28,20 +28,20 @@ export const MAX_PENDING_SUPERVISION_EVENTS = 8;
 export const SOCKET_WAIT_TIMEOUT_MS = 10_000;
 export const SOCKET_WAIT_INTERVAL_MS = 100;
 
-export type LeadWorkerControlAction = "start" | "on" | "status" | "off" | "stop";
+export type PlannerBuilderControlAction = "start" | "on" | "status" | "off" | "stop";
 export type CommunicationAction = "message" | "ask" | "command" | "reply";
-export type LeadWorkerAction = LeadWorkerControlAction | CommunicationAction;
+export type PlannerBuilderAction = PlannerBuilderControlAction | CommunicationAction;
 
-export type LeadSelection = {
+export type PlannerSelection = {
   provider?: string;
   modelId?: string;
   thinkingLevel?: ThinkingLevel;
 };
 
-export type PersistedLeadWorkerState = {
+export type PersistedPlannerBuilderState = {
   enabled: boolean;
   previousActiveTools?: string[];
-  previousLeadSelection?: LeadSelection;
+  previousPlannerSelection?: PlannerSelection;
   updatedAt: string;
 };
 
@@ -51,24 +51,24 @@ export type ExtractedMessage = {
   timestamp: number;
 };
 
-export type LeadWorkerStatus = {
+export type PlannerBuilderStatus = {
   ok: true;
-  action: LeadWorkerControlAction;
+  action: PlannerBuilderControlAction;
   modeEnabled: boolean;
-  leadReadOnly: boolean;
+  plannerReadOnly: boolean;
   message: string;
   activeTools: string[];
   previousActiveTools?: string[];
-  leadModel?: string;
-  leadThinkingLevel: ThinkingLevel;
-  configuredLeadModel: string;
-  configuredLeadThinkingLevel: ThinkingLevel;
-  previousLeadModel?: string;
-  previousLeadThinkingLevel?: ThinkingLevel;
-  settingsSources: LeadWorkerSource[];
+  plannerModel?: string;
+  plannerThinkingLevel: ThinkingLevel;
+  configuredPlannerModel: string;
+  configuredPlannerThinkingLevel: ThinkingLevel;
+  previousPlannerModel?: string;
+  previousPlannerThinkingLevel?: ThinkingLevel;
+  settingsSources: PlannerBuilderSource[];
   settingsWarnings: string[];
   settingsInvalidFieldCount: number;
-  worker: WorkerStatus;
+  builder: BuilderStatus;
 };
 
 export type PendingRpc = {
@@ -90,10 +90,10 @@ export type ActiveConnection = {
   pairId: string;
   socketPath: string;
   projectRoot: string;
-  leadSessionId: string;
+  plannerSessionId: string;
 };
 
-export type PendingWorkerHandoff = {
+export type PendingBuilderHandoff = {
   id: string;
   receivedAtMs: number;
   pairId: string;
@@ -126,55 +126,55 @@ export type ActiveSupervisedHandoff = {
   supervisionRunning: boolean;
 };
 
-export interface LeadWorkerRuntime {
+export interface PlannerBuilderRuntime {
   modeEnabled: boolean;
   previousActiveTools: string[] | undefined;
-  previousLeadSelection: LeadSelection | undefined;
-  lastObservedLeadModel: { provider?: string; modelId?: string };
-  currentSettings: LeadWorkerSettingsLoadResult | undefined;
+  previousPlannerSelection: PlannerSelection | undefined;
+  lastObservedPlannerModel: { provider?: string; modelId?: string };
+  currentSettings: PlannerBuilderSettingsLoadResult | undefined;
   latestPairContext: ExtensionContext | undefined;
-  pendingWorkerHandoff: PendingWorkerHandoff | undefined;
+  pendingBuilderHandoff: PendingBuilderHandoff | undefined;
   pendingClarification: PendingClarification | undefined;
-  lastWorkerRelayFingerprint: string | undefined;
-  lastWorkerRelayAtMs: number | undefined;
-  reportedWorkerEventKeys: Set<string>;
+  lastBuilderRelayFingerprint: string | undefined;
+  lastBuilderRelayAtMs: number | undefined;
+  reportedBuilderEventKeys: Set<string>;
   pendingRpc: Map<string, PendingRpc>;
   expiredRpcIds: Set<string>;
   pendingInboundRequests: Map<string, PendingInboundRequest>;
   activeConnection: ActiveConnection | undefined;
   connectPromise: Promise<ActiveConnection> | undefined;
   connectionError: string | undefined;
-  workerServer: Server | undefined;
-  workerServerSocketPath: string | undefined;
-  workerServerPairId: string | undefined;
-  activeLeadSocket: Socket | undefined;
-  activeLeadSessionId: string | undefined;
+  builderServer: Server | undefined;
+  builderServerSocketPath: string | undefined;
+  builderServerPairId: string | undefined;
+  activePlannerSocket: Socket | undefined;
+  activePlannerSessionId: string | undefined;
   activeSupervisedHandoff: ActiveSupervisedHandoff | undefined;
 }
 
-export const rt: LeadWorkerRuntime = {
+export const rt: PlannerBuilderRuntime = {
   modeEnabled: false,
   previousActiveTools: undefined,
-  previousLeadSelection: undefined,
-  lastObservedLeadModel: {},
+  previousPlannerSelection: undefined,
+  lastObservedPlannerModel: {},
   currentSettings: undefined,
   latestPairContext: undefined,
-  pendingWorkerHandoff: undefined,
+  pendingBuilderHandoff: undefined,
   pendingClarification: undefined,
-  lastWorkerRelayFingerprint: undefined,
-  lastWorkerRelayAtMs: undefined,
-  reportedWorkerEventKeys: new Set<string>(),
+  lastBuilderRelayFingerprint: undefined,
+  lastBuilderRelayAtMs: undefined,
+  reportedBuilderEventKeys: new Set<string>(),
   pendingRpc: new Map<string, PendingRpc>(),
   expiredRpcIds: new Set<string>(),
   pendingInboundRequests: new Map<string, PendingInboundRequest>(),
   activeConnection: undefined,
   connectPromise: undefined,
   connectionError: undefined,
-  workerServer: undefined,
-  workerServerSocketPath: undefined,
-  workerServerPairId: undefined,
-  activeLeadSocket: undefined,
-  activeLeadSessionId: undefined,
+  builderServer: undefined,
+  builderServerSocketPath: undefined,
+  builderServerPairId: undefined,
+  activePlannerSocket: undefined,
+  activePlannerSessionId: undefined,
   activeSupervisedHandoff: undefined,
 };
 
@@ -229,42 +229,42 @@ export function getMessagesSinceLastUser(ctx: ExtensionContext): ExtractedMessag
   return extracted;
 }
 
-export function requireCurrentSettings(): LeadWorkerSettingsLoadResult {
+export function requireCurrentSettings(): PlannerBuilderSettingsLoadResult {
   if (!rt.currentSettings) {
-    throw new Error("lead-worker settings are not loaded");
+    throw new Error("planner-builder settings are not loaded");
   }
   return rt.currentSettings;
 }
 
-export function leadConfig(): LeadWorkerSettings["lead"] {
-  return requireCurrentSettings().settings.lead;
+export function plannerConfig(): PlannerBuilderSettings["planner"] {
+  return requireCurrentSettings().settings.planner;
 }
 
-export function getConfiguredLeadSelection(settings: LeadWorkerSettings = requireCurrentSettings().settings): LeadSelection | undefined {
-  const ref = settings.lead.model.trim();
+export function getConfiguredPlannerSelection(settings: PlannerBuilderSettings = requireCurrentSettings().settings): PlannerSelection | undefined {
+  const ref = settings.planner.model.trim();
   const separator = ref.indexOf("/");
   if (separator <= 0 || separator >= ref.length - 1) return undefined;
   return {
     provider: ref.slice(0, separator),
     modelId: ref.slice(separator + 1),
-    thinkingLevel: settings.lead.thinking,
+    thinkingLevel: settings.planner.thinking,
   };
 }
 
-export async function refreshSettings(cwd: string): Promise<LeadWorkerSettingsLoadResult> {
-  rt.currentSettings = await loadLeadWorkerSettings(cwd, import.meta.url);
+export async function refreshSettings(cwd: string): Promise<PlannerBuilderSettingsLoadResult> {
+  rt.currentSettings = await loadPlannerBuilderSettings(cwd, import.meta.url);
   return rt.currentSettings;
 }
 
 export function currentPairRole(): PairRole {
-  return process.env.PI_LEAD_WORKER_ROLE === "worker" ? "worker" : "lead";
+  return process.env.PI_PLANNER_BUILDER_ROLE === "builder" ? "builder" : "planner";
 }
 
 export function pairedRole(role: PairRole): PairRole {
-  return role === "lead" ? "worker" : "lead";
+  return role === "planner" ? "builder" : "planner";
 }
 
-export function getLeadSessionBinding(ctx: ExtensionContext): LeadSessionBinding {
+export function getPlannerSessionBinding(ctx: ExtensionContext): PlannerSessionBinding {
   return {
     sessionId: ctx.sessionManager.getSessionId(),
     sessionFile: ctx.sessionManager.getSessionFile(),

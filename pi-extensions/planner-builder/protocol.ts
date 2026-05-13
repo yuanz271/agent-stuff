@@ -5,7 +5,7 @@ export const PROTOCOL_VERSION = 2;
 export const MAX_FRAME_BYTES = 256 * 1024;
 export const DEFAULT_REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
 
-export type PairRole = "lead" | "worker";
+export type PairRole = "planner" | "builder";
 export type PairMessageType = "request" | "reply" | "command" | "event";
 
 export type PairMessageV2 = {
@@ -49,8 +49,8 @@ export function validateMessage(value: unknown): PairMessageV2 {
   if (type !== "request" && type !== "reply" && type !== "command" && type !== "event") {
     throw new Error(`invalid message.type: ${String(type)}`);
   }
-  if (from !== "lead" && from !== "worker") throw new Error(`invalid message.from: ${String(from)}`);
-  if (to !== "lead" && to !== "worker") throw new Error(`invalid message.to: ${String(to)}`);
+  if (from !== "planner" && from !== "builder") throw new Error(`invalid message.from: ${String(from)}`);
+  if (to !== "planner" && to !== "builder") throw new Error(`invalid message.to: ${String(to)}`);
   if (from === to) throw new Error(`message.from and message.to must differ (both are '${String(from)}')`);
   if (typeof msg.pairId !== "string" || !msg.pairId.trim()) throw new Error("message.pairId must be a non-empty string");
   if (typeof msg.timestamp !== "string" || !msg.timestamp.trim()) throw new Error("message.timestamp must be a non-empty string");

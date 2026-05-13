@@ -2,18 +2,18 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { ExecutionUpdatePayload } from "./execution-updates.js";
 import type { PairMessageV2 } from "./protocol.js";
 import {
-  clearWorkerPendingClarification,
-  getWorkerStatus,
-  setWorkerPendingClarification,
+  clearBuilderPendingClarification,
+  getBuilderStatus,
+  setBuilderPendingClarification,
   type PendingClarificationSnapshot,
-  type WorkerStatus,
+  type BuilderStatus,
 } from "./utils.js";
 import {
   MAX_CONTEXT_MESSAGE_CHARS,
   rt,
   currentPairRole,
   getContextCwd,
-  getLeadSessionBinding,
+  getPlannerSessionBinding,
   refreshSettings,
   truncate,
   type PendingClarification,
@@ -73,10 +73,10 @@ export async function rememberPendingClarification(
   clarification: PendingClarification,
 ): Promise<void> {
   rt.pendingClarification = clarification;
-  if (currentPairRole() !== "worker") return;
+  if (currentPairRole() !== "builder") return;
   const settings = await settingsForContext(ctx);
   const { handoffId, question, askedAt, delivery } = clarification;
-  await setWorkerPendingClarification(pi, getContextCwd(ctx), settings, {
+  await setBuilderPendingClarification(pi, getContextCwd(ctx), settings, {
     ...(handoffId ? { handoffId } : {}),
     question,
     askedAt,
@@ -86,14 +86,14 @@ export async function rememberPendingClarification(
 
 export async function clearPendingClarification(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
   rt.pendingClarification = undefined;
-  if (currentPairRole() !== "worker") return;
+  if (currentPairRole() !== "builder") return;
   const settings = await settingsForContext(ctx);
-  await clearWorkerPendingClarification(pi, getContextCwd(ctx), settings);
+  await clearBuilderPendingClarification(pi, getContextCwd(ctx), settings);
 }
 
-function restorePendingClarificationFromStatus(worker: WorkerStatus): void {
-  rt.pendingClarification = worker.pendingClarification
-    ? { ...worker.pendingClarification, canReplyNow: false }
+function restorePendingClarificationFromStatus(builder: BuilderStatus): void {
+  rt.pendingClarification = builder.pendingClarification
+    ? { ...builder.pendingClarification, canReplyNow: false }
     : undefined;
 }
 
@@ -101,6 +101,6 @@ export async function restorePendingClarificationState(pi: ExtensionAPI, ctx: Ex
   if (rt.pendingClarification) return;
   const cwd = getContextCwd(ctx);
   const { settings } = rt.currentSettings ?? await refreshSettings(cwd);
-  const worker = await getWorkerStatus(pi, cwd, settings, getLeadSessionBinding(ctx));
-  restorePendingClarificationFromStatus(worker);
+  const builder = await getBuilderStatus(pi, cwd, settings, getPlannerSessionBinding(ctx));
+  restorePendingClarificationFromStatus(builder);
 }

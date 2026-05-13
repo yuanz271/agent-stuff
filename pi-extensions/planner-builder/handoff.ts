@@ -100,7 +100,7 @@ export function buildHandoffPointerText(params: {
     ...(summary ? ["", "Summary:", summary] : []),
     "",
     "Read the handoff artifact above and treat it as the authoritative spec for this handoff.",
-    "Implement it in the worker session, then report progress and exactly one terminal update as usual.",
+    "Implement it in the builder session, then report progress and exactly one terminal update as usual.",
   ].join("\n");
 }
 
@@ -110,18 +110,18 @@ export function buildHandoffText(ctx: ExtensionContext, extraInstructions: strin
   if (recent.length === 0 && !trimmedExtra) return null;
 
   const lines = [
-    `Lead handoff from session ${ctx.sessionManager.getSessionId()} in ${getContextCwd(ctx)}.`,
-    "Implement the agreed plan in the repo-scoped worker. The lead should avoid direct repo edits.",
+    `Planner handoff from session ${ctx.sessionManager.getSessionId()} in ${getContextCwd(ctx)}.`,
+    "Implement the agreed plan in the repo-scoped builder. The planner should avoid direct repo edits.",
     `handoff_id: ${handoffId}`,
-    'Direct paired communication is available through lead_worker({ action: "message", name: "progress", message: "..." }), structured execution-update events via lead_worker({ action: "message", name: "completed" | "failed" | "cancelled" | "blocker" | "clarification_needed", message: "short summary", payload: {...} }), live clarification via lead_worker({ action: "ask", name: "clarification", message: "..." }), and lead_worker({ action: "reply", replyTo: "...", message: "..." }).',
+    'Direct paired communication is available through planner_builder({ action: "message", name: "progress", message: "..." }), structured execution-update events via planner_builder({ action: "message", name: "completed" | "failed" | "cancelled" | "blocker" | "clarification_needed", message: "short summary", payload: {...} }), live clarification via planner_builder({ action: "ask", name: "clarification", message: "..." }), and planner_builder({ action: "reply", replyTo: "...", message: "..." }).',
     "",
   ];
 
   if (trimmedExtra) lines.push("Additional build instruction:", trimmedExtra, "");
   if (recent.length > 0) {
-    lines.push("Recent lead exchange:", "");
+    lines.push("Recent planner exchange:", "");
     for (const message of recent) {
-      const role = message.role === "user" ? "User" : "Lead";
+      const role = message.role === "user" ? "User" : "Planner";
       lines.push(`${role}:`, message.content, "");
     }
   }
@@ -129,15 +129,15 @@ export function buildHandoffText(ctx: ExtensionContext, extraInstructions: strin
   lines.push(
     "Execution expectations:",
     "- send intent/spec only: goal, relevant files, implementation steps, constraints, and validation criteria",
-    "- do not send concrete code snippets, patches, or copy-paste-ready implementation blocks to the worker",
-    "- implement the requested change in the worker session",
+    "- do not send concrete code snippets, patches, or copy-paste-ready implementation blocks to the builder",
+    "- implement the requested change in the builder session",
     "- run the smallest relevant validation",
-    '- send exactly one terminal update to the lead for this handoff via lead_worker({ action: "message", name: "completed" | "failed" | "cancelled", message: "short summary", payload: {...} })',
-    '- terminal payloads must match lead-worker/execution-update@1 and include handoffId, summary, filesChanged, validation, and nextStep when relevant',
+    '- send exactly one terminal update to the planner for this handoff via planner_builder({ action: "message", name: "completed" | "failed" | "cancelled", message: "short summary", payload: {...} })',
+    '- terminal payloads must match planner-builder/execution-update@1 and include handoffId, summary, filesChanged, validation, and nextStep when relevant',
     '- blocker and clarification_needed updates should also use structured execution-update payloads',
     '- send progress/blocker/clarification updates only when materially useful',
-    '- use lead_worker({ action: "ask", ... }) only when you need a live answer from an attached lead before continuing',
-    '- if the clarification should remain visible across disconnects or resume, send lead_worker({ action: "message", name: "clarification_needed", message: "short summary", payload: {...} })',
+    '- use planner_builder({ action: "ask", ... }) only when you need a live answer from an attached planner before continuing',
+    '- if the clarification should remain visible across disconnects or resume, send planner_builder({ action: "message", name: "clarification_needed", message: "short summary", payload: {...} })',
     "- if blocked on the task itself, report the minimal blocker and the next action needed",
   );
 

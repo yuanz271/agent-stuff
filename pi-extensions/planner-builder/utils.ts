@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import type { LeadWorkerSettings } from "./settings.js";
+import type { PlannerBuilderSettings } from "./settings.js";
 
 const STATE_VERSION = 3;
 const CAPTURE_LINES = 40;
@@ -13,14 +13,14 @@ const TMUX_FORMAT = "#{session_id}\t#{window_id}\t#{pane_id}";
 const ANSI_CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const ANSI_OSC_RE = /\x1b\][^\x07]*(?:\x07|\x1b\\)/g;
 const CONTROL_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
-const WORKER_BASE_NAME = "worker";
-const DEFAULT_WORKER_SLOT = "default";
+const BUILDER_BASE_NAME = "builder";
+const DEFAULT_BUILDER_SLOT = "default";
 const PAIR_ID_PATH_CHARS = 16;
-const SOCKET_RUNTIME_BASE_DIR = join(homedir(), ".pi", "lead-worker-sockets");
+const SOCKET_RUNTIME_BASE_DIR = join(homedir(), ".pi", "planner-builder-sockets");
 
-export type LeadWorkerAction = "start" | "status" | "stop";
+export type PlannerBuilderAction = "start" | "status" | "stop";
 
-export type LeadSessionBinding = {
+export type PlannerSessionBinding = {
   sessionId: string;
   sessionFile?: string;
 };
@@ -34,12 +34,12 @@ export type PendingClarificationSnapshot = {
   delivery: PendingClarificationDelivery;
 };
 
-export type WorkerState = {
+export type BuilderState = {
   version: number;
   pairId: string;
   projectRoot: string;
-  leadSessionId?: string;
-  leadSessionFile?: string;
+  plannerSessionId?: string;
+  plannerSessionFile?: string;
   tmuxSession: string;
   tmuxSessionId?: string;
   tmuxWindowId?: string;
@@ -59,16 +59,16 @@ export type WorkerState = {
   pendingClarification?: PendingClarificationSnapshot;
 };
 
-export type WorkerStatus = {
+export type BuilderStatus = {
   ok: true;
-  action: LeadWorkerAction;
+  action: PlannerBuilderAction;
   running: boolean;
   alreadyRunning?: boolean;
   message: string;
   pairId: string;
   projectRoot: string;
-  leadSessionId?: string;
-  leadSessionFile?: string;
+  plannerSessionId?: string;
+  plannerSessionFile?: string;
   tmuxSession: string;
   tmuxSessionId?: string;
   tmuxWindowId?: string;
@@ -135,24 +135,24 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
-export function computePairId(projectRoot: string, workerSlot = DEFAULT_WORKER_SLOT): string {
-  return createHash("sha256").update(`${projectRoot}:${workerSlot}`).digest("hex");
+export function computePairId(projectRoot: string, builderSlot = DEFAULT_BUILDER_SLOT): string {
+  return createHash("sha256").update(`${projectRoot}:${builderSlot}`).digest("hex");
 }
 
 export function pairIdTag(pairId: string): string {
   return pairId.slice(0, PAIR_ID_PATH_CHARS);
 }
 
-function getWorkerAgentName(_settings: LeadWorkerSettings, pairId: string): string {
-  return `${WORKER_BASE_NAME}-${pairId.slice(0, 10)}`;
+function getBuilderAgentName(_settings: PlannerBuilderSettings, pairId: string): string {
+  return `${BUILDER_BASE_NAME}-${pairId.slice(0, 10)}`;
 }
 
-function getWorkerModel(settings: LeadWorkerSettings): string {
-  return settings.worker.model;
+function getBuilderModel(settings: PlannerBuilderSettings): string {
+  return settings.builder.model;
 }
 
-function getWorkerThinking(settings: LeadWorkerSettings): ThinkingLevel {
-  return settings.worker.thinking;
+function getBuilderThinking(settings: PlannerBuilderSettings): ThinkingLevel {
+  return settings.builder.thinking;
 }
 
 function tmuxSessionName(projectRoot: string, pairId: string): string {
@@ -161,21 +161,21 @@ function tmuxSessionName(projectRoot: string, pairId: string): string {
     .replace(/[^a-z0-9_-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 18) || "project";
-  return `lead-worker-${projectBase}-${pairId.slice(0, 10)}`;
+  return `planner-builder-${projectBase}-${pairId.slice(0, 10)}`;
 }
 
 function buildProtocolPaths(pairId: string): { protocolDir: string; socketPath: string } {
   const protocolDir = join(SOCKET_RUNTIME_BASE_DIR, pairIdTag(pairId), "protocol-v2");
   return {
     protocolDir,
-    socketPath: join(protocolDir, "worker.sock"),
+    socketPath: join(protocolDir, "builder.sock"),
   };
 }
 
-function buildPaths(projectRoot: string, settings: LeadWorkerSettings): Paths {
+function buildPaths(projectRoot: string, settings: PlannerBuilderSettings): Paths {
   const pairId = computePairId(projectRoot);
-  const workerAgentName = getWorkerAgentName(settings, pairId);
-  const runtimeDir = join(projectRoot, ".pi", "lead-worker", pairIdTag(pairId));
+  const builderAgentName = getBuilderAgentName(settings, pairId);
+  const runtimeDir = join(projectRoot, ".pi", "planner-builder", pairIdTag(pairId));
   const { protocolDir, socketPath } = buildProtocolPaths(pairId);
 
   return {
@@ -183,24 +183,24 @@ function buildPaths(projectRoot: string, settings: LeadWorkerSettings): Paths {
     projectRoot,
     runtimeDir,
     protocolDir,
-    stateFile: join(runtimeDir, "worker-state.json"),
-    logFile: join(runtimeDir, "worker.log"),
-    launchScript: join(runtimeDir, "launch-worker.sh"),
-    systemPromptFile: join(runtimeDir, "worker-system-prompt.md"),
-    startupPromptFile: join(runtimeDir, "worker-startup.md"),
-    sessionFile: join(projectRoot, ".pi", "sessions", `${workerAgentName}.jsonl`),
+    stateFile: join(runtimeDir, "builder-state.json"),
+    logFile: join(runtimeDir, "builder.log"),
+    launchScript: join(runtimeDir, "launch-builder.sh"),
+    systemPromptFile: join(runtimeDir, "builder-system-prompt.md"),
+    startupPromptFile: join(runtimeDir, "builder-startup.md"),
+    sessionFile: join(projectRoot, ".pi", "sessions", `${builderAgentName}.jsonl`),
     socketPath,
     tmuxSession: tmuxSessionName(projectRoot, pairId),
   };
 }
 
-function baseState(paths: Paths, settings: LeadWorkerSettings, leadSession: LeadSessionBinding): WorkerState {
+function baseState(paths: Paths, settings: PlannerBuilderSettings, plannerSession: PlannerSessionBinding): BuilderState {
   return {
     version: STATE_VERSION,
     pairId: paths.pairId,
     projectRoot: paths.projectRoot,
-    ...(leadSession.sessionId ? { leadSessionId: leadSession.sessionId } : {}),
-    ...(leadSession.sessionFile ? { leadSessionFile: leadSession.sessionFile } : {}),
+    ...(plannerSession.sessionId ? { plannerSessionId: plannerSession.sessionId } : {}),
+    ...(plannerSession.sessionFile ? { plannerSessionFile: plannerSession.sessionFile } : {}),
     tmuxSession: paths.tmuxSession,
     sessionFile: paths.sessionFile,
     logFile: paths.logFile,
@@ -209,9 +209,9 @@ function baseState(paths: Paths, settings: LeadWorkerSettings, leadSession: Lead
     startupPromptFile: paths.startupPromptFile,
     protocolDir: paths.protocolDir,
     socketPath: paths.socketPath,
-    agentName: getWorkerAgentName(settings, paths.pairId),
-    model: getWorkerModel(settings),
-    thinking: getWorkerThinking(settings),
+    agentName: getBuilderAgentName(settings, paths.pairId),
+    model: getBuilderModel(settings),
+    thinking: getBuilderThinking(settings),
   };
 }
 
@@ -237,7 +237,7 @@ export async function resolveProjectRoot(pi: ExtensionAPI, cwd: string): Promise
 export async function resolvePairRuntimePaths(pi: ExtensionAPI, cwd: string): Promise<PairRuntimePaths> {
   const projectRoot = await resolveProjectRoot(pi, cwd);
   const pairId = computePairId(projectRoot);
-  const runtimeDir = join(projectRoot, ".pi", "lead-worker", pairIdTag(pairId));
+  const runtimeDir = join(projectRoot, ".pi", "planner-builder", pairIdTag(pairId));
   const { protocolDir, socketPath } = buildProtocolPaths(pairId);
   return {
     pairId,
@@ -251,7 +251,7 @@ export async function resolvePairRuntimePaths(pi: ExtensionAPI, cwd: string): Pr
 async function ensureTmuxAvailable(pi: ExtensionAPI, cwd: string): Promise<void> {
   const result = await exec(pi, "tmux", ["-V"], cwd);
   if (result.code !== 0) {
-    throw new Error("tmux is required for lead-worker but was not found or is not working");
+    throw new Error("tmux is required for planner-builder but was not found or is not working");
   }
 }
 
@@ -273,7 +273,7 @@ function normalizePendingClarificationSnapshot(value: unknown): PendingClarifica
   return { handoffId, question, askedAt, delivery };
 }
 
-async function loadState(stateFile: string): Promise<WorkerState | null> {
+async function loadState(stateFile: string): Promise<BuilderState | null> {
   let raw: string;
   try {
     raw = await fs.readFile(stateFile, "utf8");
@@ -282,34 +282,34 @@ async function loadState(stateFile: string): Promise<WorkerState | null> {
     if (code === "ENOENT") {
       return null;
     }
-    throw new Error(`Failed to read worker state ${stateFile}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`Failed to read builder state ${stateFile}: ${error instanceof Error ? error.message : String(error)}`);
   }
   try {
-    const parsed = JSON.parse(raw) as WorkerState & { pendingClarification?: unknown };
+    const parsed = JSON.parse(raw) as BuilderState & { pendingClarification?: unknown };
     return {
       ...parsed,
       pendingClarification: normalizePendingClarificationSnapshot(parsed.pendingClarification),
     };
   } catch (error) {
-    throw new Error(`Corrupt worker state ${stateFile}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`Corrupt builder state ${stateFile}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
-async function saveState(stateFile: string, state: WorkerState): Promise<void> {
+async function saveState(stateFile: string, state: BuilderState): Promise<void> {
   await fs.mkdir(dirname(stateFile), { recursive: true });
   await fs.writeFile(stateFile, JSON.stringify(state, null, 2) + "\n", "utf8");
 }
 
-const EMPTY_LEAD_SESSION: LeadSessionBinding = { sessionId: "" };
+const EMPTY_PLANNER_SESSION: PlannerSessionBinding = { sessionId: "" };
 
-export async function setWorkerPendingClarification(
+export async function setBuilderPendingClarification(
   pi: ExtensionAPI,
   cwd: string,
-  settings: LeadWorkerSettings,
+  settings: PlannerBuilderSettings,
   pendingClarification: PendingClarificationSnapshot,
 ): Promise<void> {
-  const { paths, desiredState, existingState } = await resolveState(pi, cwd, settings, EMPTY_LEAD_SESSION);
-  const nextState: WorkerState = {
+  const { paths, desiredState, existingState } = await resolveState(pi, cwd, settings, EMPTY_PLANNER_SESSION);
+  const nextState: BuilderState = {
     ...(existingState ?? desiredState),
     version: STATE_VERSION,
     pendingClarification,
@@ -317,12 +317,12 @@ export async function setWorkerPendingClarification(
   await saveState(paths.stateFile, nextState);
 }
 
-export async function clearWorkerPendingClarification(
+export async function clearBuilderPendingClarification(
   pi: ExtensionAPI,
   cwd: string,
-  settings: LeadWorkerSettings,
+  settings: PlannerBuilderSettings,
 ): Promise<void> {
-  const { paths, existingState } = await resolveState(pi, cwd, settings, EMPTY_LEAD_SESSION);
+  const { paths, existingState } = await resolveState(pi, cwd, settings, EMPTY_PLANNER_SESSION);
   if (!existingState?.pendingClarification) return;
   await saveState(paths.stateFile, {
     ...existingState,
@@ -350,7 +350,7 @@ async function readTailFromFile(path: string): Promise<string[]> {
   }
 }
 
-async function captureBacklog(pi: ExtensionAPI, cwd: string, state: WorkerState): Promise<string[]> {
+async function captureBacklog(pi: ExtensionAPI, cwd: string, state: BuilderState): Promise<string[]> {
   const target = state.tmuxPaneId?.trim() || `${state.tmuxSession}:0.0`;
   const captured = await exec(pi, "tmux", ["capture-pane", "-p", "-J", "-t", target, "-S", `-${CAPTURE_LINES}`], cwd);
   if (captured.code === 0 && captured.stdout.trim()) {
@@ -384,80 +384,80 @@ function getPiInvocation(): { command: string; argsPrefix: string[] } {
   };
 }
 
-function buildSystemPrompt(settings: LeadWorkerSettings, pairId: string): string {
-  const workerAgentName = getWorkerAgentName(settings, pairId);
+function buildSystemPrompt(settings: PlannerBuilderSettings, pairId: string): string {
+  const builderAgentName = getBuilderAgentName(settings, pairId);
   const lines = [
-    `You are ${workerAgentName}, the persistent worker session for this project.`,
+    `You are ${builderAgentName}, the persistent builder session for this project.`,
     `Your stable pair id is ${pairId}.`,
     "",
     "Role:",
-    "- You are the write-enabled worker counterpart for this repository.",
-    '- Use lead_worker({ action: "message", name: "progress", message: "..." }) for concise generic progress updates.',
-    '- For completed, failed, cancelled, blocker, and clarification_needed events, you MUST send a structured payload object matching lead-worker/execution-update@1 and keep message as a short human summary.',
-    '- Use lead_worker({ action: "ask", name: "clarification", message: "..." }) when you need a live answer from an attached lead before continuing.',
-    '- Use lead_worker({ action: "message", name: "clarification_needed", message: "short summary", payload: { schema: "lead-worker/execution-update@1", kind: "attention", status: "clarification_needed", handoffId: "...", summary: "short summary", question: "...", nextStep: "..." } }) when the clarification must remain visible across disconnects or resume.',
-    '- Use lead_worker({ action: "reply", replyTo: "...", message: "..." }) when answering a direct worker-side request.',
+    "- You are the write-enabled builder counterpart for this repository.",
+    '- Use planner_builder({ action: "message", name: "progress", message: "..." }) for concise generic progress updates.',
+    '- For completed, failed, cancelled, blocker, and clarification_needed events, you MUST send a structured payload object matching planner-builder/execution-update@1 and keep message as a short human summary.',
+    '- Use planner_builder({ action: "ask", name: "clarification", message: "..." }) when you need a live answer from an attached planner before continuing.',
+    '- Use planner_builder({ action: "message", name: "clarification_needed", message: "short summary", payload: { schema: "planner-builder/execution-update@1", kind: "attention", status: "clarification_needed", handoffId: "...", summary: "short summary", question: "...", nextStep: "..." } }) when the clarification must remain visible across disconnects or resume.',
+    '- Use planner_builder({ action: "reply", replyTo: "...", message: "..." }) when answering a direct builder-side request.',
     "- Do not send acknowledgements or chatter.",
-    "- For each delegated handoff, you MUST send exactly one terminal update to the lead when you finish or stop.",
+    "- For each delegated handoff, you MUST send exactly one terminal update to the planner when you finish or stop.",
     "- Terminal update must include: handoff_id, status (completed/failed/cancelled), files changed, validation run + result, and any blocker/next action.",
     "- You may send interim updates only for material blockers, clarifications, or useful progress.",
-    "- Treat lead messages as intent/specification, not code to paste blindly.",
-    "- If lead includes code-like text, extract intent/constraints and implement natively in the repository.",
-    "- Execute concrete changes, tests, and diagnostics. Do not start autonomous worker swarms unless explicitly asked.",
+    "- Treat planner messages as intent/specification, not code to paste blindly.",
+    "- If planner includes code-like text, extract intent/constraints and implement natively in the repository.",
+    "- Execute concrete changes, tests, and diagnostics. Do not start autonomous builder swarms unless explicitly asked.",
     "- When blocked, report the minimal blocking fact and the next concrete action needed.",
   ];
 
-  if (settings.worker.system_prompt_append) {
-    lines.push("", settings.worker.system_prompt_append);
+  if (settings.builder.system_prompt_append) {
+    lines.push("", settings.builder.system_prompt_append);
   }
 
   return lines.join("\n");
 }
 
-function buildStartupPrompt(settings: LeadWorkerSettings, pairId: string): string {
-  const workerAgentName = getWorkerAgentName(settings, pairId);
+function buildStartupPrompt(settings: PlannerBuilderSettings, pairId: string): string {
+  const builderAgentName = getBuilderAgentName(settings, pairId);
   const lines = [
-    `You are booting as ${workerAgentName}, the persistent worker session for this project.`,
-    `This worker serves pair id ${pairId}.`,
+    `You are booting as ${builderAgentName}, the persistent builder session for this project.`,
+    `This builder serves pair id ${pairId}.`,
     "",
     "Startup checklist:",
     `1. Reply with a short readiness note that explicitly says you are ready for pair ${pairId}.`,
-    '2. For generic one-way updates, use lead_worker({ action: "message", name: "progress", message: "..." }).',
-    '3. For completed, failed, cancelled, blocker, and clarification_needed events, include a structured payload object matching lead-worker/execution-update@1; keep message as the short summary.',
-    '4. If you need a live answer from an attached lead before continuing, use lead_worker({ action: "ask", name: "clarification", message: "..." }).',
-    '5. If the clarification must remain visible across disconnects or resume, use lead_worker({ action: "message", name: "clarification_needed", message: "short summary", payload: { schema: "lead-worker/execution-update@1", kind: "attention", status: "clarification_needed", handoffId: "...", summary: "short summary", question: "...", nextStep: "..." } }).',
-    '6. If you receive a direct request that expects an answer, respond with lead_worker({ action: "reply", replyTo: "...", message: "..." }).',
-    '7. For every delegated handoff, send exactly one terminal update back to the lead with a structured payload containing: handoff_id, summary, files changed, validation result, and blockers/next action (if any).',
+    '2. For generic one-way updates, use planner_builder({ action: "message", name: "progress", message: "..." }).',
+    '3. For completed, failed, cancelled, blocker, and clarification_needed events, include a structured payload object matching planner-builder/execution-update@1; keep message as the short summary.',
+    '4. If you need a live answer from an attached planner before continuing, use planner_builder({ action: "ask", name: "clarification", message: "..." }).',
+    '5. If the clarification must remain visible across disconnects or resume, use planner_builder({ action: "message", name: "clarification_needed", message: "short summary", payload: { schema: "planner-builder/execution-update@1", kind: "attention", status: "clarification_needed", handoffId: "...", summary: "short summary", question: "...", nextStep: "..." } }).',
+    '6. If you receive a direct request that expects an answer, respond with planner_builder({ action: "reply", replyTo: "...", message: "..." }).',
+    '7. For every delegated handoff, send exactly one terminal update back to the planner with a structured payload containing: handoff_id, summary, files changed, validation result, and blockers/next action (if any).',
     "8. Then wait for further instructions.",
     "",
     "Do not modify files during this startup handshake.",
   ];
 
-  if (settings.worker.startup_prompt_append) {
-    lines.push("", settings.worker.startup_prompt_append);
+  if (settings.builder.startup_prompt_append) {
+    lines.push("", settings.builder.startup_prompt_append);
   }
 
   return lines.join("\n");
 }
 
-async function writeRuntimeFiles(paths: Paths, settings: LeadWorkerSettings, leadSession: LeadSessionBinding): Promise<void> {
+async function writeRuntimeFiles(paths: Paths, settings: PlannerBuilderSettings, plannerSession: PlannerSessionBinding): Promise<void> {
   const invocation = getPiInvocation();
-  const workerAgentName = getWorkerAgentName(settings, paths.pairId);
+  const builderAgentName = getBuilderAgentName(settings, paths.pairId);
   const systemPrompt = buildSystemPrompt(settings, paths.pairId);
   const startupPrompt = buildStartupPrompt(settings, paths.pairId);
   const startupBannerLines = [
-    `[lead-worker] ${workerAgentName} pair ${paths.pairId}`,
-    ...(leadSession.sessionId ? [`[lead-worker] started by lead session ${leadSession.sessionId}`] : []),
-    ...(leadSession.sessionFile ? [`[lead-worker] lead session file ${leadSession.sessionFile}`] : []),
+    `[planner-builder] ${builderAgentName} pair ${paths.pairId}`,
+    ...(plannerSession.sessionId ? [`[planner-builder] started by planner session ${plannerSession.sessionId}`] : []),
+    ...(plannerSession.sessionFile ? [`[planner-builder] planner session file ${plannerSession.sessionFile}`] : []),
   ];
   const fullArgs = [
     ...invocation.argsPrefix,
     "--session",
     paths.sessionFile,
     "--model",
-    getWorkerModel(settings),
+    getBuilderModel(settings),
     "--thinking",
-    getWorkerThinking(settings),
+    getBuilderThinking(settings),
     "--append-system-prompt",
     paths.systemPromptFile,
     startupPrompt,
@@ -467,7 +467,7 @@ async function writeRuntimeFiles(paths: Paths, settings: LeadWorkerSettings, lea
     "set -euo pipefail",
     `cd ${shellQuote(paths.projectRoot)}`,
     ...startupBannerLines.map((line) => `printf '%s\\n' ${shellQuote(line)}`),
-    `exec env PI_AGENT_NAME=${shellQuote(workerAgentName)} PI_LEAD_WORKER_ROLE=${shellQuote("worker")} PI_LEAD_WORKER_PAIR_ID=${shellQuote(paths.pairId)} ${shellQuote(invocation.command)} ${fullArgs
+    `exec env PI_AGENT_NAME=${shellQuote(builderAgentName)} PI_PLANNER_BUILDER_ROLE=${shellQuote("builder")} PI_PLANNER_BUILDER_PAIR_ID=${shellQuote(paths.pairId)} ${shellQuote(invocation.command)} ${fullArgs
       .map(shellQuote)
       .join(" ")}`,
     "",
@@ -493,17 +493,17 @@ function parseNewSessionMetadata(stdout: string): { sessionId?: string; windowId
 
 function withStateOverrides(
   paths: Paths,
-  settings: LeadWorkerSettings,
-  leadSession: LeadSessionBinding,
-  state: WorkerState | null,
-  patch: Partial<WorkerState>,
-): WorkerState {
+  settings: PlannerBuilderSettings,
+  plannerSession: PlannerSessionBinding,
+  state: BuilderState | null,
+  patch: Partial<BuilderState>,
+): BuilderState {
   return {
-    ...baseState(paths, settings, leadSession),
+    ...baseState(paths, settings, plannerSession),
     ...(state
       ? {
-          ...(leadSession.sessionId ? {} : { leadSessionId: state.leadSessionId }),
-          ...(leadSession.sessionFile ? {} : { leadSessionFile: state.leadSessionFile }),
+          ...(plannerSession.sessionId ? {} : { plannerSessionId: state.plannerSessionId }),
+          ...(plannerSession.sessionFile ? {} : { plannerSessionFile: state.plannerSessionFile }),
           startedAt: state.startedAt,
           lastStoppedAt: state.lastStoppedAt,
           tmuxSessionId: state.tmuxSessionId,
@@ -519,35 +519,35 @@ function withStateOverrides(
 async function resolveState(
   pi: ExtensionAPI,
   cwd: string,
-  settings: LeadWorkerSettings,
-  leadSession: LeadSessionBinding,
-): Promise<{ paths: Paths; desiredState: WorkerState; existingState: WorkerState | null; warnings: string[] }> {
+  settings: PlannerBuilderSettings,
+  plannerSession: PlannerSessionBinding,
+): Promise<{ paths: Paths; desiredState: BuilderState; existingState: BuilderState | null; warnings: string[] }> {
   const projectRoot = await resolveProjectRoot(pi, cwd);
   const paths = buildPaths(projectRoot, settings);
   const existingState = await loadState(paths.stateFile);
-  const desiredState = withStateOverrides(paths, settings, leadSession, existingState, {});
+  const desiredState = withStateOverrides(paths, settings, plannerSession, existingState, {});
   const warnings: string[] = [];
   return { paths, desiredState, existingState, warnings };
 }
 
-function describeAction(action: LeadWorkerAction, agentName: string, running: boolean, alreadyRunning?: boolean): string {
+function describeAction(action: PlannerBuilderAction, agentName: string, running: boolean, alreadyRunning?: boolean): string {
   if (action === "start") {
-    return alreadyRunning ? `Worker ${agentName} is already running.` : `Started worker ${agentName} in a detached tmux session.`;
+    return alreadyRunning ? `Builder ${agentName} is already running.` : `Started builder ${agentName} in a detached tmux session.`;
   }
   if (action === "stop") {
-    return running ? `Worker ${agentName} is still running.` : `Stopped worker ${agentName}.`;
+    return running ? `Builder ${agentName} is still running.` : `Stopped builder ${agentName}.`;
   }
-  return running ? `Worker ${agentName} is running.` : `Worker ${agentName} is not running.`;
+  return running ? `Builder ${agentName} is running.` : `Builder ${agentName} is not running.`;
 }
 
 async function buildStatus(
   pi: ExtensionAPI,
   cwd: string,
-  action: LeadWorkerAction,
-  state: WorkerState,
+  action: PlannerBuilderAction,
+  state: BuilderState,
   warnings: string[],
   alreadyRunning?: boolean,
-): Promise<WorkerStatus> {
+): Promise<BuilderStatus> {
   const running = await tmuxSessionExists(pi, state.tmuxSession, cwd);
   const backlog = running ? await captureBacklog(pi, cwd, state) : await readTailFromFile(state.logFile);
 
@@ -559,8 +559,8 @@ async function buildStatus(
     message: describeAction(action, state.agentName, running, alreadyRunning),
     pairId: state.pairId,
     projectRoot: state.projectRoot,
-    leadSessionId: state.leadSessionId,
-    leadSessionFile: state.leadSessionFile,
+    plannerSessionId: state.plannerSessionId,
+    plannerSessionFile: state.plannerSessionFile,
     tmuxSession: state.tmuxSession,
     tmuxSessionId: state.tmuxSessionId,
     tmuxWindowId: state.tmuxWindowId,
@@ -583,24 +583,24 @@ async function buildStatus(
   };
 }
 
-export async function startWorker(
+export async function startBuilder(
   pi: ExtensionAPI,
   cwd: string,
-  settings: LeadWorkerSettings,
-  leadSession: LeadSessionBinding,
-): Promise<WorkerStatus> {
+  settings: PlannerBuilderSettings,
+  plannerSession: PlannerSessionBinding,
+): Promise<BuilderStatus> {
   await ensureTmuxAvailable(pi, cwd);
-  const { paths, desiredState, existingState, warnings } = await resolveState(pi, cwd, settings, leadSession);
+  const { paths, desiredState, existingState, warnings } = await resolveState(pi, cwd, settings, plannerSession);
 
   if (await tmuxSessionExists(pi, desiredState.tmuxSession, cwd)) {
     const liveState = existingState ?? desiredState;
     const nextWarnings = existingState
       ? warnings
-      : [...warnings, "Worker tmux session is already running, but worker-state.json is missing; reported model/thinking may reflect current settings rather than the live worker process."];
+      : [...warnings, "Builder tmux session is already running, but builder-state.json is missing; reported model/thinking may reflect current settings rather than the live builder process."];
     return buildStatus(pi, cwd, "start", liveState, nextWarnings, true);
   }
 
-  await writeRuntimeFiles(paths, settings, leadSession);
+  await writeRuntimeFiles(paths, settings, plannerSession);
 
   const started = await exec(
     pi,
@@ -625,7 +625,7 @@ export async function startWorker(
   }
 
   const metadata = parseNewSessionMetadata(started.stdout);
-  const nextState = withStateOverrides(paths, settings, leadSession, desiredState, {
+  const nextState = withStateOverrides(paths, settings, plannerSession, desiredState, {
     tmuxSessionId: metadata.sessionId,
     tmuxWindowId: metadata.windowId,
     tmuxPaneId: metadata.paneId,
@@ -637,7 +637,7 @@ export async function startWorker(
   if (nextState.tmuxPaneId) {
     const pipeResult = await exec(pi, "tmux", ["pipe-pane", "-t", nextState.tmuxPaneId, "-o", `cat >> ${shellQuote(paths.logFile)}`], cwd);
     if (pipeResult.code !== 0) {
-      pipeWarnings.push(`tmux pipe-pane failed (exit ${pipeResult.code}): worker log capture may be missing.`);
+      pipeWarnings.push(`tmux pipe-pane failed (exit ${pipeResult.code}): builder log capture may be missing.`);
     }
   }
 
@@ -650,34 +650,34 @@ export async function startWorker(
     [
       ...warnings,
       ...pipeWarnings,
-      "Startup is asynchronous. Once the worker socket is ready, use /worker build, lead_worker({ action: \"message\", ... }), lead_worker({ action: \"ask\", ... }), or lead_worker({ action: \"command\", ... }) from the paired lead session.",
+      "Startup is asynchronous. Once the builder socket is ready, use /builder build, planner_builder({ action: \"message\", ... }), planner_builder({ action: \"ask\", ... }), or planner_builder({ action: \"command\", ... }) from the paired planner session.",
     ],
   );
 }
 
-export async function getWorkerStatus(
+export async function getBuilderStatus(
   pi: ExtensionAPI,
   cwd: string,
-  settings: LeadWorkerSettings,
-  leadSession: LeadSessionBinding,
-): Promise<WorkerStatus> {
-  const { desiredState, existingState, warnings } = await resolveState(pi, cwd, settings, leadSession);
+  settings: PlannerBuilderSettings,
+  plannerSession: PlannerSessionBinding,
+): Promise<BuilderStatus> {
+  const { desiredState, existingState, warnings } = await resolveState(pi, cwd, settings, plannerSession);
   const running = await tmuxSessionExists(pi, desiredState.tmuxSession, cwd);
   const liveState = running && existingState ? existingState : desiredState;
   const nextWarnings = running && !existingState
-    ? [...warnings, "Worker tmux session is running, but worker-state.json is missing; reported model/thinking may reflect current settings rather than the live worker process."]
+    ? [...warnings, "Builder tmux session is running, but builder-state.json is missing; reported model/thinking may reflect current settings rather than the live builder process."]
     : warnings;
   return buildStatus(pi, cwd, "status", liveState, nextWarnings);
 }
 
-export async function stopWorker(
+export async function stopBuilder(
   pi: ExtensionAPI,
   cwd: string,
-  settings: LeadWorkerSettings,
-  leadSession: LeadSessionBinding,
-): Promise<WorkerStatus> {
+  settings: PlannerBuilderSettings,
+  plannerSession: PlannerSessionBinding,
+): Promise<BuilderStatus> {
   await ensureTmuxAvailable(pi, cwd);
-  const { paths, desiredState, existingState, warnings } = await resolveState(pi, cwd, settings, leadSession);
+  const { paths, desiredState, existingState, warnings } = await resolveState(pi, cwd, settings, plannerSession);
   const state = existingState ?? desiredState;
 
   if (await tmuxSessionExists(pi, state.tmuxSession, cwd)) {
@@ -687,7 +687,7 @@ export async function stopWorker(
     }
   }
 
-  const nextState = withStateOverrides(paths, settings, leadSession, state, {
+  const nextState = withStateOverrides(paths, settings, plannerSession, state, {
     lastStoppedAt: new Date().toISOString(),
     pendingClarification: undefined,
   });
@@ -696,7 +696,7 @@ export async function stopWorker(
   } catch (error) {
     const code = (error as NodeJS.ErrnoException | undefined)?.code;
     if (code !== "ENOENT") {
-      throw new Error(`Failed to remove worker socket ${paths.socketPath}: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`Failed to remove builder socket ${paths.socketPath}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

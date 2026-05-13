@@ -5,7 +5,7 @@ import type { PairMessageV2 } from "./protocol.js";
 import {
   formatExecutionUpdateForSupervision,
   hasFailedValidation,
-  isHighSignalWorkerEvent,
+  isHighSignalBuilderEvent,
   parseExecutionUpdatePayload,
 } from "./execution-updates.js";
 import {
@@ -30,14 +30,14 @@ export type SendOneWayEvent = (
 
 const SUPERVISOR_DECISION_TOOL = {
   name: "report_supervisor_decision",
-  description: "Report the supervisor decision for the current worker execution state",
+  description: "Report the supervisor decision for the current builder execution state",
   parameters: Type.Object({
     action: Type.Union([
       Type.Literal("continue"),
       Type.Literal("steer"),
       Type.Literal("done"),
       Type.Literal("escalate"),
-    ], { description: "continue: worker is on track; steer: inject a correction; done: goal is met; escalate: surface to human" }),
+    ], { description: "continue: builder is on track; steer: inject a correction; done: goal is met; escalate: surface to human" }),
     message: Type.Optional(Type.String({ description: "Required for steer and escalate: the message to inject or surface" })),
     confidence: Type.Number({ description: "Confidence in this decision, 0.0-1.0" }),
     reasoning: Type.String({ description: "Brief reasoning" }),
@@ -74,7 +74,7 @@ export async function synthesizeOutcome(
       .trim();
     return text || truncate(handoffSpec, 500);
   } catch (error) {
-    console.warn("[lead-worker] synthesizeOutcome failed:", error instanceof Error ? error.message : String(error));
+    console.warn("[planner-builder] synthesizeOutcome failed:", error instanceof Error ? error.message : String(error));
     return truncate(handoffSpec, 500);
   }
 }
@@ -130,7 +130,7 @@ function upsertQueuedEvent(supervised: ActiveSupervisedHandoff, event: PairMessa
 
   const terminalIndex = queuedTerminalIndex(supervised.pendingEvents);
   if (terminalIndex < 0) {
-    throw new Error("Lead supervision queue entered an invalid terminal state.");
+    throw new Error("Planner supervision queue entered an invalid terminal state.");
   }
   supervised.pendingEvents.splice(terminalIndex, 0, event);
 }
@@ -154,29 +154,29 @@ function enqueueSupervisionEvent(supervised: ActiveSupervisedHandoff, event: Pai
   }
 
   if (supervised.pendingEvents.length > MAX_PENDING_SUPERVISION_EVENTS) {
-    throw new Error(`Lead supervision queue exceeded bound of ${MAX_PENDING_SUPERVISION_EVENTS} events.`);
+    throw new Error(`Planner supervision queue exceeded bound of ${MAX_PENDING_SUPERVISION_EVENTS} events.`);
   }
 }
 
-export async function resolveLeadSupervisionModel(ctx: ExtensionContext): Promise<{ model: NonNullable<ReturnType<ExtensionContext["modelRegistry"]["find"]>>; apiKey: string }> {
-  const provider = rt.lastObservedLeadModel.provider ?? ctx.model?.provider;
-  const modelId = rt.lastObservedLeadModel.modelId ?? ctx.model?.id;
+export async function resolvePlannerSupervisionModel(ctx: ExtensionContext): Promise<{ model: NonNullable<ReturnType<ExtensionContext["modelRegistry"]["find"]>>; apiKey: string }> {
+  const provider = rt.lastObservedPlannerModel.provider ?? ctx.model?.provider;
+  const modelId = rt.lastObservedPlannerModel.modelId ?? ctx.model?.id;
   if (!provider || !modelId) {
-    throw new Error("Lead supervision requires an active lead model, but none is currently selected.");
+    throw new Error("Planner supervision requires an active planner model, but none is currently selected.");
   }
 
   const model = ctx.modelRegistry.find(provider, modelId);
   if (!model) {
-    throw new Error(`Lead supervision requires the active lead model ${provider}/${modelId} to be present in the local registry.`);
+    throw new Error(`Planner supervision requires the active planner model ${provider}/${modelId} to be present in the local registry.`);
   }
 
   const registry = ctx.modelRegistry as unknown as Record<string, unknown>;
   if (typeof registry.getApiKeyAndHeaders !== "function") {
-    throw new Error("Lead supervision requires modelRegistry.getApiKeyAndHeaders (unavailable in current runtime).");
+    throw new Error("Planner supervision requires modelRegistry.getApiKeyAndHeaders (unavailable in current runtime).");
   }
   const auth = await (registry.getApiKeyAndHeaders as (m: unknown) => Promise<{ ok?: boolean; apiKey?: string }>)(model);
   if (!auth?.ok || !auth.apiKey) {
-    throw new Error(`Lead supervision requires API credentials for the active lead model ${provider}/${modelId}.`);
+    throw new Error(`Planner supervision requires API credentials for the active planner model ${provider}/${modelId}.`);
   }
 
   return { model, apiKey: auth.apiKey };
@@ -184,7 +184,7 @@ export async function resolveLeadSupervisionModel(ctx: ExtensionContext): Promis
 
 function formatEventForSupervision(event: PairMessageV2): string {
   const eventName = event.name ?? "";
-  if (isHighSignalWorkerEvent(eventName)) {
+  if (isHighSignalBuilderEvent(eventName)) {
     try {
       return formatExecutionUpdateForSupervision(parseExecutionUpdatePayload(event.payload, eventName));
     } catch (error) {
@@ -197,7 +197,7 @@ function formatEventForSupervision(event: PairMessageV2): string {
 function recentEventsHaveCompletedFailure(supervised: ActiveSupervisedHandoff): boolean {
   return supervised.recentEvents.some((event) => {
     const eventName = event.name ?? "";
-    if (eventName !== "completed" || !isHighSignalWorkerEvent(eventName)) return false;
+    if (eventName !== "completed" || !isHighSignalBuilderEvent(eventName)) return false;
     try {
       return hasFailedValidation(parseExecutionUpdatePayload(event.payload, eventName));
     } catch {
@@ -206,7 +206,7 @@ function recentEventsHaveCompletedFailure(supervised: ActiveSupervisedHandoff): 
   });
 }
 
-async function analyzeWorkerEvent(
+async function analyzeBuilderEvent(
   model: NonNullable<ReturnType<ExtensionContext["modelRegistry"]["find"]>>,
   supervised: ActiveSupervisedHandoff,
   apiKey: string,
@@ -223,15 +223,15 @@ async function analyzeWorkerEvent(
     model,
     {
       systemPrompt: [
-        "You are the lead-side supervisor for a lead-worker coding session.",
-        "Analyze the worker's progress against the stated outcome and decide what to do.",
+        "You are the planner-side supervisor for a planner-builder coding session.",
+        "Analyze the builder's progress against the stated outcome and decide what to do.",
         pendingClarification
-          ? "The worker is explicitly waiting for clarification from the lead. While clarification is pending, prefer continue rather than steer or escalate unless there is clear evidence the task is irrecoverably off track."
+          ? "The builder is explicitly waiting for clarification from the planner. While clarification is pending, prefer continue rather than steer or escalate unless there is clear evidence the task is irrecoverably off track."
           : "",
         completedWithFailedValidation
-          ? "A worker event claimed completion but included failed validation. Do not treat that as a clean success."
+          ? "A builder event claimed completion but included failed validation. Do not treat that as a clean success."
           : "",
-        stagnating ? `The worker has been steered ${supervised.steerCount} times without completing. Lean toward escalate.` : "",
+        stagnating ? `The builder has been steered ${supervised.steerCount} times without completing. Lean toward escalate.` : "",
         "You MUST call the report_supervisor_decision tool.",
       ].filter(Boolean).join(" "),
       messages: [
@@ -248,7 +248,7 @@ async function analyzeWorkerEvent(
                 "",
                 formatPendingClarificationForSupervisor(supervised),
                 "",
-                "Recent worker events:",
+                "Recent builder events:",
                 recentEventText || "(none yet)",
               ].join("\n"),
             },
@@ -263,7 +263,7 @@ async function analyzeWorkerEvent(
 
   const toolCall = response.content.find((c: any) => c.type === "toolCall" && c.name === SUPERVISOR_DECISION_TOOL.name);
   if (!toolCall || toolCall.type !== "toolCall") {
-    throw new Error("Lead supervision analysis did not return a report_supervisor_decision tool call.");
+    throw new Error("Planner supervision analysis did not return a report_supervisor_decision tool call.");
   }
   const args = toolCall.arguments as Record<string, unknown>;
   return {
@@ -274,7 +274,7 @@ async function analyzeWorkerEvent(
   };
 }
 
-async function processLeadSupervisionEvent(
+async function processPlannerSupervisionEvent(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   supervised: ActiveSupervisedHandoff,
@@ -294,11 +294,11 @@ async function processLeadSupervisionEvent(
     return;
   }
 
-  const { model, apiKey } = await resolveLeadSupervisionModel(ctx);
+  const { model, apiKey } = await resolvePlannerSupervisionModel(ctx);
 
   let decision: SupervisorDecision;
   if (isTerminal) {
-    decision = await analyzeWorkerEvent(model, supervised, apiKey);
+    decision = await analyzeBuilderEvent(model, supervised, apiKey);
     if (decision.action === "steer") {
       decision = { action: "escalate", confidence: decision.confidence, reasoning: `terminal event with steer suggestion converted to escalate: ${decision.reasoning}` };
     }
@@ -307,7 +307,7 @@ async function processLeadSupervisionEvent(
     decision = { action: "escalate", confidence: 1, reasoning: "stagnation threshold reached" };
     rt.activeSupervisedHandoff = undefined;
   } else {
-    decision = await analyzeWorkerEvent(model, supervised, apiKey);
+    decision = await analyzeBuilderEvent(model, supervised, apiKey);
   }
 
   if (decision.action === "continue") return;
@@ -323,20 +323,20 @@ async function processLeadSupervisionEvent(
       });
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
-      throw new Error(`Lead supervision failed to deliver steer message: ${err.message}`);
+      throw new Error(`Planner supervision failed to deliver steer message: ${err.message}`);
     }
     return;
   }
 
   if (decision.action === "done") {
-    ctx.hasUI && ctx.ui.notify(`Lead-worker supervision: outcome achieved for handoff ${supervised.id.slice(0, 8)}.`, "info");
+    ctx.hasUI && ctx.ui.notify(`Planner-builder supervision: outcome achieved for handoff ${supervised.id.slice(0, 8)}.`, "info");
     rt.activeSupervisedHandoff = undefined;
     return;
   }
 
   if (decision.action === "escalate") {
     const summary = [
-      `Lead-worker supervision escalating handoff ${supervised.id.slice(0, 8)} — needs your attention.`,
+      `Planner-builder supervision escalating handoff ${supervised.id.slice(0, 8)} — needs your attention.`,
       `Outcome: ${supervised.outcome}`,
       `Steer count: ${supervised.steerCount}`,
       decision.message ? `Reason: ${decision.message}` : `Reason: ${decision.reasoning}`,
@@ -350,7 +350,7 @@ async function processLeadSupervisionEvent(
         `steer_count: ${supervised.steerCount}`,
         `reason: ${decision.message ?? decision.reasoning}`,
         "",
-        "Review the latest worker events and decide the next action.",
+        "Review the latest builder events and decide the next action.",
       ].join("\n"),
       { deliverAs: "followUp" },
     );
@@ -358,13 +358,13 @@ async function processLeadSupervisionEvent(
   }
 }
 
-export async function maybeRunLeadSupervision(
+export async function maybeRunPlannerSupervision(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   event: PairMessageV2,
   sendOneWayEvent: SendOneWayEvent,
 ): Promise<void> {
-  if (currentPairRole() !== "lead") return;
+  if (currentPairRole() !== "planner") return;
   const supervised = rt.activeSupervisedHandoff;
   if (!supervised) return;
   if (event.handoffId && event.handoffId !== supervised.id) return;
@@ -380,14 +380,14 @@ export async function maybeRunLeadSupervision(
     while (rt.activeSupervisedHandoff === supervised && supervised.pendingEvents.length > 0) {
       const nextEvent = supervised.pendingEvents.shift();
       if (!nextEvent) continue;
-      await processLeadSupervisionEvent(pi, ctx, supervised, nextEvent, sendOneWayEvent);
+      await processPlannerSupervisionEvent(pi, ctx, supervised, nextEvent, sendOneWayEvent);
     }
   } catch (error) {
     if (rt.activeSupervisedHandoff === supervised) {
       rt.activeSupervisedHandoff = undefined;
     }
     const err = error instanceof Error ? error : new Error(String(error));
-    throw new Error(`Lead supervision failed for handoff ${supervised.id}: ${err.message}`);
+    throw new Error(`Planner supervision failed for handoff ${supervised.id}: ${err.message}`);
   } finally {
     if (rt.activeSupervisedHandoff === supervised) {
       supervised.supervisionRunning = false;

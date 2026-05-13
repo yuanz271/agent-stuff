@@ -17,10 +17,10 @@ import {
   type PairRole,
 } from "./protocol.js";
 import {
-  getWorkerStatus,
+  getBuilderStatus,
   resolvePairRuntimePaths,
-  startWorker,
-  type WorkerStatus,
+  startBuilder,
+  type BuilderStatus,
 } from "./utils.js";
 import {
   BUILD_HANDOFF_MESSAGE_TYPE,
@@ -34,15 +34,15 @@ import {
   rt,
   currentPairRole,
   getContextCwd,
-  getLeadSessionBinding,
+  getPlannerSessionBinding,
   isTerminalSupervisionEvent,
-  leadConfig,
+  plannerConfig,
   pairedRole,
   refreshSettings,
   truncate,
   type ActiveConnection,
   type ActiveSupervisedHandoff,
-  type LeadWorkerControlAction,
+  type PlannerBuilderControlAction,
   type PendingInboundRequest,
   type PendingRpc,
 } from "./runtime.js";
@@ -56,21 +56,21 @@ import {
 } from "./control.js";
 import {
   deliverIncomingProtocolMessage,
-  formatWorkerStatusReply,
-  inferWorkerEventName,
-  maybeAutoReportWorkerCompletion,
-  maybeRelayWorkerEventToUser,
+  formatBuilderStatusReply,
+  inferBuilderEventName,
+  maybeAutoReportBuilderCompletion,
+  maybeRelayBuilderEventToUser,
   promptForReply,
-  queryWorkerStatusPassive,
+  queryBuilderStatusPassive,
 } from "./relay.js";
 import {
-  maybeRunLeadSupervision,
-  resolveLeadSupervisionModel,
+  maybeRunPlannerSupervision,
+  resolvePlannerSupervisionModel,
   synthesizeOutcome,
 } from "./supervision.js";
 import {
   buildExecutionUpdatePayload,
-  isHighSignalWorkerEvent,
+  isHighSignalBuilderEvent,
   parseExecutionUpdatePayload,
   type ExecutionUpdatePayload,
   type HighSignalUpdateStatus,
@@ -122,13 +122,13 @@ function stripBenignRedirects(command: string): string {
     .replace(/(^|[\s;|&])(?:[12]?>&[12])(?=$|[\s;|&])/g, "$1");
 }
 
-function isSafeLeadBash(command: string): boolean {
+function isSafePlannerBash(command: string): boolean {
   const commandForMutatingChecks = stripBenignRedirects(command);
   return !CORE_BLOCKED_BASH_PATTERNS.some((pattern) => pattern.test(commandForMutatingChecks));
 }
 
-function workerSessionReference(): string {
-  return "the paired worker session";
+function builderSessionReference(): string {
+  return "the paired builder session";
 }
 
 function notify(ctx: ExtensionContext | undefined, message: string, severity: "info" | "warning" | "error" = "info"): void {
@@ -137,13 +137,13 @@ function notify(ctx: ExtensionContext | undefined, message: string, severity: "i
 
 function requireLatestPairContext(): ExtensionContext {
   const ctx = rt.latestPairContext;
-  if (!ctx) throw new Error("No active extension context available for lead-worker message handling.");
+  if (!ctx) throw new Error("No active extension context available for planner-builder message handling.");
   return ctx;
 }
 
-function scheduleLeadSupervision(pi: ExtensionAPI, ctx: ExtensionContext, message: PairMessageV2): void {
-  void maybeRunLeadSupervision(pi, ctx, message, sendOneWayEvent).catch((err) => {
-    notify(ctx, `lead-worker supervision error: ${err instanceof Error ? err.message : String(err)}`, "warning");
+function schedulePlannerSupervision(pi: ExtensionAPI, ctx: ExtensionContext, message: PairMessageV2): void {
+  void maybeRunPlannerSupervision(pi, ctx, message, sendOneWayEvent).catch((err) => {
+    notify(ctx, `planner-builder supervision error: ${err instanceof Error ? err.message : String(err)}`, "warning");
   });
 }
 
@@ -170,13 +170,13 @@ function rejectAllPendingRpc(reason: string): void {
 }
 
 function activeSocketForRole(role: PairRole): Socket | undefined {
-  return role === "lead" ? rt.activeConnection?.socket : rt.activeLeadSocket;
+  return role === "planner" ? rt.activeConnection?.socket : rt.activePlannerSocket;
 }
 
-function markPendingWorkerHandoffTerminalEvent(message: PairMessageV2): void {
-  const pending = rt.pendingWorkerHandoff;
+function markPendingBuilderHandoffTerminalEvent(message: PairMessageV2): void {
+  const pending = rt.pendingBuilderHandoff;
   if (!pending) return;
-  if (message.from !== "worker" || message.type !== "event") return;
+  if (message.from !== "builder" || message.type !== "event") return;
   if (!isTerminalSupervisionEvent(message.name ?? "")) return;
   if (message.handoffId !== pending.id) return;
   pending.terminalEventSentAtMs = Date.now();
@@ -184,27 +184,27 @@ function markPendingWorkerHandoffTerminalEvent(message: PairMessageV2): void {
 
 function sendProtocolMessage(socket: Socket, message: PairMessageV2): void {
   writeMessage(socket, message);
-  markPendingWorkerHandoffTerminalEvent(message);
+  markPendingBuilderHandoffTerminalEvent(message);
 }
 
-function currentWorkerExecutionUpdateDefaults() {
+function currentBuilderExecutionUpdateDefaults() {
   return {
-    handoffId: rt.pendingWorkerHandoff?.id,
-    handoffArtifactPath: rt.pendingWorkerHandoff?.artifactPath,
-    handoffArtifactSha256: rt.pendingWorkerHandoff?.artifactSha256,
+    handoffId: rt.pendingBuilderHandoff?.id,
+    handoffArtifactPath: rt.pendingBuilderHandoff?.artifactPath,
+    handoffArtifactSha256: rt.pendingBuilderHandoff?.artifactSha256,
   };
 }
 
-function normalizeWorkerExecutionUpdatePayload(
+function normalizeBuilderExecutionUpdatePayload(
   status: HighSignalUpdateStatus,
   rawPayload: unknown,
 ): ExecutionUpdatePayload {
   if (typeof rawPayload !== "object" || rawPayload === null || Array.isArray(rawPayload)) {
-    throw new Error(`worker ${status} event requires a structured payload object`);
+    throw new Error(`builder ${status} event requires a structured payload object`);
   }
 
   const candidate: Record<string, unknown> = { ...(rawPayload as Record<string, unknown>) };
-  const defaults = currentWorkerExecutionUpdateDefaults();
+  const defaults = currentBuilderExecutionUpdateDefaults();
   if (candidate.handoffId === undefined && defaults.handoffId) {
     candidate.handoffId = defaults.handoffId;
   }
@@ -239,7 +239,7 @@ async function resolveRuntimeContext(pi: ExtensionAPI, ctx: ExtensionContext): P
   };
 }
 
-function isRetryableWorkerSocketError(error: Error): boolean {
+function isRetryableBuilderSocketError(error: Error): boolean {
   const code = (error as NodeJS.ErrnoException | undefined)?.code;
   return code === "ENOENT" || code === "ECONNREFUSED" || code === "ECONNRESET";
 }
@@ -269,7 +269,7 @@ async function waitForSocketConnect(socket: Socket): Promise<void> {
   });
 }
 
-async function connectToWorkerSocket(socketPath: string, timeoutMs = SOCKET_WAIT_TIMEOUT_MS): Promise<Socket> {
+async function connectToBuilderSocket(socketPath: string, timeoutMs = SOCKET_WAIT_TIMEOUT_MS): Promise<Socket> {
   const deadline = Date.now() + timeoutMs;
   let lastError: Error | undefined;
 
@@ -282,7 +282,7 @@ async function connectToWorkerSocket(socketPath: string, timeoutMs = SOCKET_WAIT
       socket.destroy();
       const err = error instanceof Error ? error : new Error(String(error));
       lastError = err;
-      if (!isRetryableWorkerSocketError(err) || Date.now() + SOCKET_WAIT_INTERVAL_MS >= deadline) {
+      if (!isRetryableBuilderSocketError(err) || Date.now() + SOCKET_WAIT_INTERVAL_MS >= deadline) {
         break;
       }
       await delay(SOCKET_WAIT_INTERVAL_MS);
@@ -290,50 +290,50 @@ async function connectToWorkerSocket(socketPath: string, timeoutMs = SOCKET_WAIT
   }
 
   throw new Error(
-    `Failed to connect to worker socket ${socketPath} within ${timeoutMs}ms${lastError ? `: ${lastError.message}` : "."}`,
+    `Failed to connect to builder socket ${socketPath} within ${timeoutMs}ms${lastError ? `: ${lastError.message}` : "."}`,
   );
 }
 
-function queuedWorkerEventsPath(protocolDir: string): string {
+function queuedBuilderEventsPath(protocolDir: string): string {
   return join(protocolDir, "pending-events.json");
 }
 
-function validateQueuedWorkerEvent(value: unknown): PairMessageV2 {
+function validateQueuedBuilderEvent(value: unknown): PairMessageV2 {
   const message = validateMessage(value);
   if (message.type !== "event") throw new Error(`Queued message ${message.id} must be an event.`);
-  if (message.from !== "worker" || message.to !== "lead") {
-    throw new Error(`Queued message ${message.id} must be worker→lead.`);
+  if (message.from !== "builder" || message.to !== "planner") {
+    throw new Error(`Queued message ${message.id} must be builder→planner.`);
   }
   return message;
 }
 
-async function loadQueuedWorkerEvents(protocolDir: string): Promise<PairMessageV2[]> {
-  const queuePath = queuedWorkerEventsPath(protocolDir);
+async function loadQueuedBuilderEvents(protocolDir: string): Promise<PairMessageV2[]> {
+  const queuePath = queuedBuilderEventsPath(protocolDir);
   let raw: string;
   try {
     raw = await fs.readFile(queuePath, "utf8");
   } catch (error) {
     const code = (error as NodeJS.ErrnoException | undefined)?.code;
     if (code === "ENOENT") return [];
-    throw new Error(`Failed to read queued worker events ${queuePath}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`Failed to read queued builder events ${queuePath}: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   const parsed: unknown = JSON.parse(raw);
   if (!Array.isArray(parsed)) {
-    throw new Error(`Queued worker events file ${queuePath} must contain a JSON array.`);
+    throw new Error(`Queued builder events file ${queuePath} must contain a JSON array.`);
   }
-  return parsed.map(validateQueuedWorkerEvent);
+  return parsed.map(validateQueuedBuilderEvent);
 }
 
-async function saveQueuedWorkerEvents(protocolDir: string, events: PairMessageV2[]): Promise<void> {
-  const queuePath = queuedWorkerEventsPath(protocolDir);
+async function saveQueuedBuilderEvents(protocolDir: string, events: PairMessageV2[]): Promise<void> {
+  const queuePath = queuedBuilderEventsPath(protocolDir);
   if (events.length === 0) {
     try {
       await fs.unlink(queuePath);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException | undefined)?.code;
       if (code !== "ENOENT") {
-        throw new Error(`Failed to clear queued worker events ${queuePath}: ${error instanceof Error ? error.message : String(error)}`);
+        throw new Error(`Failed to clear queued builder events ${queuePath}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
     return;
@@ -343,54 +343,54 @@ async function saveQueuedWorkerEvents(protocolDir: string, events: PairMessageV2
   await fs.writeFile(queuePath, JSON.stringify(events, null, 2) + "\n", "utf8");
 }
 
-const workerEventQueueLocks = new Map<string, Promise<void>>();
+const builderEventQueueLocks = new Map<string, Promise<void>>();
 
 function withQueueLock<T>(protocolDir: string, fn: () => Promise<T>): Promise<T> {
-  const prev = workerEventQueueLocks.get(protocolDir) ?? Promise.resolve();
+  const prev = builderEventQueueLocks.get(protocolDir) ?? Promise.resolve();
   const next = prev.then(fn);
   const settled = next.then(
-    () => { if (workerEventQueueLocks.get(protocolDir) === settled) workerEventQueueLocks.delete(protocolDir); },
-    () => { if (workerEventQueueLocks.get(protocolDir) === settled) workerEventQueueLocks.delete(protocolDir); },
+    () => { if (builderEventQueueLocks.get(protocolDir) === settled) builderEventQueueLocks.delete(protocolDir); },
+    () => { if (builderEventQueueLocks.get(protocolDir) === settled) builderEventQueueLocks.delete(protocolDir); },
   );
-  workerEventQueueLocks.set(protocolDir, settled);
+  builderEventQueueLocks.set(protocolDir, settled);
   return next;
 }
 
-async function enqueueWorkerEvent(protocolDir: string, message: PairMessageV2): Promise<void> {
+async function enqueueBuilderEvent(protocolDir: string, message: PairMessageV2): Promise<void> {
   await withQueueLock(protocolDir, async () => {
-    const queued = await loadQueuedWorkerEvents(protocolDir);
+    const queued = await loadQueuedBuilderEvents(protocolDir);
     queued.push(message);
-    await saveQueuedWorkerEvents(protocolDir, queued);
+    await saveQueuedBuilderEvents(protocolDir, queued);
   });
-  markPendingWorkerHandoffTerminalEvent(message);
+  markPendingBuilderHandoffTerminalEvent(message);
 }
 
-async function flushQueuedWorkerEvents(protocolDir: string, socket: Socket, pairId: string): Promise<void> {
+async function flushQueuedBuilderEvents(protocolDir: string, socket: Socket, pairId: string): Promise<void> {
   await withQueueLock(protocolDir, async () => {
-    const queued = await loadQueuedWorkerEvents(protocolDir);
+    const queued = await loadQueuedBuilderEvents(protocolDir);
     if (queued.length === 0) return;
 
     let sent = 0;
     try {
       for (const message of queued) {
         if (message.pairId !== pairId) {
-          throw new Error(`Queued worker event ${message.id} has wrong pairId ${message.pairId}.`);
+          throw new Error(`Queued builder event ${message.id} has wrong pairId ${message.pairId}.`);
         }
         sendProtocolMessage(socket, message);
         sent++;
       }
     } catch (error) {
-      await saveQueuedWorkerEvents(protocolDir, queued.slice(sent));
+      await saveQueuedBuilderEvents(protocolDir, queued.slice(sent));
       throw error;
     }
 
-    await saveQueuedWorkerEvents(protocolDir, []);
+    await saveQueuedBuilderEvents(protocolDir, []);
   });
 }
 
-async function deliverWorkerEvent(protocolDir: string, socket: Socket | undefined, message: PairMessageV2): Promise<boolean> {
+async function deliverBuilderEvent(protocolDir: string, socket: Socket | undefined, message: PairMessageV2): Promise<boolean> {
   if (!socket || socket.destroyed) {
-    await enqueueWorkerEvent(protocolDir, message);
+    await enqueueBuilderEvent(protocolDir, message);
     return true;
   }
 
@@ -398,15 +398,15 @@ async function deliverWorkerEvent(protocolDir: string, socket: Socket | undefine
   return false;
 }
 
-function createAttachMessage(pairId: string, leadSessionId: string): PairMessageV2 {
+function createAttachMessage(pairId: string, plannerSessionId: string): PairMessageV2 {
   return createMessage({
     type: "command",
-    from: "lead",
-    to: "worker",
+    from: "planner",
+    to: "builder",
     pairId,
     name: "attach",
-    payload: { leadSessionId },
-    body: `Attach lead session ${leadSessionId}`,
+    payload: { plannerSessionId },
+    body: `Attach planner session ${plannerSessionId}`,
   });
 }
 
@@ -419,25 +419,25 @@ function onConnectionClosed(reason: string): void {
   rt.connectionError = reason;
 }
 
-async function ensureLeadConnection(
+async function ensurePlannerConnection(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   opts: { autoStart: boolean },
 ): Promise<ActiveConnection> {
-  if (currentPairRole() !== "lead") {
-    throw new Error("Only the lead session can initiate a worker socket connection.");
+  if (currentPairRole() !== "planner") {
+    throw new Error("Only the planner session can initiate a builder socket connection.");
   }
 
   const cwd = getContextCwd(ctx);
   const { settings } = await refreshSettings(cwd);
-  const leadSession = getLeadSessionBinding(ctx);
-  let worker = await getWorkerStatus(pi, cwd, settings, leadSession);
-  if (!worker.running) {
+  const plannerSession = getPlannerSessionBinding(ctx);
+  let builder = await getBuilderStatus(pi, cwd, settings, plannerSession);
+  if (!builder.running) {
     if (opts.autoStart) {
-      worker = await startWorker(pi, cwd, settings, leadSession);
-      updateStatusLine(ctx, worker);
+      builder = await startBuilder(pi, cwd, settings, plannerSession);
+      updateStatusLine(ctx, builder);
     } else {
-      throw new Error(`Worker ${worker.agentName} is not running.`);
+      throw new Error(`Builder ${builder.agentName} is not running.`);
     }
   }
 
@@ -453,25 +453,25 @@ async function ensureLeadConnection(
   if (rt.connectPromise) return rt.connectPromise;
 
   rt.connectPromise = (async () => {
-    const socket = await connectToWorkerSocket(runtime.socketPath);
+    const socket = await connectToBuilderSocket(runtime.socketPath);
     const connection: ActiveConnection = {
       socket,
       pairId: runtime.pairId,
       socketPath: runtime.socketPath,
       projectRoot: runtime.projectRoot,
-      leadSessionId: leadSession.sessionId,
+      plannerSessionId: plannerSession.sessionId,
     };
 
     const reader = createMessageReader(
       (message) => {
         void handleIncomingMessage(pi, message).catch((error) => {
           const err = error instanceof Error ? error : new Error(String(error));
-          ctx.hasUI && ctx.ui.notify(`lead-worker protocol failed: ${err.message}`, "error");
+          ctx.hasUI && ctx.ui.notify(`planner-builder protocol failed: ${err.message}`, "error");
           socket.destroy(err);
         });
       },
       (error) => {
-        ctx.hasUI && ctx.ui.notify(`lead-worker protocol failed: ${error.message}`, "error");
+        ctx.hasUI && ctx.ui.notify(`planner-builder protocol failed: ${error.message}`, "error");
         socket.destroy(error);
       },
     );
@@ -481,7 +481,7 @@ async function ensureLeadConnection(
       rt.connectionError = error.message;
     });
     socket.on("close", () => {
-      const reason = rt.connectionError ?? "Worker connection closed.";
+      const reason = rt.connectionError ?? "Builder connection closed.";
       onConnectionClosed(reason);
     });
 
@@ -489,9 +489,9 @@ async function ensureLeadConnection(
     rt.connectionError = undefined;
 
     try {
-      const attachReply = await startRpc(createAttachMessage(runtime.pairId, leadSession.sessionId), socket);
+      const attachReply = await startRpc(createAttachMessage(runtime.pairId, plannerSession.sessionId), socket);
       if (!attachReply.ok) {
-        throw new Error(attachReply.error ?? attachReply.body ?? "Failed to attach lead connection.");
+        throw new Error(attachReply.error ?? attachReply.body ?? "Failed to attach planner connection.");
       }
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
@@ -528,9 +528,9 @@ function startRpc(message: PairMessageV2, socket: Socket, timeoutMs = DEFAULT_RE
 }
 
 
-async function maybePrimeLeadConnection(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
-  if (currentPairRole() !== "lead") return;
-  await ensureLeadConnection(pi, ctx, { autoStart: false }).catch(() => undefined);
+async function maybePrimePlannerConnection(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+  if (currentPairRole() !== "planner") return;
+  await ensurePlannerConnection(pi, ctx, { autoStart: false }).catch(() => undefined);
 }
 
 function registerInboundRequest(message: PairMessageV2): void {
@@ -564,14 +564,14 @@ async function resolveModelSelection(ctx: ExtensionContext, ref: string) {
   return matches[0];
 }
 
-type WorkerCommandHandler = (
+type BuilderCommandHandler = (
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   message: PairMessageV2,
   sourceSocket?: Socket,
 ) => Promise<PairMessageV2>;
 
-function workerCommandPayload(message: PairMessageV2): Record<string, unknown> {
+function builderCommandPayload(message: PairMessageV2): Record<string, unknown> {
   return typeof message.payload === "object" && message.payload !== null
     ? (message.payload as Record<string, unknown>)
     : {};
@@ -592,15 +592,15 @@ function artifactMetaFields(artifactMeta: { artifactPath: string; artifactSha256
     : undefined;
 }
 
-function createWorkerReply(
+function createBuilderReply(
   message: PairMessageV2,
   body: string,
   extras: { payload?: unknown; handoffId?: string } = {},
 ): PairMessageV2 {
   return createMessage({
     type: "reply",
-    from: "worker",
-    to: "lead",
+    from: "builder",
+    to: "planner",
     pairId: message.pairId,
     replyTo: message.id,
     ok: true,
@@ -610,91 +610,91 @@ function createWorkerReply(
   });
 }
 
-async function runWorkerAttachCommand(
+async function runBuilderAttachCommand(
   _pi: ExtensionAPI,
   _ctx: ExtensionContext,
   message: PairMessageV2,
   sourceSocket?: Socket,
 ): Promise<PairMessageV2> {
   if (!sourceSocket) throw new Error("attach requires a source socket.");
-  const payload = workerCommandPayload(message);
-  const leadSessionId = typeof payload.leadSessionId === "string" && payload.leadSessionId.trim() ? payload.leadSessionId.trim() : "";
-  if (!leadSessionId) throw new Error("attach requires leadSessionId.");
+  const payload = builderCommandPayload(message);
+  const plannerSessionId = typeof payload.plannerSessionId === "string" && payload.plannerSessionId.trim() ? payload.plannerSessionId.trim() : "";
+  if (!plannerSessionId) throw new Error("attach requires plannerSessionId.");
 
-  const currentSocket = rt.activeLeadSocket;
-  const currentLeadSessionId = rt.activeLeadSessionId;
+  const currentSocket = rt.activePlannerSocket;
+  const currentPlannerSessionId = rt.activePlannerSessionId;
   if (currentSocket && currentSocket !== sourceSocket && !currentSocket.destroyed) {
-    if (currentLeadSessionId !== leadSessionId) {
-      throw new Error("worker is already attached to another active lead connection");
+    if (currentPlannerSessionId !== plannerSessionId) {
+      throw new Error("builder is already attached to another active planner connection");
     }
-    rt.activeLeadSocket = sourceSocket;
-    rt.activeLeadSessionId = leadSessionId;
-    currentSocket.destroy(new Error("Superseded by reconnect from same lead session."));
+    rt.activePlannerSocket = sourceSocket;
+    rt.activePlannerSessionId = plannerSessionId;
+    currentSocket.destroy(new Error("Superseded by reconnect from same planner session."));
   } else {
-    rt.activeLeadSocket = sourceSocket;
-    rt.activeLeadSessionId = leadSessionId;
+    rt.activePlannerSocket = sourceSocket;
+    rt.activePlannerSessionId = plannerSessionId;
   }
 
-  return createWorkerReply(message, `Attached lead session ${leadSessionId}.`, {
-    payload: { leadSessionId },
+  return createBuilderReply(message, `Attached planner session ${plannerSessionId}.`, {
+    payload: { plannerSessionId },
   });
 }
 
-async function runWorkerStatusCommand(
+async function runBuilderStatusCommand(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   message: PairMessageV2,
 ): Promise<PairMessageV2> {
-  return createWorkerReply(message, formatWorkerStatusReply(pi, ctx), {
-    payload: { pendingHandoffId: rt.pendingWorkerHandoff?.id },
+  return createBuilderReply(message, formatBuilderStatusReply(pi, ctx), {
+    payload: { pendingHandoffId: rt.pendingBuilderHandoff?.id },
   });
 }
 
-async function runWorkerInterruptCommand(
+async function runBuilderInterruptCommand(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   message: PairMessageV2,
 ): Promise<PairMessageV2> {
   await clearPendingClarification(pi, ctx);
   await ctx.abort();
-  return createWorkerReply(message, "Worker interrupt requested.");
+  return createBuilderReply(message, "Builder interrupt requested.");
 }
 
-async function runWorkerThinkingCommand(
+async function runBuilderThinkingCommand(
   pi: ExtensionAPI,
   _ctx: ExtensionContext,
   message: PairMessageV2,
 ): Promise<PairMessageV2> {
-  const payload = workerCommandPayload(message);
+  const payload = builderCommandPayload(message);
   const level = payloadTextValue(payload, "level", message.body);
   if (!["off", "minimal", "low", "medium", "high", "xhigh"].includes(level)) {
     throw new Error(`Invalid thinking level '${level}'.`);
   }
   pi.setThinkingLevel(level as ThinkingLevel);
-  return createWorkerReply(message, `Worker thinking level set to ${level}.`);
+  return createBuilderReply(message, `Builder thinking level set to ${level}.`);
 }
 
-async function runWorkerModelCommand(
+async function runBuilderModelCommand(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   message: PairMessageV2,
 ): Promise<PairMessageV2> {
-  const payload = workerCommandPayload(message);
+  const payload = builderCommandPayload(message);
   const ref = payloadTextValue(payload, "ref", message.body);
   const model = await resolveModelSelection(ctx, ref);
   const ok = await pi.setModel(model);
   if (!ok) throw new Error(`No API key available for ${model.provider}/${model.id}.`);
-  return createWorkerReply(message, `Worker model set to ${model.provider}/${model.id}.`);
+  return createBuilderReply(message, `Builder model set to ${model.provider}/${model.id}.`);
 }
 
-async function runWorkerHandoffCommand(
+async function runBuilderHandoffCommand(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   message: PairMessageV2,
 ): Promise<PairMessageV2> {
-  const payload = workerCommandPayload(message);
+  const payload = builderCommandPayload(message);
   const handoffId = optionalPayloadString(payload, "handoffId") ?? message.handoffId;
-  if (!handoffId) throw new Error("handoffId is required for worker handoff command.");
+  if (!handoffId) throw new Error("handoffId is required for builder handoff command.");
 
   const runtime = await resolveRuntimeContext(pi, ctx);
   const summary = optionalPayloadString(payload, "summary");
@@ -712,7 +712,7 @@ async function runWorkerHandoffCommand(
       summary,
     });
   } else {
-    if (!handoffText) throw new Error("handoff artifact metadata or inline handoff text is required for worker handoff command.");
+    if (!handoffText) throw new Error("handoff artifact metadata or inline handoff text is required for builder handoff command.");
     steerText = [
       "[LEAD-WORKER HANDOFF]",
       `handoff_id: ${handoffId}`,
@@ -724,7 +724,7 @@ async function runWorkerHandoffCommand(
   const artifactFields = artifactMetaFields(artifactMeta);
 
   await clearPendingClarification(pi, ctx);
-  rt.pendingWorkerHandoff = {
+  rt.pendingBuilderHandoff = {
     id: handoffId,
     receivedAtMs: Date.now(),
     pairId: message.pairId,
@@ -745,7 +745,7 @@ async function runWorkerHandoffCommand(
     { triggerTurn: true, deliverAs: "steer" },
   );
 
-  return createWorkerReply(
+  return createBuilderReply(
     message,
     artifactMeta ? `Accepted handoff ${handoffId} via artifact ${artifactMeta.artifactPath}.` : `Accepted handoff ${handoffId}.`,
     {
@@ -755,71 +755,71 @@ async function runWorkerHandoffCommand(
   );
 }
 
-async function runWorkerSlashCommand(
+async function runBuilderSlashCommand(
   pi: ExtensionAPI,
   _ctx: ExtensionContext,
   message: PairMessageV2,
 ): Promise<PairMessageV2> {
-  const payload = workerCommandPayload(message);
+  const payload = builderCommandPayload(message);
   const commandText = optionalPayloadString(payload, "command") ?? (message.body ?? "").trim();
   if (!commandText.startsWith("/")) {
-    throw new Error("worker slash command must start with '/'.");
+    throw new Error("builder slash command must start with '/'.");
   }
 
   const [commandName] = commandText.slice(1).split(/\s+/, 1);
   if (!commandName) {
-    throw new Error("worker slash command name is required.");
+    throw new Error("builder slash command name is required.");
   }
 
   const registered = pi.getCommands().some((command) => command.name === commandName);
   if (!registered) {
-    throw new Error(`Worker slash command '/${commandName}' is not registered in the current worker session.`);
+    throw new Error(`Builder slash command '/${commandName}' is not registered in the current builder session.`);
   }
 
   await pi.sendUserMessage(commandText);
-  return createWorkerReply(
+  return createBuilderReply(
     message,
-    `Submitted worker slash command ${commandText} (fire-and-forget; async failures will not be reported back).`,
+    `Submitted builder slash command ${commandText} (fire-and-forget; async failures will not be reported back).`,
     { payload: { command: commandText } },
   );
 }
 
-const WORKER_COMMAND_HANDLERS: Record<string, WorkerCommandHandler> = {
-  attach: runWorkerAttachCommand,
-  status: runWorkerStatusCommand,
-  interrupt: runWorkerInterruptCommand,
-  thinking: runWorkerThinkingCommand,
-  model: runWorkerModelCommand,
-  handoff: runWorkerHandoffCommand,
-  slash_command: runWorkerSlashCommand,
+const BUILDER_COMMAND_HANDLERS: Record<string, BuilderCommandHandler> = {
+  attach: runBuilderAttachCommand,
+  status: runBuilderStatusCommand,
+  interrupt: runBuilderInterruptCommand,
+  thinking: runBuilderThinkingCommand,
+  model: runBuilderModelCommand,
+  handoff: runBuilderHandoffCommand,
+  slash_command: runBuilderSlashCommand,
 };
 
-async function handleWorkerCommand(
+async function handleBuilderCommand(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   message: PairMessageV2,
   sourceSocket?: Socket,
 ): Promise<PairMessageV2> {
   const name = message.name ?? "";
-  const handler = WORKER_COMMAND_HANDLERS[name];
+  const handler = BUILDER_COMMAND_HANDLERS[name];
   if (!handler) {
-    throw new Error(`Unknown worker command '${name}'.`);
+    throw new Error(`Unknown builder command '${name}'.`);
   }
   return handler(pi, ctx, message, sourceSocket);
 }
 
-async function handleLeadCommand(_pi: ExtensionAPI, _ctx: ExtensionContext, message: PairMessageV2): Promise<PairMessageV2> {
-  throw new Error(`Lead command '${message.name ?? ""}' is not implemented.`);
+async function handlePlannerCommand(_pi: ExtensionAPI, _ctx: ExtensionContext, message: PairMessageV2): Promise<PairMessageV2> {
+  throw new Error(`Planner command '${message.name ?? ""}' is not implemented.`);
 }
 
 function activeConnectionMatches(role: PairRole, message: PairMessageV2, sourceSocket?: Socket): boolean {
-  if (role === "lead") {
+  if (role === "planner") {
     return !!rt.activeConnection && rt.activeConnection.pairId === message.pairId;
   }
-  return !!rt.activeLeadSocket && rt.activeLeadSocket === sourceSocket && rt.workerServerPairId === message.pairId;
+  return !!rt.activePlannerSocket && rt.activePlannerSocket === sourceSocket && rt.builderServerPairId === message.pairId;
 }
 
-async function handleWorkerAttachCommand(
+async function handleBuilderAttachCommand(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   message: PairMessageV2,
@@ -827,9 +827,9 @@ async function handleWorkerAttachCommand(
 ): Promise<void> {
   const socket = sourceSocket;
   if (!socket) throw new Error("attach requires a source socket.");
-  const reply = await handleWorkerCommand(pi, ctx, message, socket);
+  const reply = await handleBuilderCommand(pi, ctx, message, socket);
   sendProtocolMessage(socket, reply);
-  await flushQueuedWorkerEvents((await resolveRuntimeContext(pi, ctx)).protocolDir, socket, message.pairId);
+  await flushQueuedBuilderEvents((await resolveRuntimeContext(pi, ctx)).protocolDir, socket, message.pairId);
 }
 
 function handleIncomingReply(
@@ -842,45 +842,45 @@ function handleIncomingReply(
   const pending = rt.pendingRpc.get(replyTo);
   if (pending) {
     clearPendingRpc(replyTo);
-    if (role === "worker" && rt.pendingClarification?.replyTo === replyTo) {
+    if (role === "builder" && rt.pendingClarification?.replyTo === replyTo) {
       void clearPendingClarification(pi, ctx).catch((err) => {
-        notify(ctx, `lead-worker clarification state clear failed: ${err instanceof Error ? err.message : String(err)}`, "warning");
+        notify(ctx, `planner-builder clarification state clear failed: ${err instanceof Error ? err.message : String(err)}`, "warning");
       });
     }
     pending.resolve(message);
     return;
   }
   if (message.replyTo && rt.expiredRpcIds.has(message.replyTo)) {
-    notify(ctx, `lead-worker stale reply ignored: ${message.replyTo}`, "warning");
+    notify(ctx, `planner-builder stale reply ignored: ${message.replyTo}`, "warning");
     return;
   }
   throw new Error(`Unexpected reply for unknown request id '${message.replyTo ?? "(none)"}'.`);
 }
 
-function parseStructuredLeadEvent(
+function parseStructuredPlannerEvent(
   ctx: ExtensionContext,
   message: PairMessageV2,
 ): ExecutionUpdatePayload | undefined {
   const eventName = message.name ?? "event";
-  if (message.from !== "worker" || !isHighSignalWorkerEvent(eventName)) return undefined;
+  if (message.from !== "builder" || !isHighSignalBuilderEvent(eventName)) return undefined;
   try {
     return parseExecutionUpdatePayload(message.payload, eventName);
   } catch (error) {
-    notify(ctx, `lead-worker invalid structured ${eventName} payload: ${error instanceof Error ? error.message : String(error)}`, "warning");
+    notify(ctx, `planner-builder invalid structured ${eventName} payload: ${error instanceof Error ? error.message : String(error)}`, "warning");
     return undefined;
   }
 }
 
-async function handleLeadEvent(
+async function handlePlannerEvent(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   message: PairMessageV2,
 ): Promise<void> {
   const eventName = message.name ?? "event";
-  const structuredUpdate = parseStructuredLeadEvent(ctx, message);
+  const structuredUpdate = parseStructuredPlannerEvent(ctx, message);
 
   if (eventName === "busy") {
-    rt.connectionError = message.body ?? "Worker is already attached to another active lead connection.";
+    rt.connectionError = message.body ?? "Builder is already attached to another active planner connection.";
     notify(ctx, rt.connectionError, "error");
     return;
   }
@@ -897,16 +897,16 @@ async function handleLeadEvent(
   }
 
   if (eventName === "progress" || eventName === "readiness") {
-    notify(ctx, message.body ?? `Worker event: ${eventName}`, "info");
+    notify(ctx, message.body ?? `Builder event: ${eventName}`, "info");
     if (eventName === "progress") {
-      scheduleLeadSupervision(pi, ctx, message);
+      schedulePlannerSupervision(pi, ctx, message);
     }
     return;
   }
 
   deliverIncomingProtocolMessage(pi, message, true);
-  maybeRelayWorkerEventToUser(pi, message);
-  scheduleLeadSupervision(pi, ctx, message);
+  maybeRelayBuilderEventToUser(pi, message);
+  schedulePlannerSupervision(pi, ctx, message);
 }
 
 async function handleIncomingEvent(
@@ -915,8 +915,8 @@ async function handleIncomingEvent(
   role: PairRole,
   message: PairMessageV2,
 ): Promise<void> {
-  if (role === "lead") {
-    await handleLeadEvent(pi, ctx, message);
+  if (role === "planner") {
+    await handlePlannerEvent(pi, ctx, message);
     return;
   }
   deliverIncomingProtocolMessage(pi, message, true);
@@ -929,7 +929,7 @@ async function handleIncomingRequest(
   message: PairMessageV2,
 ): Promise<void> {
   registerInboundRequest(message);
-  if (role === "lead" && message.from === "worker") {
+  if (role === "planner" && message.from === "builder") {
     await rememberPendingClarification(pi, ctx, pendingClarificationFromMessage(message, "live", true, message.id));
   }
   deliverIncomingProtocolMessage(pi, message, true);
@@ -960,9 +960,9 @@ async function handleIncomingCommand(
   const socket = activeSocketForRole(role);
   if (!socket) throw new Error("No active socket available for command reply.");
   try {
-    const reply = role === "worker"
-      ? await handleWorkerCommand(pi, ctx, message, sourceSocket)
-      : await handleLeadCommand(pi, ctx, message);
+    const reply = role === "builder"
+      ? await handleBuilderCommand(pi, ctx, message, sourceSocket)
+      : await handlePlannerCommand(pi, ctx, message);
     sendProtocolMessage(socket, reply);
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
@@ -975,8 +975,8 @@ async function handleIncomingMessage(pi: ExtensionAPI, message: PairMessageV2, s
   const role = currentPairRole();
   if (message.to !== role) throw new Error(`Unexpected destination '${message.to}' for role '${role}'.`);
 
-  if (role === "worker" && message.type === "command" && message.name === "attach") {
-    await handleWorkerAttachCommand(pi, ctx, message, sourceSocket);
+  if (role === "builder" && message.type === "command" && message.name === "attach") {
+    await handleBuilderAttachCommand(pi, ctx, message, sourceSocket);
     return;
   }
 
@@ -1011,9 +1011,9 @@ async function sendOneWayEvent(
 ): Promise<{ ok: true; action: "message"; pairId: string; to: PairRole; name: string; handoffId?: string; queued?: boolean }> {
   const role = currentPairRole();
   const runtime = await resolveRuntimeContext(pi, ctx);
-  const socket = role === "lead"
-    ? (await ensureLeadConnection(pi, ctx, { autoStart: params.autoStart })).socket
-    : activeSocketForRole("worker");
+  const socket = role === "planner"
+    ? (await ensurePlannerConnection(pi, ctx, { autoStart: params.autoStart })).socket
+    : activeSocketForRole("builder");
 
   const message = createMessage({
     type: "event",
@@ -1026,16 +1026,16 @@ async function sendOneWayEvent(
     handoffId: params.handoffId,
   });
 
-  if (role === "worker" && (!socket || socket.destroyed)) {
-    await enqueueWorkerEvent(runtime.protocolDir, message);
+  if (role === "builder" && (!socket || socket.destroyed)) {
+    await enqueueBuilderEvent(runtime.protocolDir, message);
     return { ok: true, action: "message", pairId: runtime.pairId, to: message.to, name: params.name, handoffId: params.handoffId, queued: true };
   }
   if (!socket) {
-    throw new Error("Worker is not currently attached to an active lead connection.");
+    throw new Error("Builder is not currently attached to an active planner connection.");
   }
 
-  const queued = role === "worker"
-    ? await deliverWorkerEvent(runtime.protocolDir, socket, message)
+  const queued = role === "builder"
+    ? await deliverBuilderEvent(runtime.protocolDir, socket, message)
     : (sendProtocolMessage(socket, message), false);
   return { ok: true, action: "message", pairId: runtime.pairId, to: message.to, name: params.name, handoffId: params.handoffId, ...(queued ? { queued: true } : {}) };
 }
@@ -1043,22 +1043,22 @@ async function sendOneWayEvent(
 async function sendAskAction(pi: ExtensionAPI, ctx: ExtensionContext, name: string | undefined, text: string): Promise<unknown> {
   const role = currentPairRole();
   const runtime = await resolveRuntimeContext(pi, ctx);
-  const socket = role === "lead"
-    ? (await ensureLeadConnection(pi, ctx, { autoStart: true })).socket
-    : activeSocketForRole("worker");
+  const socket = role === "planner"
+    ? (await ensurePlannerConnection(pi, ctx, { autoStart: true })).socket
+    : activeSocketForRole("builder");
 
-  if (role === "worker" && (!socket || socket.destroyed)) {
-    const handoffId = rt.pendingWorkerHandoff?.id;
+  if (role === "builder" && (!socket || socket.destroyed)) {
+    const handoffId = rt.pendingBuilderHandoff?.id;
     if (!handoffId) {
-      throw new Error("worker ask fallback requires an active handoff id so the durable clarification can be tracked.");
+      throw new Error("builder ask fallback requires an active handoff id so the durable clarification can be tracked.");
     }
-    const defaults = currentWorkerExecutionUpdateDefaults();
+    const defaults = currentBuilderExecutionUpdateDefaults();
     const fallbackPayload = buildExecutionUpdatePayload({
       status: "clarification_needed",
       handoffId,
       summary: text,
       question: text,
-      nextStep: "Lead must answer the clarification before execution can continue.",
+      nextStep: "Planner must answer the clarification before execution can continue.",
       ...(defaults.handoffArtifactPath ? { handoffArtifactPath: defaults.handoffArtifactPath } : {}),
       ...(defaults.handoffArtifactSha256 ? { handoffArtifactSha256: defaults.handoffArtifactSha256 } : {}),
     });
@@ -1081,7 +1081,7 @@ async function sendAskAction(pi: ExtensionAPI, ctx: ExtensionContext, name: stri
   }
 
   if (!socket) {
-    throw new Error("Worker is not currently attached to an active lead connection.");
+    throw new Error("Builder is not currently attached to an active planner connection.");
   }
 
   const message = createMessage({
@@ -1091,28 +1091,28 @@ async function sendAskAction(pi: ExtensionAPI, ctx: ExtensionContext, name: stri
     pairId: runtime.pairId,
     name,
     body: text,
-    ...(role === "worker" && rt.pendingWorkerHandoff?.id ? { handoffId: rt.pendingWorkerHandoff.id } : {}),
+    ...(role === "builder" && rt.pendingBuilderHandoff?.id ? { handoffId: rt.pendingBuilderHandoff.id } : {}),
   });
-  const workerClarification = role === "worker"
+  const builderClarification = role === "builder"
     ? pendingClarificationFromMessage(message, "live", true, message.id)
     : undefined;
-  if (workerClarification) {
-    await rememberPendingClarification(pi, ctx, workerClarification);
+  if (builderClarification) {
+    await rememberPendingClarification(pi, ctx, builderClarification);
   }
 
   try {
     const reply = await startRpc(message, socket);
-    if (workerClarification) {
+    if (builderClarification) {
       await clearPendingClarification(pi, ctx);
     }
     if (!reply.ok) throw new Error(reply.error ?? reply.body ?? `Request '${name ?? message.id}' failed.`);
     return { ok: true, action: "ask", pairId: runtime.pairId, name, reply };
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
-    if (workerClarification) {
+    if (builderClarification) {
       if (/timed out/i.test(err.message)) {
         await rememberPendingClarification(pi, ctx, {
-          ...workerClarification,
+          ...builderClarification,
           replyTo: undefined,
           canReplyNow: false,
         });
@@ -1125,11 +1125,11 @@ async function sendAskAction(pi: ExtensionAPI, ctx: ExtensionContext, name: stri
 }
 
 async function sendCommandAction(pi: ExtensionAPI, ctx: ExtensionContext, name: string, text: string): Promise<unknown> {
-  if (currentPairRole() !== "lead") {
-    throw new Error("lead_worker({ action: \"command\", ... }) is only implemented from the lead to the worker.");
+  if (currentPairRole() !== "planner") {
+    throw new Error("planner_builder({ action: \"command\", ... }) is only implemented from the planner to the builder.");
   }
 
-  const connection = await ensureLeadConnection(pi, ctx, { autoStart: true });
+  const connection = await ensurePlannerConnection(pi, ctx, { autoStart: true });
   const payload = name === "model"
     ? { ref: text.trim() }
     : name === "thinking"
@@ -1139,8 +1139,8 @@ async function sendCommandAction(pi: ExtensionAPI, ctx: ExtensionContext, name: 
         : undefined;
   const message = createMessage({
     type: "command",
-    from: "lead",
-    to: "worker",
+    from: "planner",
+    to: "builder",
     pairId: connection.pairId,
     name,
     body: text,
@@ -1157,10 +1157,10 @@ async function sendReplyAction(pi: ExtensionAPI, ctx: ExtensionContext, replyTo:
 
   const role = currentPairRole();
   const runtime = await resolveRuntimeContext(pi, ctx);
-  const socket = role === "lead"
-    ? (await ensureLeadConnection(pi, ctx, { autoStart: true })).socket
-    : activeSocketForRole("worker");
-  if (!socket) throw new Error("Worker is not currently attached to an active lead connection.");
+  const socket = role === "planner"
+    ? (await ensurePlannerConnection(pi, ctx, { autoStart: true })).socket
+    : activeSocketForRole("builder");
+  if (!socket) throw new Error("Builder is not currently attached to an active planner connection.");
 
   const reply = createMessage({
     type: "reply",
@@ -1173,7 +1173,7 @@ async function sendReplyAction(pi: ExtensionAPI, ctx: ExtensionContext, replyTo:
   });
   sendProtocolMessage(socket, reply);
   clearInboundRequest(replyTo);
-  if (role === "lead" && pending.from === "worker") {
+  if (role === "planner" && pending.from === "builder") {
     await clearPendingClarification(pi, ctx);
   }
   return { ok: true, action: "reply", pairId: runtime.pairId, replyTo };
@@ -1188,15 +1188,15 @@ async function sendMessageAction(
 ): Promise<unknown> {
   const role = currentPairRole();
   const trimmed = (rawMessage ?? "").trim();
-  const pendingHandoffId = role === "worker" ? rt.pendingWorkerHandoff?.id : undefined;
-  const inferredName = name?.trim() || (role === "worker" ? inferWorkerEventName(trimmed, rt.pendingWorkerHandoff) : "message");
+  const pendingHandoffId = role === "builder" ? rt.pendingBuilderHandoff?.id : undefined;
+  const inferredName = name?.trim() || (role === "builder" ? inferBuilderEventName(trimmed, rt.pendingBuilderHandoff) : "message");
 
   let body = trimmed;
   let payload = rawPayload;
   let handoffId = pendingHandoffId;
 
-  if (role === "worker" && isHighSignalWorkerEvent(inferredName)) {
-    const structured = normalizeWorkerExecutionUpdatePayload(inferredName, rawPayload);
+  if (role === "builder" && isHighSignalBuilderEvent(inferredName)) {
+    const structured = normalizeBuilderExecutionUpdatePayload(inferredName, rawPayload);
     body = structured.summary;
     payload = structured;
     handoffId = structured.handoffId;
@@ -1212,64 +1212,64 @@ async function sendMessageAction(
     autoStart: false,
   });
 
-  if (role === "worker" && inferredName === "clarification_needed" && payload) {
+  if (role === "builder" && inferredName === "clarification_needed" && payload) {
     const structured = payload as ExecutionUpdatePayload;
     await rememberPendingClarification(pi, ctx, clarificationStateFromExecutionUpdate(structured, "durable", false));
   }
-  if (role === "worker" && isTerminalSupervisionEvent(inferredName)) {
+  if (role === "builder" && isTerminalSupervisionEvent(inferredName)) {
     await clearPendingClarification(pi, ctx);
-    rt.pendingWorkerHandoff = undefined;
+    rt.pendingBuilderHandoff = undefined;
   }
   return result;
 }
 
 function formatBuildQueuedMarkdown(
-  worker: WorkerStatus,
+  builder: BuilderStatus,
   pairId: string,
   handoffId: string,
   artifactPath: string,
   artifactSha256: string,
 ): string {
   return [
-    `**worker build delegated**`,
+    `**builder build delegated**`,
     "",
-    `- lead mode: ${rt.modeEnabled ? "on" : "off"}`,
+    `- planner mode: ${rt.modeEnabled ? "on" : "off"}`,
     `- pair id: ${pairId}`,
-    `- worker name: ${worker.agentName}`,
-    `- worker running: ${worker.running ? "yes" : "no"}`,
-    `- worker session: ${worker.tmuxSession}`,
+    `- builder name: ${builder.agentName}`,
+    `- builder running: ${builder.running ? "yes" : "no"}`,
+    `- builder session: ${builder.tmuxSession}`,
     `- handoff id: ${handoffId}`,
     `- handoff artifact: ${artifactPath}`,
     `- handoff sha256: ${artifactSha256}`,
-    `- paired transport: protocol-v2 worker socket`,
+    `- paired transport: protocol-v2 builder socket`,
   ].join("\n");
 }
 
 async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, args: string): Promise<void> {
   if (!rt.modeEnabled) {
-    throw new Error("lead-worker mode is off. Run /lead on before using /worker build.");
+    throw new Error("planner-builder mode is off. Run /plan on before using /builder build.");
   }
   if (!ctx.isIdle() || ctx.hasPendingMessages()) {
-    ctx.hasUI && ctx.ui.notify("Wait for the lead to finish its current turn before delegating with /worker build.", "warning");
+    ctx.hasUI && ctx.ui.notify("Wait for the planner to finish its current turn before delegating with /builder build.", "warning");
     return;
   }
 
   const cwd = getContextCwd(ctx);
-  const leadSession = getLeadSessionBinding(ctx);
+  const plannerSession = getPlannerSessionBinding(ctx);
   const { settings } = await refreshSettings(cwd);
   const handoffId = randomUUID();
   const handoff = buildHandoffText(ctx, args, handoffId);
   if (!handoff) {
-    ctx.hasUI && ctx.ui.notify("No recent lead context found. Ask the lead first or pass explicit instructions to /worker build.", "error");
+    ctx.hasUI && ctx.ui.notify("No recent planner context found. Ask the planner first or pass explicit instructions to /builder build.", "error");
     return;
   }
 
-  await resolveLeadSupervisionModel(ctx);
+  await resolvePlannerSupervisionModel(ctx);
 
-  let worker = await getWorkerStatus(pi, cwd, settings, leadSession);
-  if (!worker.running) {
-    worker = await startWorker(pi, cwd, settings, leadSession);
-    updateStatusLine(ctx, worker);
+  let builder = await getBuilderStatus(pi, cwd, settings, plannerSession);
+  if (!builder.running) {
+    builder = await startBuilder(pi, cwd, settings, plannerSession);
+    updateStatusLine(ctx, builder);
   }
 
   const runtime = await resolveRuntimeContext(pi, ctx);
@@ -1283,7 +1283,7 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
     summary: handoffSummary,
   });
 
-  const connection = await ensureLeadConnection(pi, ctx, { autoStart: true });
+  const connection = await ensurePlannerConnection(pi, ctx, { autoStart: true });
   const supervised: ActiveSupervisedHandoff = {
     id: handoffId,
     spec: handoff,
@@ -1300,8 +1300,8 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
   try {
     const command = createMessage({
       type: "command",
-      from: "lead",
-      to: "worker",
+      from: "planner",
+      to: "builder",
       pairId: connection.pairId,
       name: "handoff",
       handoffId,
@@ -1315,7 +1315,7 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
       },
     });
     const reply = await startRpc(command, connection.socket);
-    if (!reply.ok) throw new Error(reply.error ?? reply.body ?? `Worker rejected handoff ${handoffId}.`);
+    if (!reply.ok) throw new Error(reply.error ?? reply.body ?? `Builder rejected handoff ${handoffId}.`);
     await clearPendingClarification(pi, ctx);
 
     const haikuModel = getModel(SUPERVISOR_MODEL_PROVIDER, SUPERVISOR_MODEL_ID);
@@ -1338,7 +1338,7 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
   emitInfo(
     pi,
     formatBuildQueuedMarkdown(
-      worker,
+      builder,
       connection.pairId,
       handoffId,
       artifactPath,
@@ -1348,10 +1348,10 @@ async function handleBuildDelegation(pi: ExtensionAPI, ctx: ExtensionContext, ar
   );
 }
 
-type WorkerInterruptState = { tmuxSession: string; tmuxPaneId?: string; agentName?: string };
-type WorkerInterruptResolution = { cwd: string; state: WorkerInterruptState };
+type BuilderInterruptState = { tmuxSession: string; tmuxPaneId?: string; agentName?: string };
+type BuilderInterruptResolution = { cwd: string; state: BuilderInterruptState };
 
-function isWorkerInterruptState(value: unknown): value is WorkerInterruptState {
+function isBuilderInterruptState(value: unknown): value is BuilderInterruptState {
   if (typeof value !== "object" || value === null) return false;
   const state = value as Record<string, unknown>;
   return typeof state.tmuxSession === "string" && (state.tmuxPaneId === undefined || typeof state.tmuxPaneId === "string");
@@ -1361,12 +1361,12 @@ function tmuxExecSucceeded(result: { code?: number | null }): boolean {
   return (result.code ?? 1) === 0;
 }
 
-async function resolveWorkerInterruptState(pi: ExtensionAPI, ctx: ExtensionContext): Promise<WorkerInterruptResolution | null> {
-  if (!rt.modeEnabled || currentPairRole() !== "lead") return null;
+async function resolveBuilderInterruptState(pi: ExtensionAPI, ctx: ExtensionContext): Promise<BuilderInterruptResolution | null> {
+  if (!rt.modeEnabled || currentPairRole() !== "planner") return null;
 
   const cwd = getContextCwd(ctx);
   const runtime = await resolveRuntimeContext(pi, ctx);
-  const statePath = join(runtime.runtimeDir, "worker-state.json");
+  const statePath = join(runtime.runtimeDir, "builder-state.json");
 
   let raw: string;
   try {
@@ -1374,12 +1374,12 @@ async function resolveWorkerInterruptState(pi: ExtensionAPI, ctx: ExtensionConte
   } catch (error) {
     const code = (error as NodeJS.ErrnoException | undefined)?.code;
     if (code === "ENOENT") return null;
-    throw new Error(`Failed to read worker state file ${statePath}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`Failed to read builder state file ${statePath}: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   const parsed: unknown = JSON.parse(raw);
-  if (!isWorkerInterruptState(parsed)) {
-    throw new Error(`Invalid worker state file ${statePath}: missing tmuxSession`);
+  if (!isBuilderInterruptState(parsed)) {
+    throw new Error(`Invalid builder state file ${statePath}: missing tmuxSession`);
   }
 
   const hasSession = await pi.exec("tmux", ["has-session", "-t", parsed.tmuxSession], { cwd, timeout: 5_000 });
@@ -1387,34 +1387,34 @@ async function resolveWorkerInterruptState(pi: ExtensionAPI, ctx: ExtensionConte
   return { cwd, state: parsed };
 }
 
-async function interruptWorkerIfRunning(pi: ExtensionAPI, ctx: ExtensionContext): Promise<boolean> {
-  const resolved = await resolveWorkerInterruptState(pi, ctx);
+async function interruptBuilderIfRunning(pi: ExtensionAPI, ctx: ExtensionContext): Promise<boolean> {
+  const resolved = await resolveBuilderInterruptState(pi, ctx);
   if (!resolved) return false;
 
   const { cwd, state } = resolved;
   const target = state.tmuxPaneId?.trim() || `${state.tmuxSession}:0.0`;
   const sent = await pi.exec("tmux", ["send-keys", "-t", target, "C-c"], { cwd, timeout: 5_000 });
   if (!tmuxExecSucceeded(sent)) {
-    throw new Error(sent.stderr?.trim() || sent.stdout?.trim() || `Failed to interrupt worker pane ${target}`);
+    throw new Error(sent.stderr?.trim() || sent.stdout?.trim() || `Failed to interrupt builder pane ${target}`);
   }
 
-  const agentName = state.agentName?.trim() || "worker";
+  const agentName = state.agentName?.trim() || "builder";
   ctx.hasUI && ctx.ui.notify(`Sent interrupt to ${agentName} (${target}).`, "warning");
   return true;
 }
 
-async function ensureWorkerServer(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
-  if (currentPairRole() !== "worker") return;
+async function ensureBuilderServer(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+  if (currentPairRole() !== "builder") return;
   const runtime = await resolveRuntimeContext(pi, ctx);
-  if (rt.workerServer && rt.workerServerSocketPath === runtime.socketPath) return;
+  if (rt.builderServer && rt.builderServerSocketPath === runtime.socketPath) return;
 
-  if (rt.workerServer) {
-    await new Promise<void>((resolve) => rt.workerServer?.close(() => resolve()));
-    rt.workerServer = undefined;
-    rt.workerServerSocketPath = undefined;
-    rt.workerServerPairId = undefined;
-    rt.activeLeadSocket = undefined;
-    rt.activeLeadSessionId = undefined;
+  if (rt.builderServer) {
+    await new Promise<void>((resolve) => rt.builderServer?.close(() => resolve()));
+    rt.builderServer = undefined;
+    rt.builderServerSocketPath = undefined;
+    rt.builderServerPairId = undefined;
+    rt.activePlannerSocket = undefined;
+    rt.activePlannerSessionId = undefined;
   }
 
   await fs.mkdir(join(runtime.runtimeDir, "protocol-v2"), { recursive: true });
@@ -1430,27 +1430,27 @@ async function ensureWorkerServer(pi: ExtensionAPI, ctx: ExtensionContext): Prom
       (message) => {
         void handleIncomingMessage(pi, message, socket).catch((error) => {
           const err = error instanceof Error ? error : new Error(String(error));
-          console.warn("[lead-worker] worker protocol failed:", err);
+          console.warn("[planner-builder] builder protocol failed:", err);
           socket.destroy(err);
         });
       },
       (error) => {
-        console.warn("[lead-worker] worker protocol failed:", error);
+        console.warn("[planner-builder] builder protocol failed:", error);
         socket.destroy(error);
       },
     );
 
     socket.on("data", reader);
     socket.on("close", () => {
-      if (rt.activeLeadSocket === socket) {
-        rt.activeLeadSocket = undefined;
-        rt.activeLeadSessionId = undefined;
+      if (rt.activePlannerSocket === socket) {
+        rt.activePlannerSocket = undefined;
+        rt.activePlannerSessionId = undefined;
       }
     });
     socket.on("error", () => {
-      if (rt.activeLeadSocket === socket) {
-        rt.activeLeadSocket = undefined;
-        rt.activeLeadSessionId = undefined;
+      if (rt.activePlannerSocket === socket) {
+        rt.activePlannerSocket = undefined;
+        rt.activePlannerSessionId = undefined;
       }
     });
   });
@@ -1460,26 +1460,26 @@ async function ensureWorkerServer(pi: ExtensionAPI, ctx: ExtensionContext): Prom
     server.listen(runtime.socketPath, () => resolve());
   });
 
-  rt.workerServer = server;
-  rt.workerServerSocketPath = runtime.socketPath;
-  rt.workerServerPairId = runtime.pairId;
+  rt.builderServer = server;
+  rt.builderServerSocketPath = runtime.socketPath;
+  rt.builderServerPairId = runtime.pairId;
 }
 
-export default function leadWorkerExtension(pi: ExtensionAPI) {
+export default function plannerBuilderExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: TOOL_NAME,
-    label: "Lead Worker",
+    label: "Planner Builder",
     description:
-      "Manage lead-worker mode and the current repo-scoped worker configured by lead-worker-settings.yaml. " +
+      "Manage planner-builder mode and the current repo-scoped builder configured by planner-builder-settings.yaml. " +
       "Actions: start, on, status, off, stop, message, ask, command, reply. " +
-      "Control actions start/on/status/off/stop are lead-only: start spawns the worker without changing mode; on enables no-direct-repo-edit lead mode, switches the lead to the configured planning model, and starts the worker if needed; off restores normal lead behavior and restores the previous model/thinking while leaving the worker alone; stop forcibly terminates the worker and, if lead-worker mode is on, also returns the lead to normal mode; message sends a one-way paired event from either side and may include a structured payload; ask sends a blocking paired request from the lead or an attached worker; command sends a blocking operational command from the lead to the worker; reply answers a pending paired request. Worker high-signal events (completed/failed/cancelled/blocker/clarification_needed) require a structured execution-update payload. For lead-side worker inspection and direct worker slash commands, use /worker.",
+      "Control actions start/on/status/off/stop are planner-only: start spawns the builder without changing mode; on enables no-direct-repo-edit planner mode, switches the planner to the configured planning model, and starts the builder if needed; off restores normal planner behavior and restores the previous model/thinking while leaving the builder alone; stop forcibly terminates the builder and, if planner-builder mode is on, also returns the planner to normal mode; message sends a one-way paired event from either side and may include a structured payload; ask sends a blocking paired request from the planner or an attached builder; command sends a blocking operational command from the planner to the builder; reply answers a pending paired request. Builder high-signal events (completed/failed/cancelled/blocker/clarification_needed) require a structured execution-update payload. For planner-side builder inspection and direct builder slash commands, use /builder.",
     parameters: Type.Object({
       action: StringEnum(["start", "on", "status", "off", "stop", "message", "ask", "command", "reply"] as const, {
-        description: "Lead-worker control or communication action",
+        description: "Planner-builder control or communication action",
       }),
       name: Type.Optional(Type.String({ description: "Required for action='command'. Optional event/request name for action='message' or action='ask'." })),
       message: Type.Optional(Type.String({ description: "Required for 'ask' and 'reply'. For 'message', required for generic events and used as the short summary for structured execution updates." })),
-      payload: Type.Optional(Type.Object({}, { additionalProperties: true, description: "Optional structured payload for action='message'. Required for worker high-signal events: completed, failed, cancelled, blocker, clarification_needed." })),
+      payload: Type.Optional(Type.Object({}, { additionalProperties: true, description: "Optional structured payload for action='message'. Required for builder high-signal events: completed, failed, cancelled, blocker, clarification_needed." })),
       replyTo: Type.Optional(Type.String({ description: "Required for action='reply'. The pending request id to answer." })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -1503,7 +1503,7 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
           return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: result };
         }
 
-        const status = await runControlAction(pi, ctx, params.action, maybePrimeLeadConnection);
+        const status = await runControlAction(pi, ctx, params.action, maybePrimePlannerConnection);
         return { content: [{ type: "text", text: JSON.stringify(status, null, 2) }], details: status };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -1517,17 +1517,17 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
   });
 
   async function handleControlCommand(args: string, ctx: ExtensionContext, usage: string) {
-    if (currentPairRole() !== "lead") {
-      ctx.hasUI && ctx.ui.notify("/lead is only available from the lead session.", "error");
+    if (currentPairRole() !== "planner") {
+      ctx.hasUI && ctx.ui.notify("/plan is only available from the planner session.", "error");
       return;
     }
 
-    let action: LeadWorkerControlAction | null = null;
+    let action: PlannerBuilderControlAction | null = null;
     try {
       action = await resolveCommandAction(args);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      ctx.hasUI && ctx.ui.notify(`lead-worker failed: ${message}`, "error");
+      ctx.hasUI && ctx.ui.notify(`planner-builder failed: ${message}`, "error");
       return;
     }
 
@@ -1537,18 +1537,18 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
     }
 
     try {
-      const status = await runControlAction(pi, ctx, action, maybePrimeLeadConnection);
+      const status = await runControlAction(pi, ctx, action, maybePrimePlannerConnection);
       emitInfo(pi, formatStatusMarkdown(status), BUILD_HANDOFF_MESSAGE_TYPE);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      ctx.hasUI && ctx.ui.notify(`lead-worker failed: ${message}`, "error");
+      ctx.hasUI && ctx.ui.notify(`planner-builder failed: ${message}`, "error");
     }
   }
 
-  async function handleWorkerSlashCommand(args: string, ctx: ExtensionContext) {
-    const usage = "Usage: /worker status | /worker build [instructions] | /worker /<command> [args]";
-    if (currentPairRole() !== "lead") {
-      ctx.hasUI && ctx.ui.notify("/worker is only available from the lead session.", "error");
+  async function handleBuilderSlashCommand(args: string, ctx: ExtensionContext) {
+    const usage = "Usage: /builder status | /builder build [instructions] | /builder /<command> [args]";
+    if (currentPairRole() !== "planner") {
+      ctx.hasUI && ctx.ui.notify("/builder is only available from the planner session.", "error");
       return;
     }
 
@@ -1560,7 +1560,7 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
 
     try {
       if (trimmed === "status") {
-        emitInfo(pi, await queryWorkerStatusPassive(pi, ctx, ensureLeadConnection, startRpc), BUILD_HANDOFF_MESSAGE_TYPE);
+        emitInfo(pi, await queryBuilderStatusPassive(pi, ctx, ensurePlannerConnection, startRpc), BUILD_HANDOFF_MESSAGE_TYPE);
         return;
       }
 
@@ -1580,7 +1580,7 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
       emitInfo(
         pi,
         [
-          "**worker command**",
+          "**builder command**",
           "",
           `- command: ${trimmed}`,
           ...(reply?.body ? [`- result: ${reply.body}`] : []),
@@ -1589,30 +1589,30 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      ctx.hasUI && ctx.ui.notify(`worker command failed: ${message}`, "error");
+      ctx.hasUI && ctx.ui.notify(`builder command failed: ${message}`, "error");
     }
   }
 
-  pi.registerCommand("lead", {
-    description: "Control lead-worker mode and the current worker: /lead [start|on|status|off|stop] (bare command toggles mode; on switches the lead model, off restores it, stop also exits lead-worker mode if it is on)",
-    handler: async (args, ctx) => handleControlCommand(args, ctx, "Usage: /lead [start|on|status|off|stop] (no args toggles mode)"),
+  pi.registerCommand("plan", {
+    description: "Control planner-builder mode and the current builder: /plan [start|on|status|off|stop] (bare command toggles mode; on switches the planner model, off restores it, stop also exits planner-builder mode if it is on)",
+    handler: async (args, ctx) => handleControlCommand(args, ctx, "Usage: /plan [start|on|status|off|stop] (no args toggles mode)"),
   });
 
-  pi.registerCommand("worker", {
-    description: "Inspect the paired worker, delegate execution, or run a registered slash command inside it: /worker status | /worker build [instructions] | /worker /<command> [args]",
+  pi.registerCommand("builder", {
+    description: "Inspect the paired builder, delegate execution, or run a registered slash command inside it: /builder status | /builder build [instructions] | /builder /<command> [args]",
     handler: async (args, ctx) => {
-      await handleWorkerSlashCommand(args, ctx);
+      await handleBuilderSlashCommand(args, ctx);
     },
   });
 
   pi.registerCommand("abort", {
-    description: "Abort the current lead turn, or when lead-worker mode is on and the worker is running, send Ctrl+C to the paired worker's active tmux pane.",
+    description: "Abort the current planner turn, or when planner-builder mode is on and the builder is running, send Ctrl+C to the paired builder's active tmux pane.",
     handler: async (_args, ctx) => {
       try {
-        if (await interruptWorkerIfRunning(pi, ctx)) return;
+        if (await interruptBuilderIfRunning(pi, ctx)) return;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        ctx.hasUI && ctx.ui.notify(`worker interrupt failed during /abort: ${message}; aborting lead turn instead.`, "error");
+        ctx.hasUI && ctx.ui.notify(`builder interrupt failed during /abort: ${message}; aborting planner turn instead.`, "error");
       }
       await ctx.abort();
     },
@@ -1622,13 +1622,13 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
     if (!rt.modeEnabled) return;
 
     if (event.toolName === "write" || event.toolName === "edit") {
-      return { block: true, reason: `lead-worker mode is on: the lead should avoid direct repo edits. Use /worker build to delegate execution to ${workerSessionReference()}.` };
+      return { block: true, reason: `planner-builder mode is on: the planner should avoid direct repo edits. Use /builder build to delegate execution to ${builderSessionReference()}.` };
     }
 
     if (event.toolName === "bash") {
       const command = typeof event.input.command === "string" ? event.input.command : "";
-      if (!isSafeLeadBash(command)) {
-        return { block: true, reason: `lead-worker mode is on: obvious repo-mutating bash is blocked for the lead. Use /worker build to delegate execution to ${workerSessionReference()}.\nCommand: ${command}` };
+      if (!isSafePlannerBash(command)) {
+        return { block: true, reason: `planner-builder mode is on: obvious repo-mutating bash is blocked for the planner. Use /builder build to delegate execution to ${builderSessionReference()}.\nCommand: ${command}` };
       }
     }
 
@@ -1637,7 +1637,7 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
       if (!["message", "ask", "command", "reply"].includes(action)) {
         return {
           block: true,
-          reason: `lead-worker mode is on: worker lifecycle control should go through explicit slash commands (/lead, /worker). Allowed tool calls are lead_worker communication actions: message, ask, command, and reply.`,
+          reason: `planner-builder mode is on: builder lifecycle control should go through explicit slash commands (/plan, /builder). Allowed tool calls are planner_builder communication actions: message, ask, command, and reply.`,
         };
       }
     }
@@ -1655,21 +1655,21 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
 
     const lines = [
       "[LEAD-WORKER MODE ACTIVE]",
-      "You are the lead half of a lead→worker workflow.",
+      "You are the planner half of a planner→builder workflow.",
       "",
-      "Lead rules:",
-      "- Do not directly edit repository files from the lead.",
+      "Planner rules:",
+      "- Do not directly edit repository files from the planner.",
       "- Bash is available for broad inspection/prep work, but avoid obvious repo-mutating commands.",
-      "- Focus on understanding the codebase, producing plans, reviewing results, and preparing precise worker instructions.",
-      "- Send intent/spec to the worker, not implementation code. Do not send concrete code snippets, patches, or copy-paste-ready blocks.",
-      "- When the user wants execution, they will run /worker build to delegate the current plan to the repo-scoped worker.",
-      '- You may communicate with the paired worker using lead_worker({ action: "message" | "ask" | "command" | "reply", ... }).',
-      "- The paired worker may also message you or ask direct clarification questions. Answer only when it materially helps execution.",
-      "- Prefer concise worker handoff packets with: goal, relevant files, implementation steps, and validation.",
+      "- Focus on understanding the codebase, producing plans, reviewing results, and preparing precise builder instructions.",
+      "- Send intent/spec to the builder, not implementation code. Do not send concrete code snippets, patches, or copy-paste-ready blocks.",
+      "- When the user wants execution, they will run /builder build to delegate the current plan to the repo-scoped builder.",
+      '- You may communicate with the paired builder using planner_builder({ action: "message" | "ask" | "command" | "reply", ... }).',
+      "- The paired builder may also message you or ask direct clarification questions. Answer only when it materially helps execution.",
+      "- Prefer concise builder handoff packets with: goal, relevant files, implementation steps, and validation.",
     ];
 
-    const leadPromptAppend = leadConfig().prompt_append;
-    if (leadPromptAppend) lines.push("", leadPromptAppend);
+    const plannerPromptAppend = plannerConfig().prompt_append;
+    if (plannerPromptAppend) lines.push("", plannerPromptAppend);
 
     return {
       message: {
@@ -1682,33 +1682,33 @@ export default function leadWorkerExtension(pi: ExtensionAPI) {
 
   const restore = async (_event: unknown, ctx: ExtensionContext) => {
     rt.latestPairContext = ctx;
-    rt.lastObservedLeadModel = { provider: ctx.model?.provider, modelId: ctx.model?.id };
+    rt.lastObservedPlannerModel = { provider: ctx.model?.provider, modelId: ctx.model?.id };
     await restoreModeState(pi, ctx).catch((err) => {
-      console.warn("[lead-worker] restoreModeState failed:", err);
-      notify(ctx, `lead-worker restore failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+      console.warn("[planner-builder] restoreModeState failed:", err);
+      notify(ctx, `planner-builder restore failed: ${err instanceof Error ? err.message : String(err)}`, "error");
     });
-    if (currentPairRole() === "worker") {
-      await ensureWorkerServer(pi, ctx).catch((err) => {
-        console.warn("[lead-worker] ensureWorkerServer failed:", err);
-        notify(ctx, `lead-worker worker server failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+    if (currentPairRole() === "builder") {
+      await ensureBuilderServer(pi, ctx).catch((err) => {
+        console.warn("[planner-builder] ensureBuilderServer failed:", err);
+        notify(ctx, `planner-builder builder server failed: ${err instanceof Error ? err.message : String(err)}`, "error");
       });
     } else {
-      await maybePrimeLeadConnection(pi, ctx);
+      await maybePrimePlannerConnection(pi, ctx);
     }
     await restorePendingClarificationState(pi, ctx).catch((err) => {
-      console.warn("[lead-worker] restorePendingClarificationState failed:", err);
-      notify(ctx, `lead-worker clarification restore failed: ${err instanceof Error ? err.message : String(err)}`, "warning");
+      console.warn("[planner-builder] restorePendingClarificationState failed:", err);
+      notify(ctx, `planner-builder clarification restore failed: ${err instanceof Error ? err.message : String(err)}`, "warning");
     });
   };
 
   pi.on("session_start", restore);
   pi.on("session_tree", restore);
   pi.on("model_select", async (event) => {
-    rt.lastObservedLeadModel = { provider: event.model.provider, modelId: event.model.id };
+    rt.lastObservedPlannerModel = { provider: event.model.provider, modelId: event.model.id };
   });
 
   pi.on("turn_end", async (_event, ctx) => {
     rt.latestPairContext = ctx;
-    maybeAutoReportWorkerCompletion();
+    maybeAutoReportBuilderCompletion();
   });
 }
