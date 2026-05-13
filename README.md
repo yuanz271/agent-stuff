@@ -48,13 +48,3 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 Reference documents in the [`docs`](docs) folder:
 
 * [`pi-extension-writing-guide.md`](docs/pi-extension-writing-guide.md) - Guide to writing pi-coding-agent extensions
-
-## Intercepted Commands
-
-Command wrappers live in [`intercepted-commands`](intercepted-commands):
-
-* [`pip`](intercepted-commands/pip)
-* [`pip3`](intercepted-commands/pip3)
-* [`poetry`](intercepted-commands/poetry)
-* [`python`](intercepted-commands/python)
-* [`python3`](intercepted-commands/python3)
