@@ -48,10 +48,6 @@ function extractText(content: unknown): string {
     .trim();
 }
 
-function pushCustomMessage(messages: CleanMessage[], content: string, customType: string | null): void {
-  messages.push({ role: "custom", content, customType });
-}
-
 function collectBranchMessages(ctx: ExtensionContext): CleanMessage[] {
   // Safe sweep rule: only SessionEntry.type === "message" entries with user/assistant roles are candidates.
   // Everything else (custom_message, branch_summary, compaction, custom state, etc.) is preserved untouched.
@@ -73,19 +69,19 @@ function collectBranchMessages(ctx: ExtensionContext): CleanMessage[] {
     if (entry?.type === "custom_message") {
       const content = extractText(entry.content ?? "");
       if (!content) continue;
-      pushCustomMessage(messages, content, typeof entry.customType === "string" ? entry.customType : null);
+      messages.push({ role: "custom", content, customType: typeof entry.customType === "string" ? entry.customType : null });
       continue;
     }
 
     if (entry?.type === "branch_summary") {
       if (typeof entry.summary !== "string" || !entry.summary.trim()) continue;
-      pushCustomMessage(messages, entry.summary, "branch_summary");
+      messages.push({ role: "custom", content: entry.summary, customType: "branch_summary" });
       continue;
     }
 
     if (entry?.type === "compaction") {
       if (typeof entry.summary !== "string" || !entry.summary.trim()) continue;
-      pushCustomMessage(messages, entry.summary, "compaction");
+      messages.push({ role: "custom", content: entry.summary, customType: "compaction" });
     }
   }
   return messages;
@@ -161,15 +157,6 @@ async function resolveSanitizerModel(ctx: ExtensionContext): Promise<{ model: an
 const SANITIZER_SYSTEM_PROMPT =
   "You are a transient text sanitizer for a Pi /forget workflow. Clean only the raw message text provided by the user. Return only the cleaned text. Leave the system prompt untouched.";
 
-function buildSanitizerUserText(query: string, role: "user" | "assistant", text: string): string {
-  return [
-    `Forget query: ${query}`,
-    `Message role: ${role}`,
-    "Message text:",
-    text,
-  ].join("\n");
-}
-
 async function sanitizeMessageText(
   model: any,
   apiKey: string,
@@ -184,7 +171,7 @@ async function sanitizeMessageText(
       messages: [
         {
           role: "user" as const,
-          content: [{ type: "text" as const, text: buildSanitizerUserText(query, role, text) }],
+          content: [{ type: "text" as const, text: [`Forget query: ${query}`, `Message role: ${role}`, "Message text:", text].join("\n") }],
           timestamp: Date.now(),
         },
       ],
