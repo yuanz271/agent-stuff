@@ -7,33 +7,33 @@ const MAX_EXCERPT_CHARS = 40_000;
 
 const cleanMessageSchema = z.object({
   role: z.enum(["user", "assistant", "custom"]),
-  content: z.string(),
+  content: z.string().max(4_000),
   customType: z.string().nullable(),
 });
 
 const cleanContextSchema = z.object({
-  systemPrompt: z.string(),
-  retainedSummary: z.string(),
-  messages: z.array(cleanMessageSchema),
+  systemPrompt: z.string().max(12_000),
+  retainedSummary: z.string().max(4_000),
+  messages: z.array(cleanMessageSchema).max(80),
 });
 
 const removedItemSchema = z.object({
   kind: z.enum(["instruction", "rule", "fact", "summary", "custom"]),
-  label: z.string(),
-  reason: z.string(),
+  label: z.string().max(256),
+  reason: z.string().max(512),
 });
 
 const candidateSchema = z.object({
-  label: z.string(),
-  reason: z.string(),
+  label: z.string().max(256),
+  reason: z.string().max(512),
 });
 
 const sanitizerResultSchema = z.object({
   status: z.enum(["ok", "ambiguous", "blocked"]),
   cleanContext: cleanContextSchema.nullable(),
-  removed: z.array(removedItemSchema).default([]),
-  candidates: z.array(candidateSchema).default([]),
-  notes: z.array(z.string()).default([]),
+  removed: z.array(removedItemSchema).max(50).default([]),
+  candidates: z.array(candidateSchema).max(20).default([]),
+  notes: z.array(z.string().max(512)).max(20).default([]),
 });
 
 type CleanMessage = z.infer<typeof cleanMessageSchema>;
@@ -47,20 +47,12 @@ type ForgetStateEntry = {
   cleanContext: CleanContext;
 };
 
-type PendingForgetSeed = {
-  sourceQuery: string;
-  cleanContext: CleanContext;
-  createdAt: string;
-};
-
 type ForgetRuntime = {
   activeState: ForgetStateEntry | undefined;
-  pendingSeed: PendingForgetSeed | undefined;
 };
 
 const rt: ForgetRuntime = {
   activeState: undefined,
-  pendingSeed: undefined,
 };
 
 function truncate(text: string, maxChars: number): string {
@@ -116,8 +108,7 @@ function buildSessionExcerpt(ctx: ExtensionContext): string {
   ];
 
   const branch = ctx.sessionManager.getBranch();
-  const start = Math.max(0, branch.length - 80);
-  for (const entry of branch.slice(start)) {
+  for (const entry of branch) {
     lines.push(`- ${describeEntry(entry)}`);
   }
 
@@ -161,6 +152,8 @@ function buildSanitizerSystemPrompt(): string {
   return [
     "You are a transient sanitizer session for a Pi /forget workflow.",
     "Your job is to produce a clean successor context artifact that removes stale instructions, rules, facts, summaries, and related derived context.",
+    "Preserve code artifacts, file diffs, task outputs, and tool results unless the user explicitly asks to forget them.",
+    "Only remove semantic content that plausibly causes future confusion.",
     "Prefer the smallest clean successor context that preserves useful recent work.",
     "Do not modify the main session.",
     "Do not write files.",
@@ -183,6 +176,8 @@ function buildMainPrompt(query: string, excerpt: string, selectedCandidate?: str
   return [
     "You are coordinating a transient sanitizer session for a Pi /forget operation.",
     "Given the provided session-tree excerpt and fuzzy user query, determine the safest semantic redaction needed to produce a clean successor context artifact.",
+    "Preserve code artifacts, file diffs, task outputs, and tool results unless the user explicitly asks to forget them.",
+    "Only remove semantic content that plausibly causes future confusion.",
     "The sanitizer session is isolated, one-shot, and non-persistent.",
     "Do not modify the main session.",
     "Do not write files.",
@@ -283,28 +278,29 @@ async function chooseCandidate(ctx: ExtensionContext, candidates: SanitizerResul
 }
 
 async function activateCleanBranch(pi: ExtensionAPI, ctx: ExtensionContext, cleanContext: CleanContext, sourceQuery: string): Promise<boolean> {
-  rt.pendingSeed = {
-    sourceQuery,
-    cleanContext,
-    createdAt: new Date().toISOString(),
-  };
-
-  const newSession = (ctx as unknown as { newSession?: () => Promise<{ cancelled?: boolean }> }).newSession;
+  const newSession = (ctx as unknown as {
+    newSession?: (options?: { withSession?: (nextCtx: ExtensionContext) => Promise<void> | void }) => Promise<{ cancelled?: boolean }>;
+  }).newSession;
   if (typeof newSession !== "function") {
     throw new Error("Pi runtime does not support ctx.newSession(), so /forget cannot safely create a clean branch.");
   }
 
-  try {
-    const result = await newSession.call(ctx);
-    if (result?.cancelled) {
-      rt.pendingSeed = undefined;
-      return false;
-    }
-    return true;
-  } catch (error) {
-    rt.pendingSeed = undefined;
-    throw error;
-  }
+  const result = await newSession.call(ctx, {
+    withSession: async (nextCtx) => {
+      await appendForgetState(pi, cleanContext, sourceQuery);
+      rt.activeState = {
+        active: true,
+        sourceQuery,
+        createdAt: new Date().toISOString(),
+        cleanContext,
+      };
+      if (nextCtx.hasUI) {
+        nextCtx.ui.notify("Created a cleaned session branch.", "info");
+      }
+    },
+  });
+
+  return !result?.cancelled;
 }
 
 export default function forgetExtension(pi: ExtensionAPI) {
@@ -312,31 +308,8 @@ export default function forgetExtension(pi: ExtensionAPI) {
     rt.activeState = currentStateFromBranch(ctx);
   };
 
-  pi.on("session_start", async (event, ctx) => {
+  pi.on("session_start", async (_event, ctx) => {
     updateRuntimeFromContext(ctx);
-
-    if (!rt.pendingSeed) return;
-    if (event.reason !== "new" && event.reason !== "fork" && event.reason !== "resume" && event.reason !== "startup") return;
-
-    try {
-      await appendForgetState(pi, rt.pendingSeed.cleanContext, rt.pendingSeed.sourceQuery);
-      rt.activeState = {
-        active: true,
-        sourceQuery: rt.pendingSeed.sourceQuery,
-        createdAt: rt.pendingSeed.createdAt,
-        cleanContext: rt.pendingSeed.cleanContext,
-      };
-      if (ctx.hasUI) {
-        ctx.ui.notify("Created a cleaned session branch.", "info");
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (ctx.hasUI) {
-        ctx.ui.notify(`forget branch activation failed: ${message}`, "error");
-      }
-    } finally {
-      rt.pendingSeed = undefined;
-    }
   });
 
   pi.on("session_tree", async (_event, ctx) => {
