@@ -48,6 +48,10 @@ function extractText(content: unknown): string {
     .trim();
 }
 
+function pushCustomMessage(messages: CleanMessage[], content: string, customType: string | null): void {
+  messages.push({ role: "custom", content, customType });
+}
+
 function collectBranchMessages(ctx: ExtensionContext): CleanMessage[] {
   // Safe sweep rule: only SessionEntry.type === "message" entries with user/assistant roles are candidates.
   // Everything else (custom_message, branch_summary, compaction, custom state, etc.) is preserved untouched.
@@ -69,31 +73,19 @@ function collectBranchMessages(ctx: ExtensionContext): CleanMessage[] {
     if (entry?.type === "custom_message") {
       const content = extractText(entry.content ?? "");
       if (!content) continue;
-      messages.push({
-        role: "custom",
-        content,
-        customType: typeof entry.customType === "string" ? entry.customType : null,
-      });
+      pushCustomMessage(messages, content, typeof entry.customType === "string" ? entry.customType : null);
       continue;
     }
 
     if (entry?.type === "branch_summary") {
       if (typeof entry.summary !== "string" || !entry.summary.trim()) continue;
-      messages.push({
-        role: "custom",
-        content: entry.summary,
-        customType: "branch_summary",
-      });
+      pushCustomMessage(messages, entry.summary, "branch_summary");
       continue;
     }
 
     if (entry?.type === "compaction") {
       if (typeof entry.summary !== "string" || !entry.summary.trim()) continue;
-      messages.push({
-        role: "custom",
-        content: entry.summary,
-        customType: "compaction",
-      });
+      pushCustomMessage(messages, entry.summary, "compaction");
     }
   }
   return messages;
