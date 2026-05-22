@@ -42,6 +42,82 @@ const sanitizerResultSchema = z.object({
   notes: z.array(z.string().max(512)).max(20).default([]),
 });
 
+const sanitizerResponseFormat = {
+  type: "json_schema",
+  json_schema: {
+    name: "forget_sanitizer_result",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["status", "cleanContext", "removed", "candidates", "notes"],
+      properties: {
+        status: { type: "string", enum: ["ok", "ambiguous", "blocked"] },
+        cleanContext: {
+          anyOf: [
+            {
+              type: "object",
+              additionalProperties: false,
+              required: ["systemPrompt", "retainedSummary", "messages"],
+              properties: {
+                systemPrompt: { type: "string", maxLength: 12_000 },
+                retainedSummary: { type: "string", maxLength: 4_000 },
+                messages: {
+                  type: "array",
+                  maxItems: 80,
+                  items: {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["role", "content", "customType"],
+                    properties: {
+                      role: { type: "string", enum: ["user", "assistant", "custom"] },
+                      content: { type: "string", maxLength: 4_000 },
+                      customType: { anyOf: [{ type: "string" }, { type: "null" }] },
+                    },
+                  },
+                },
+              },
+            },
+            { type: "null" },
+          ],
+        },
+        removed: {
+          type: "array",
+          maxItems: 50,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["kind", "label", "reason"],
+            properties: {
+              kind: { type: "string", enum: ["instruction", "rule", "fact", "summary", "custom"] },
+              label: { type: "string", maxLength: 256 },
+              reason: { type: "string", maxLength: 512 },
+            },
+          },
+        },
+        candidates: {
+          type: "array",
+          maxItems: 20,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["label", "reason"],
+            properties: {
+              label: { type: "string", maxLength: 256 },
+              reason: { type: "string", maxLength: 512 },
+            },
+          },
+        },
+        notes: {
+          type: "array",
+          maxItems: 20,
+          items: { type: "string", maxLength: 512 },
+        },
+      },
+    },
+  },
+} as const;
+
 type CleanMessage = z.infer<typeof cleanMessageSchema>;
 type CleanContext = z.infer<typeof cleanContextSchema>;
 type SanitizerResult = z.infer<typeof sanitizerResultSchema>;
@@ -253,7 +329,7 @@ async function repairSanitizerResult(
       ],
       tools: [],
     },
-    { apiKey },
+    { apiKey, response_format: sanitizerResponseFormat as any },
   );
 
   const text = response.content
@@ -343,7 +419,7 @@ async function runSanitizer(pi: ExtensionAPI, ctx: ExtensionContext, query: stri
       ],
       tools: [],
     },
-    { apiKey },
+    { apiKey, response_format: sanitizerResponseFormat as any },
   );
 
   const text = response.content
