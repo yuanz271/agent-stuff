@@ -6,7 +6,7 @@ The `forget` extension provides a safe way to remove stale, conflicting, or irre
 
 The core idea is not transcript surgery in the main working context. It is safe branch replacement:
 - inspect the current session tree
-- use a transient sanitizer session to clean one message text at a time
+- sweep all user and assistant messages through a transient sanitizer session one by one
 - keep the system prompt untouched
 - deterministically reconstruct a cleaned context artifact in code
 - fork a new branch seeded from that reconstructed artifact
@@ -33,9 +33,9 @@ The main agent should not be told that forgetting occurred.
 - No best-effort heuristics that silently rewrite history.
 
 ## Implementation plan
-1. Clean user and assistant message text one message at a time.
+1. Sweep user and assistant message text one message at a time.
 2. Keep the system prompt and retained summary untouched.
-3. Rebuild the cleaned message list deterministically in code.
+3. Rebuild the cleaned message list deterministically in code after the sweep completes.
 4. Smoke-test `/forget` on a stale-session case and verify the reconstructed branch preserves structure except for removed/redacted message text.
 
 ## User-facing command
@@ -45,10 +45,10 @@ A fuzzy cleanup command that removes stale semantic content from the active futu
 Behavior:
 1. Parse the fuzzy query.
 2. Scan current user and assistant message text for stale semantic content.
-3. Serialize only the user and assistant message text fields that need review.
+3. Sweep every user and assistant message text field in the current branch.
 4. Launch a transient sanitizer session/context with only one message text at a time.
 5. Ask the sanitizer to return pure cleaned text for that single message.
-6. Deterministically reconstruct the cleaned context in code by replacing or dropping each message based on the returned text.
+6. Deterministically reconstruct the cleaned context in code by replacing or dropping each swept message based on the returned text.
 7. Leave the system prompt untouched.
 8. Create the new branch using Pi’s session branching API.
 9. Do not emit any `/forget` text into the new branch.
@@ -201,6 +201,6 @@ Output format:
 - The old branch is preserved.
 - The agent does not see tombstones or deletion notes in future context.
 - The new branch is seeded from deterministic reconstruction, not by mutating the old branch in place.
-- The sanitizer only sees one message text at a time.
+- The sanitizer only sees one message text at a time, and a single `/forget` call sweeps the whole applicable message list.
 - The sanitizer never needs to emit the final `systemPrompt` / `messages` structure.
 - No direct JSONL mutation is performed.
