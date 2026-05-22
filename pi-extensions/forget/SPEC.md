@@ -190,6 +190,7 @@ Output format:
 - Fuzzy input is acceptable.
 - Ambiguity is explicit.
 - Cleanup is invisible to the main model.
+- While sweeping, show a lightweight footer progress footnote of the form `current/total` and clear it when finished.
 - The sanitizer context leaves no persistent trace.
 - The extension behaves as if the stale context never existed in the new branch.
 - The new branch is seeded only from the reconstructed context artifact.

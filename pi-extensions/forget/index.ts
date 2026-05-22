@@ -2,6 +2,7 @@ import { complete } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const STATE_ENTRY_TYPE = "forget-state";
+const STATUS_KEY = "forget";
 
 export type CleanMessage = {
   role: "user" | "assistant" | "custom";
@@ -157,6 +158,11 @@ async function resolveSanitizerModel(ctx: ExtensionContext): Promise<{ model: an
 const SANITIZER_SYSTEM_PROMPT =
   "You are a transient text sanitizer for a Pi /forget workflow. Clean only the raw message text provided by the user. Return only the cleaned text. Leave the system prompt untouched.";
 
+function setForgetStatus(ctx: ExtensionContext, current: number, total: number): void {
+  if (!ctx.hasUI) return;
+  ctx.ui.setStatus(STATUS_KEY, total > 0 ? `forget ${current}/${total}` : undefined);
+}
+
 async function sanitizeMessageText(
   model: any,
   apiKey: string,
@@ -192,27 +198,36 @@ async function sanitizeMessageText(
 async function sanitizeMessages(ctx: ExtensionContext, source: CleanContext, query: string): Promise<{ messages: CleanMessage[]; changed: boolean }> {
   const { model, apiKey } = await resolveSanitizerModel(ctx);
   const nextMessages: CleanMessage[] = [];
+  const sanitizableMessages = source.messages.filter((message) => message.role === "user" || message.role === "assistant");
   let changed = false;
 
-  for (const message of source.messages) {
-    if (message.role !== "user" && message.role !== "assistant") {
-      nextMessages.push(message);
-      continue;
-    }
+  setForgetStatus(ctx, 0, sanitizableMessages.length);
+  try {
+    let current = 0;
+    for (const message of source.messages) {
+      if (message.role !== "user" && message.role !== "assistant") {
+        nextMessages.push(message);
+        continue;
+      }
 
-    const cleaned = await sanitizeMessageText(model, apiKey, query, message.role, message.content);
-    const normalizedOriginal = message.content.trim();
-    const normalizedCleaned = cleaned.trim();
-    if (normalizedCleaned.length === 0) {
-      if (normalizedOriginal.length > 0) changed = true;
-      continue;
-    }
+      current += 1;
+      setForgetStatus(ctx, current, sanitizableMessages.length);
+      const cleaned = await sanitizeMessageText(model, apiKey, query, message.role, message.content);
+      const normalizedOriginal = message.content.trim();
+      const normalizedCleaned = cleaned.trim();
+      if (normalizedCleaned.length === 0) {
+        if (normalizedOriginal.length > 0) changed = true;
+        continue;
+      }
 
-    nextMessages.push({
-      ...message,
-      content: normalizedCleaned,
-    });
-    if (normalizedCleaned !== normalizedOriginal) changed = true;
+      nextMessages.push({
+        ...message,
+        content: normalizedCleaned,
+      });
+      if (normalizedCleaned !== normalizedOriginal) changed = true;
+    }
+  } finally {
+    if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
   }
 
   return { messages: nextMessages, changed };
