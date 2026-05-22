@@ -1,4 +1,4 @@
-import { complete, getModel } from "@earendil-works/pi-ai";
+import { complete } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const STATE_ENTRY_TYPE = "forget-state";
@@ -158,19 +158,15 @@ async function resolveSanitizerModel(ctx: ExtensionContext): Promise<{ model: an
   return { model, apiKey: auth.apiKey };
 }
 
-function buildSanitizerSystemPrompt(role: "user" | "assistant", query: string): string {
+const SANITIZER_SYSTEM_PROMPT =
+  "You are a transient text sanitizer for a Pi /forget workflow. Clean only the raw message text provided by the user. Return only the cleaned text. Leave the system prompt untouched.";
+
+function buildSanitizerUserText(query: string, role: "user" | "assistant", text: string): string {
   return [
-    "You are a transient text sanitizer for a Pi /forget workflow.",
-    `Role of the input message: ${role}`,
     `Forget query: ${query}`,
-    "Clean only the single message text in the user message.",
-    "Leave the system prompt untouched.",
-    "Preserve meaning unless it is stale, conflicting, or irrelevant.",
-    "Remove only the text that plausibly causes future confusion.",
-    "Do not add commentary, labels, bullets, or markdown fences.",
-    "Do not mention the format.",
-    "If the entire message should be removed, return an empty string.",
-    "Return only the cleaned text.",
+    `Message role: ${role}`,
+    "Message text:",
+    text,
   ].join("\n");
 }
 
@@ -184,11 +180,11 @@ async function sanitizeMessageText(
   const response = await complete(
     model,
     {
-      systemPrompt: buildSanitizerSystemPrompt(role, query),
+      systemPrompt: SANITIZER_SYSTEM_PROMPT,
       messages: [
         {
           role: "user" as const,
-          content: [{ type: "text" as const, text }],
+          content: [{ type: "text" as const, text: buildSanitizerUserText(query, role, text) }],
           timestamp: Date.now(),
         },
       ],
