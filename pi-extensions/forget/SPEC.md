@@ -6,8 +6,9 @@ The `forget` extension provides a safe way to remove stale, conflicting, or irre
 
 The core idea is not transcript surgery in the main working context. It is safe branch replacement:
 - inspect the current session tree
-- use a transient sanitizer session to produce a cleaned context artifact
-- fork a new branch seeded from that cleaned artifact
+- use a transient sanitizer session to label atomic context items
+- deterministically reconstruct a cleaned context artifact in code
+- fork a new branch seeded from that reconstructed artifact
 - continue in the new branch
 - leave the old branch intact
 
@@ -21,6 +22,7 @@ The main agent should not be told that forgetting occurred.
 - Stay within supported Pi session operations.
 - Keep sanitation work out of the main working session.
 - Never mutate session JSONL files directly.
+- Preserve the original context format by construction; the model must not author the final `systemPrompt` / `messages` object.
 
 ## Non-goals
 - No in-place deletion of arbitrary session entries.
@@ -29,6 +31,13 @@ The main agent should not be told that forgetting occurred.
 - No hidden meta-explanation injected into the new branch.
 - No best-effort heuristics that silently rewrite history.
 
+## Implementation plan
+1. Extract atomic session-record serialization from the current branch tree.
+2. Replace the sanitizer contract with per-record decisions over those atomic records.
+3. Rebuild `systemPrompt`, `retainedSummary`, and `messages` deterministically in code.
+4. Keep ambiguity handling and branch selection logic at the orchestration layer.
+5. Smoke-test `/forget` on a stale-session case and verify the reconstructed branch matches the source ordering except for removed/redacted items.
+
 ## User-facing command
 ### `/forget <query>`
 A fuzzy cleanup command that removes stale semantic content from the active future branch by producing a clean successor context artifact.
@@ -36,12 +45,12 @@ A fuzzy cleanup command that removes stale semantic content from the active futu
 Behavior:
 1. Parse the fuzzy query.
 2. Search the current session tree and branch history for candidate stale semantic content.
-3. Launch a transient sanitizer session/context with only the minimal session-tree data needed to produce a cleaned context artifact.
-4. Ask the sanitizer to remove stale instructions, rules, facts, summaries, and related derived context, while preserving only the content needed for the intended future work.
-5. If the sanitizer can produce a single clean successor context, use it.
-6. If the sanitizer reports ambiguity, surface the candidates so the user can choose.
-7. Create the new branch using Pi’s session branching API.
-8. Seed the new branch from the sanitizer’s cleaned context artifact.
+3. Serialize the relevant session tree / branch excerpt into ordered atomic records.
+4. Launch a transient sanitizer session/context with only the minimal session-tree data needed to classify those records.
+5. Ask the sanitizer to label each atomic record as keep / remove, plus any short notes.
+6. Deterministically reconstruct the cleaned context in code from the original records and the sanitizer’s labels.
+7. If the result is unambiguous, create the new branch using Pi’s session branching API.
+8. If the sanitizer reports ambiguity, surface the candidates so the user can choose, then rerun on the chosen candidate.
 9. Do not emit any `/forget` text into the new branch.
 
 ## Safety policy
@@ -53,12 +62,13 @@ It may:
 - call Pi’s branching/navigation APIs
 - launch a transient sanitizer session/context
 - use a different model for the sanitizer than the main session
-- ask the sanitizer to emit a cleaned context artifact
+- ask the sanitizer to classify atomic context items
 - prompt the user for a choice when ambiguity remains
 
 It must not:
 - edit session files directly
-- delete arbitrary transcript entries
+- delete arbitrary transcript entries in place
+- ask the model to serialize the final cleaned branch context
 - hide a cleanup action by injecting a special instruction into the new context
 - apply fuzzy deletion without a clear cutoff
 
@@ -90,20 +100,26 @@ Not eligible by default:
 
 When in doubt, the sanitizer should preserve non-instructional task content and remove only the semantic content that plausibly causes future confusion.
 
+The sanitizer output is a decision layer only. Code owns the final `systemPrompt`, `retainedSummary`, and `messages` reconstruction.
+
 ## Design constraints
 - The old branch remains available for audit/history.
 - The new branch should look like an ordinary continuation.
 - No tombstones, tags, or “forgotten” markers should be introduced into model-visible context.
 - Sanitization must run in a separate transient session/context, not inside the contaminated working session.
 - The sanitizer is one-shot and non-persistent.
-- The sanitizer should emit a cleaned context artifact that seeds the new branch.
+- The sanitizer should emit per-item decisions, not the final cleaned branch context.
+- Code must reconstruct the cleaned context from the original atomic records plus those decisions.
 - If the cleanup requires a summary for navigation, keep it outside the LLM-visible continuation branch.
 
 ## Implementation sketch
 - Use session tree inspection for candidate discovery.
 - Use `ctx.navigateTree(...)` when the user needs to choose among branches or to move to a specific point in the tree.
+- Serialize the current session branch into ordered atomic records.
+- Ask the sanitizer to classify each record, not to author the final cleaned context.
+- Rebuild the cleaned `systemPrompt`, `retainedSummary`, and `messages` in code from the original records and the sanitizer decisions.
 - Create a fresh continuation session/branch using Pi’s supported session-creation API (`ctx.fork(...)` or `ctx.newSession()` as appropriate for the current runtime path).
-- Seed the new branch with the sanitizer’s `cleanContext` artifact as the only model-visible continuation state.
+- Seed the new branch with the reconstructed context as the only model-visible continuation state.
 - Reconstruct any extension-local state from the active branch after the branch is created.
 - Treat the newly created branch as the only future context source.
 
@@ -142,17 +158,18 @@ Constraints:
 You are a transient sanitizer session for a Pi `/forget` workflow.
 
 Goal:
-- Inspect only the provided session-tree/context excerpt.
-- Produce a cleaned context artifact that removes stale instructions, rules, facts, summaries, and related derived context.
+- Inspect only the provided ordered atomic context records.
+- Label each record with a deterministic keep / remove decision.
+- Preserve the original format by construction; do not author the final system prompt or message array.
 - Prefer the smallest clean successor context that preserves useful recent work.
 
 Rules:
 - Do not modify the main session.
 - Do not write files.
 - Do not persist state.
-- Do not mention `/forget` unless asked for output format.
+- Do not invent new transcript content.
 - Do not explain chain-of-thought.
-- If the cleanup is ambiguous, return the minimal set of candidate clean contexts with brief labels.
+- If the cleanup is ambiguous, return candidate boundaries with brief labels.
 - If no safe cleanup exists, say so explicitly.
 
 Output format:
@@ -160,21 +177,10 @@ Output format:
 - Schema:
   {
     "status": "ok" | "ambiguous" | "blocked",
-    "cleanContext": {
-      "systemPrompt": string,
-      "retainedSummary": string,
-      "messages": [
-        {
-          "role": "user" | "assistant" | "custom",
-          "content": string,
-          "customType": string | null
-        }
-      ]
-    } | null,
-    "removed": [
+    "decisions": [
       {
-        "kind": "instruction" | "rule" | "fact" | "summary" | "custom",
-        "label": string,
+        "index": number,
+        "action": "keep" | "remove",
         "reason": string
       }
     ],
@@ -188,11 +194,11 @@ Output format:
   }
 ```
 
-### Clean-context contract
-- `cleanContext.systemPrompt` is the full instruction layer for the new branch.
-- `cleanContext.retainedSummary` is a short surviving summary only for content that should remain active.
-- `cleanContext.messages` are the exact model-visible messages that should seed the new branch.
-- `removed` and `candidates` are internal resolution data and must not be injected into the new branch.
+### Reconstruction contract
+- Code reconstructs `cleanContext.systemPrompt` from the original branch plus sanitizer decisions.
+- Code reconstructs `cleanContext.retainedSummary` from the surviving semantic summary records, or leaves it empty if nothing should survive.
+- Code reconstructs `cleanContext.messages` by filtering and optionally redacting the original ordered records.
+- Sanitizer `decisions` and `candidates` are internal resolution data and must not be injected into the new branch.
 - If `status` is `ambiguous`, the extension must not create a new branch until the user chooses a candidate.
 
 ## Failure modes
@@ -208,13 +214,14 @@ Output format:
 - Cleanup is invisible to the main model.
 - The sanitizer context leaves no persistent trace.
 - The extension behaves as if the stale context never existed in the new branch.
-- The new branch is seeded only from the cleaned context artifact.
-- The cleaned context artifact is the source of truth for what future turns inherit.
+- The new branch is seeded only from the reconstructed context artifact.
+- The reconstructed context artifact is the source of truth for what future turns inherit.
 
 ## Acceptance criteria
 - `/forget` produces a new cleaned branch, not a rewritten transcript.
 - The new branch contains no visible `/forget` message.
 - The old branch is preserved.
 - The agent does not see tombstones or deletion notes in future context.
-- The new branch is seeded from sanitizer output, not by mutating the old branch in place.
+- The new branch is seeded from deterministic reconstruction, not by mutating the old branch in place.
+- The sanitizer never needs to emit the final `systemPrompt` / `messages` structure.
 - No direct JSONL mutation is performed.

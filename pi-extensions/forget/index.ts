@@ -18,68 +18,49 @@ const cleanContextSchema = z.object({
   messages: z.array(cleanMessageSchema).max(80),
 });
 
-const rawCleanContextSchema = z.object({
-  systemPrompt: z.string().max(12_000).optional(),
-  retainedSummary: z.string().max(4_000).optional(),
-  messages: z.array(cleanMessageSchema).max(80).optional(),
-}).partial();
-
-const removedItemSchema = z.object({
-  kind: z.enum(["instruction", "rule", "fact", "summary", "custom"]),
-  label: z.string().max(256),
-  reason: z.string().max(512),
-});
-
 const candidateSchema = z.object({
   label: z.string().max(256),
   reason: z.string().max(512),
 });
 
+const atomicRecordSchema = z.object({
+  index: z.number().int().nonnegative(),
+  kind: z.enum(["systemPromptChunk", "retainedSummaryChunk", "message"]),
+  label: z.string().max(256),
+  text: z.string().max(12_000),
+  role: z.enum(["user", "assistant", "custom"]).nullable().optional(),
+  customType: z.string().nullable().optional(),
+});
+
+const decisionSchema = z.object({
+  index: z.number().int().nonnegative(),
+  action: z.enum(["keep", "remove"]),
+  reason: z.string().max(512),
+});
+
 const sanitizerResultSchema = z.object({
   status: z.enum(["ok", "ambiguous", "blocked"]),
-  cleanContext: rawCleanContextSchema.nullable(),
-  removed: z.array(removedItemSchema).max(50).default([]),
+  decisions: z.array(decisionSchema).max(200).default([]),
   candidates: z.array(candidateSchema).max(20).default([]),
   notes: z.array(z.string().max(512)).max(20).default([]),
 });
 
 const forgetSanitizerTool = {
   name: "emit_forget_result",
-  description: "Emit the sanitized /forget result as a structured tool call",
+  description: "Emit per-record /forget sanitizer decisions as a structured tool call",
   parameters: Type.Object({
     status: Type.Union([
       Type.Literal("ok"),
       Type.Literal("ambiguous"),
       Type.Literal("blocked"),
     ]),
-    cleanContext: Type.Union([
+    decisions: Type.Array(
       Type.Object({
-        systemPrompt: Type.String({ maxLength: 12_000 }),
-        retainedSummary: Type.String({ maxLength: 4_000 }),
-        messages: Type.Array(
-          Type.Object({
-            role: Type.Union([Type.Literal("user"), Type.Literal("assistant"), Type.Literal("custom")]),
-            content: Type.String({ maxLength: 4_000 }),
-            customType: Type.Union([Type.String(), Type.Null()]),
-          }, { additionalProperties: false }),
-          { maxItems: 80 },
-        ),
-      }, { additionalProperties: false }),
-      Type.Null(),
-    ]),
-    removed: Type.Array(
-      Type.Object({
-        kind: Type.Union([
-          Type.Literal("instruction"),
-          Type.Literal("rule"),
-          Type.Literal("fact"),
-          Type.Literal("summary"),
-          Type.Literal("custom"),
-        ]),
-        label: Type.String({ maxLength: 256 }),
+        index: Type.Number({ minimum: 0 }),
+        action: Type.Union([Type.Literal("keep"), Type.Literal("remove")]),
         reason: Type.String({ maxLength: 512 }),
       }, { additionalProperties: false }),
-      { maxItems: 50 },
+      { maxItems: 200 },
     ),
     candidates: Type.Array(
       Type.Object({
@@ -91,9 +72,10 @@ const forgetSanitizerTool = {
     notes: Type.Array(Type.String({ maxLength: 512 }), { maxItems: 20 }),
   }, { additionalProperties: false }),
 } as const;
-
 type CleanMessage = z.infer<typeof cleanMessageSchema>;
 type CleanContext = z.infer<typeof cleanContextSchema>;
+type AtomicRecord = z.infer<typeof atomicRecordSchema>;
+type SanitizerDecision = z.infer<typeof decisionSchema>;
 type SanitizerResult = z.infer<typeof sanitizerResultSchema>;
 
 type ForgetStateEntry = {
@@ -218,22 +200,107 @@ function buildSanitizerSystemPrompt(): string {
     "Do not explain chain-of-thought.",
     "If the cleanup is ambiguous, return the minimal set of candidate clean contexts with brief labels.",
     "If no safe cleanup exists, say so explicitly.",
-    "For status 'ok', include a complete cleanContext object.",
-    "For status 'ambiguous' or 'blocked', cleanContext may be null.",
+    "For status 'ok', include a decision for every provided record.",
+    "For status 'ambiguous' or 'blocked', the decisions array may be partial.",
     "You MUST call the emit_forget_result tool and return nothing else.",
   ].join("\n");
 }
 
-function buildMainPrompt(query: string, excerpt: string, selectedCandidate?: string): string {
+function splitAtomicText(text: string): string[] {
+  return text
+    .split(/\n{2,}/)
+    .map((chunk) => chunk.trim())
+    .filter(Boolean);
+}
+
+function collectBranchMessages(ctx: ExtensionContext): CleanMessage[] {
+  const messages: CleanMessage[] = [];
+  for (const entry of ctx.sessionManager.getBranch()) {
+    if (entry?.type === "message") {
+      const msg = entry.message ?? {};
+      const role = msg.role;
+      if (role !== "user" && role !== "assistant" && role !== "custom") continue;
+      const content = extractText(msg.content ?? msg.body ?? "");
+      if (!content) continue;
+      messages.push({
+        role,
+        content,
+        customType: typeof msg.customType === "string" ? msg.customType : null,
+      });
+      continue;
+    }
+
+    if (entry?.type === "custom") {
+      const customType = typeof entry.customType === "string" ? entry.customType : null;
+      const content = typeof entry.data === "string" ? entry.data : JSON.stringify(entry.data ?? {});
+      messages.push({
+        role: "custom",
+        content,
+        customType,
+      });
+    }
+  }
+  return messages;
+}
+
+function buildSourceContext(ctx: ExtensionContext): CleanContext {
+  const active = activeCleanContext(ctx) ?? currentStateFromBranch(ctx)?.cleanContext;
+  if (active) return active;
+  return {
+    systemPrompt: ctx.getSystemPrompt(),
+    retainedSummary: "",
+    messages: collectBranchMessages(ctx),
+  };
+}
+
+function buildAtomicRecords(ctx: ExtensionContext): AtomicRecord[] {
+  const source = buildSourceContext(ctx);
+  const records: AtomicRecord[] = [];
+  let index = 0;
+
+  for (const [chunkIndex, chunk] of splitAtomicText(source.systemPrompt).entries()) {
+    records.push({
+      index: index++,
+      kind: "systemPromptChunk",
+      label: `systemPrompt[${chunkIndex + 1}]`,
+      text: chunk,
+    });
+  }
+
+  for (const [chunkIndex, chunk] of splitAtomicText(source.retainedSummary).entries()) {
+    records.push({
+      index: index++,
+      kind: "retainedSummaryChunk",
+      label: `retainedSummary[${chunkIndex + 1}]`,
+      text: chunk,
+    });
+  }
+
+  for (const [messageIndex, message] of source.messages.entries()) {
+    records.push({
+      index: index++,
+      kind: "message",
+      label: `message[${messageIndex + 1}] ${message.role}${message.customType ? `:${message.customType}` : ""}`,
+      text: message.content,
+      role: message.role,
+      customType: message.customType,
+    });
+  }
+
+  return records;
+}
+
+function buildMainPrompt(query: string, records: AtomicRecord[], selectedCandidate?: string): string {
   const payload: Record<string, unknown> = {
     query,
     selectedCandidate: selectedCandidate ?? null,
-    currentSession: excerpt,
+    records,
   };
 
   return [
     "You are coordinating a transient sanitizer session for a Pi /forget operation.",
-    "Given the provided session-tree excerpt and fuzzy user query, determine the safest semantic redaction needed to produce a clean successor context artifact.",
+    "Given the ordered atomic records from the current context, decide which records should be kept or removed to produce a clean successor context.",
+    "Preserve the original format by construction; do not author the final systemPrompt, retainedSummary, or message array.",
     "Preserve code artifacts, file diffs, task outputs, and tool results unless the user explicitly asks to forget them.",
     "Only remove semantic content that plausibly causes future confusion.",
     "The sanitizer session is isolated, one-shot, and non-persistent.",
@@ -244,8 +311,8 @@ function buildMainPrompt(query: string, excerpt: string, selectedCandidate?: str
     "If there is one clear cleaned context, choose it.",
     "If there are multiple plausible clean contexts, return the minimal candidate set.",
     "If no safe cleanup exists, return blocked.",
-    "For status 'ok', include a complete cleanContext object.",
-    "For status 'ambiguous' or 'blocked', cleanContext may be null.",
+    "For status 'ok', include a complete decisions array that covers every record.",
+    "For status 'ambiguous' or 'blocked', decisions may be partial.",
     "You MUST call the emit_forget_result tool and return nothing else.",
     "Prefer the smallest clean successor context that preserves useful recent work.",
     "Be conservative; fail closed on ambiguity.",
@@ -254,18 +321,6 @@ function buildMainPrompt(query: string, excerpt: string, selectedCandidate?: str
     "INPUT:",
     JSON.stringify(payload, null, 2),
   ].join("\n");
-}
-
-function parseSanitizerResult(text: string): SanitizerResult {
-  const json = extractJson(text);
-  const result = sanitizerResultSchema.parse(JSON.parse(json));
-  if (result.status === "ok") {
-    if (!result.cleanContext) {
-      throw new Error("sanitizer returned status 'ok' without cleanContext");
-    }
-    result.cleanContext = cleanContextSchema.parse(result.cleanContext);
-  }
-  return result;
 }
 
 class SanitizerParseError extends Error {
@@ -279,59 +334,15 @@ class SanitizerParseError extends Error {
   }
 }
 
-async function repairSanitizerResult(
-  ctx: ExtensionContext,
-  rawText: string,
-  query: string,
-  selectedCandidate?: string,
-): Promise<SanitizerResult> {
-  const { model, apiKey } = await resolveSanitizerModel(ctx);
-  const response = await complete(
-    model,
-    {
-      systemPrompt: [
-        buildSanitizerSystemPrompt(),
-        "The previous response was invalid. Repair it into the required tool call arguments.",
-        "Preserve the original intent as faithfully as possible.",
-        "You MUST call the emit_forget_result tool and return nothing else.",
-      ].join("\n"),
-      messages: [
-        {
-          role: "user" as const,
-          content: [{ type: "text" as const, text: JSON.stringify({ query, selectedCandidate: selectedCandidate ?? null, invalidResponse: truncate(rawText, 12_000) }, null, 2) }],
-          timestamp: Date.now(),
-        },
-      ],
-      tools: [forgetSanitizerTool],
-    },
-    { apiKey },
-  );
-
-  return parseSanitizerToolCall(response as any, selectedCandidate);
-}
-
-function parseOrThrowSanitizerResult(text: string, selectedCandidate?: string): SanitizerResult {
-  try {
-    return parseSanitizerResult(text);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new SanitizerParseError(message, text, selectedCandidate);
-  }
-}
-
 function parseSanitizerToolCall(response: { content: Array<{ type?: string; name?: string; arguments?: unknown }> }, selectedCandidate?: string): SanitizerResult {
   const toolCall = response.content.find((part) => part.type === "toolCall" && part.name === forgetSanitizerTool.name);
   if (!toolCall || toolCall.type !== "toolCall") {
     throw new SanitizerParseError("sanitizer did not return the required tool call", JSON.stringify(response.content ?? []), selectedCandidate);
   }
 
-  const args = toolCall.arguments as unknown;
-  const parsed = sanitizerResultSchema.parse(args);
-  if (parsed.status === "ok") {
-    if (!parsed.cleanContext) {
-      throw new SanitizerParseError("sanitizer returned status 'ok' without cleanContext", JSON.stringify(args), selectedCandidate);
-    }
-    parsed.cleanContext = cleanContextSchema.parse(parsed.cleanContext);
+  const parsed = sanitizerResultSchema.parse(toolCall.arguments);
+  if (parsed.status === "ok" && parsed.decisions.length === 0) {
+    throw new SanitizerParseError("sanitizer returned status 'ok' without decisions", JSON.stringify(toolCall.arguments ?? {}), selectedCandidate);
   }
   return parsed;
 }
@@ -344,8 +355,8 @@ function formatSanitizerFailure(result: SanitizerResult): string {
   if (result.notes.length > 0) {
     parts.push(`notes=${result.notes.join(" | ")}`);
   }
-  if (result.removed.length > 0) {
-    parts.push(`removed=${result.removed.map((item) => item.label).join(", ")}`);
+  if (result.decisions.length > 0) {
+    parts.push(`decisions=${result.decisions.slice(0, 8).map((item) => `${item.index}:${item.action}`).join(", ")}${result.decisions.length > 8 ? ", …" : ""}`);
   }
   return parts.join("; ");
 }
@@ -392,6 +403,7 @@ async function appendForgetState(pi: ExtensionAPI, cleanContext: CleanContext, s
 
 async function runSanitizer(pi: ExtensionAPI, ctx: ExtensionContext, query: string, selectedCandidate?: string): Promise<SanitizerResult> {
   const { model, apiKey } = await resolveSanitizerModel(ctx);
+  const records = buildAtomicRecords(ctx);
   const response = await complete(
     model,
     {
@@ -399,7 +411,7 @@ async function runSanitizer(pi: ExtensionAPI, ctx: ExtensionContext, query: stri
       messages: [
         {
           role: "user" as const,
-          content: [{ type: "text" as const, text: buildMainPrompt(query, buildSessionExcerpt(ctx), selectedCandidate) }],
+          content: [{ type: "text" as const, text: buildMainPrompt(query, records, selectedCandidate) }],
           timestamp: Date.now(),
         },
       ],
@@ -419,6 +431,35 @@ async function chooseCandidate(ctx: ExtensionContext, candidates: SanitizerResul
   const separator = picked.indexOf(" — ");
   const rawLabel = separator >= 0 ? picked.slice(0, separator) : picked;
   return rawLabel.replace(/^\d+\.\s*/, "");
+}
+
+function rebuildCleanContext(records: AtomicRecord[]): CleanContext {
+  const systemPromptChunks: string[] = [];
+  const summaryChunks: string[] = [];
+  const messages: CleanMessage[] = [];
+
+  for (const record of records) {
+    if (record.kind === "systemPromptChunk") {
+      systemPromptChunks.push(record.text);
+      continue;
+    }
+    if (record.kind === "retainedSummaryChunk") {
+      summaryChunks.push(record.text);
+      continue;
+    }
+
+    messages.push({
+      role: record.role ?? "custom",
+      content: record.text,
+      customType: record.role === "custom" ? (record.customType ?? null) : null,
+    });
+  }
+
+  return {
+    systemPrompt: systemPromptChunks.join("\n\n").trim(),
+    retainedSummary: summaryChunks.join("\n\n").trim(),
+    messages,
+  };
 }
 
 async function activateCleanBranch(pi: ExtensionAPI, ctx: ExtensionContext, cleanContext: CleanContext, sourceQuery: string): Promise<boolean> {
@@ -500,45 +541,30 @@ export default function forgetExtension(pi: ExtensionAPI) {
           result = await runSanitizer(pi, ctx, query, selection);
         }
 
-        if (result.status !== "ok" || !result.cleanContext) {
+        if (result.status !== "ok") {
           ctx.ui.notify(`No clean successor context could be produced: ${formatSanitizerFailure(result)}`, "error");
           return;
         }
 
-        const activated = await activateCleanBranch(pi, ctx, result.cleanContext, query);
+        const decisions = new Map(result.decisions.map((decision) => [decision.index, decision] as const));
+        const records = buildAtomicRecords(ctx);
+        const keepRecords = records.filter((record) => {
+          const decision = decisions.get(record.index);
+          if (!decision) {
+            throw new SanitizerParseError(`sanitizer omitted decision for record ${record.index} (${record.label})`, JSON.stringify(result), query);
+          }
+          return decision.action === "keep";
+        });
+
+        const cleanContext = rebuildCleanContext(keepRecords);
+        if (!cleanContext.systemPrompt.trim()) {
+          throw new SanitizerParseError("sanitizer reconstruction produced an empty system prompt", JSON.stringify(result), query);
+        }
+        const activated = await activateCleanBranch(pi, ctx, cleanContext, query);
         if (!activated) return;
       } catch (error) {
         if (error instanceof SanitizerParseError) {
-          try {
-            const repaired = await repairSanitizerResult(ctx, error.rawText, query, error.selectedCandidate);
-            if (repaired.status === "ambiguous") {
-              const selection = await chooseCandidate(ctx, repaired.candidates);
-              if (!selection) {
-                ctx.ui.notify("No candidate selected.", "warning");
-                return;
-              }
-              const rerun = await runSanitizer(pi, ctx, query, selection);
-              if (rerun.status === "ok" && rerun.cleanContext) {
-                const activated = await activateCleanBranch(pi, ctx, rerun.cleanContext, query);
-                if (!activated) return;
-                return;
-              }
-              ctx.ui.notify(`forget failed after ambiguous repair rerun: ${formatSanitizerFailure(rerun)}`, "error");
-              return;
-            }
-
-            if (repaired.status === "ok" && repaired.cleanContext) {
-              const activated = await activateCleanBranch(pi, ctx, repaired.cleanContext, query);
-              if (!activated) return;
-              return;
-            }
-          } catch (repairError) {
-            const repairMessage = repairError instanceof Error ? repairError.message : String(repairError);
-            ctx.ui.notify(`forget failed: ${error.message}; repair also failed: ${repairMessage}`, "error");
-            return;
-          }
-
-          ctx.ui.notify(`forget failed: ${error.message}; sanitized result: ${formatSanitizerFailure(repaired)}`, "error");
+          ctx.ui.notify(`forget failed: ${error.message}`, "error");
           return;
         }
 
