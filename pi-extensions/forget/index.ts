@@ -274,6 +274,20 @@ function parseOrThrowSanitizerResult(text: string, selectedCandidate?: string): 
   }
 }
 
+function formatSanitizerFailure(result: SanitizerResult): string {
+  const parts = [`status=${result.status}`];
+  if (result.candidates.length > 0) {
+    parts.push(`candidates=${result.candidates.map((candidate) => candidate.label).join(", ")}`);
+  }
+  if (result.notes.length > 0) {
+    parts.push(`notes=${result.notes.join(" | ")}`);
+  }
+  if (result.removed.length > 0) {
+    parts.push(`removed=${result.removed.map((item) => item.label).join(", ")}`);
+  }
+  return parts.join("; ");
+}
+
 function currentStateFromBranch(ctx: ExtensionContext): ForgetStateEntry | undefined {
   const branch = ctx.sessionManager.getBranch();
   for (let i = branch.length - 1; i >= 0; i--) {
@@ -431,7 +445,7 @@ export default function forgetExtension(pi: ExtensionAPI) {
         }
 
         if (result.status !== "ok" || !result.cleanContext) {
-          ctx.ui.notify("No clean successor context could be produced.", "error");
+          ctx.ui.notify(`No clean successor context could be produced: ${formatSanitizerFailure(result)}`, "error");
           return;
         }
 
@@ -453,6 +467,8 @@ export default function forgetExtension(pi: ExtensionAPI) {
                 if (!activated) return;
                 return;
               }
+              ctx.ui.notify(`forget failed after ambiguous repair rerun: ${formatSanitizerFailure(rerun)}`, "error");
+              return;
             }
 
             if (repaired.status === "ok" && repaired.cleanContext) {
@@ -466,7 +482,7 @@ export default function forgetExtension(pi: ExtensionAPI) {
             return;
           }
 
-          ctx.ui.notify(`forget failed: ${error.message}`, "error");
+          ctx.ui.notify(`forget failed: ${error.message}; sanitized result: ${formatSanitizerFailure(repaired)}`, "error");
           return;
         }
 
