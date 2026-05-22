@@ -6,7 +6,8 @@ The `forget` extension provides a safe way to remove stale, conflicting, or irre
 
 The core idea is not transcript surgery in the main working context. It is safe branch replacement:
 - inspect the current session tree
-- use a transient sanitizer session to label atomic context items
+- use a transient sanitizer session to clean one message text at a time
+- keep the system prompt untouched
 - deterministically reconstruct a cleaned context artifact in code
 - fork a new branch seeded from that reconstructed artifact
 - continue in the new branch
@@ -22,7 +23,7 @@ The main agent should not be told that forgetting occurred.
 - Stay within supported Pi session operations.
 - Keep sanitation work out of the main working session.
 - Never mutate session JSONL files directly.
-- Preserve the original context format by construction; the model must not author the final `systemPrompt` / `messages` object.
+- Preserve the original context format by construction; the model must only clean message text and must not author the final `systemPrompt` / `messages` object.
 
 ## Non-goals
 - No in-place deletion of arbitrary session entries.
@@ -32,11 +33,10 @@ The main agent should not be told that forgetting occurred.
 - No best-effort heuristics that silently rewrite history.
 
 ## Implementation plan
-1. Extract atomic session-record serialization from the current branch tree.
-2. Replace the sanitizer contract with per-record decisions over those atomic records.
-3. Rebuild `systemPrompt`, `retainedSummary`, and `messages` deterministically in code.
-4. Keep ambiguity handling and branch selection logic at the orchestration layer.
-5. Smoke-test `/forget` on a stale-session case and verify the reconstructed branch matches the source ordering except for removed/redacted items.
+1. Clean user and assistant message text one message at a time.
+2. Keep the system prompt and retained summary untouched.
+3. Rebuild the cleaned message list deterministically in code.
+4. Smoke-test `/forget` on a stale-session case and verify the reconstructed branch preserves structure except for removed/redacted message text.
 
 ## User-facing command
 ### `/forget <query>`
@@ -44,13 +44,13 @@ A fuzzy cleanup command that removes stale semantic content from the active futu
 
 Behavior:
 1. Parse the fuzzy query.
-2. Search the current session tree and branch history for candidate stale semantic content.
-3. Serialize the relevant session tree / branch excerpt into ordered atomic records.
-4. Launch a transient sanitizer session/context with only the minimal session-tree data needed to classify those records.
-5. Ask the sanitizer to label each atomic record as keep / remove, plus any short notes.
-6. Deterministically reconstruct the cleaned context in code from the original records and the sanitizer’s labels.
-7. If the result is unambiguous, create the new branch using Pi’s session branching API.
-8. If the sanitizer reports ambiguity, surface the candidates so the user can choose, then rerun on the chosen candidate.
+2. Scan current user and assistant message text for stale semantic content.
+3. Serialize only the user and assistant message text fields that need review.
+4. Launch a transient sanitizer session/context with only one message text at a time.
+5. Ask the sanitizer to return pure cleaned text for that single message.
+6. Deterministically reconstruct the cleaned context in code by replacing or dropping each message based on the returned text.
+7. Leave the system prompt untouched.
+8. Create the new branch using Pi’s session branching API.
 9. Do not emit any `/forget` text into the new branch.
 
 ## Safety policy
@@ -62,13 +62,13 @@ It may:
 - call Pi’s branching/navigation APIs
 - launch a transient sanitizer session/context
 - use a different model for the sanitizer than the main session
-- ask the sanitizer to classify atomic context items
-- prompt the user for a choice when ambiguity remains
+- ask the sanitizer to clean individual message text fields
 
 It must not:
 - edit session files directly
 - delete arbitrary transcript entries in place
 - ask the model to serialize the final cleaned branch context
+- clean the system prompt through the sanitizer
 - hide a cleanup action by injecting a special instruction into the new context
 - apply fuzzy deletion without a clear cutoff
 
@@ -77,30 +77,27 @@ If the extension cannot identify a safe cutoff, it should fail closed and explai
 ## Expected workflow
 1. The user notices stale or conflicting instructions in the current context.
 2. The user runs `/forget <fuzzy description>`.
-3. The extension maps the fuzzy request to one or more candidate semantic regions in the session tree.
-4. The extension offers the likely clean successor context(s).
-5. The user confirms one if needed.
-6. The extension forks into the cleaned branch.
-7. The new branch becomes the active continuation.
+3. The extension scans user and assistant message text for stale semantic content.
+4. The extension cleans each message text one by one using the transient sanitizer.
+5. The extension forks into the cleaned branch.
+6. The new branch becomes the active continuation.
 
 ## Semantic scope
-The sanitizer operates over semantic atoms, not raw line edits.
+The sanitizer operates over one raw message text at a time, not over structured context records.
 
-Eligible atoms include:
-- instructions and rules
-- preferences and behavioral constraints
-- factual claims that affect future behavior
-- compaction or branch summaries that still affect future behavior
-- custom/context entries that are model-visible
+Eligible text:
+- user message text
+- assistant message text
 
 Not eligible by default:
-- code artifacts, file diffs, or task outputs that are not themselves instructions
-- tool results, unless the user explicitly indicates they are part of the stale semantic content
-- unrelated recent work that should survive the continuation
+- the system prompt
+- retained summary text
+- custom/tool context entries
+- code artifacts, file diffs, or task outputs that are not user/assistant message text
 
-When in doubt, the sanitizer should preserve non-instructional task content and remove only the semantic content that plausibly causes future confusion.
+When in doubt, preserve the message structure and let the sanitizer only rewrite the text of user/assistant turns.
 
-The sanitizer output is a decision layer only. Code owns the final `systemPrompt`, `retainedSummary`, and `messages` reconstruction.
+The sanitizer output is pure cleaned text only. Code owns the original structure and applies the cleaned text back to each message.
 
 ## Design constraints
 - The old branch remains available for audit/history.
@@ -108,16 +105,16 @@ The sanitizer output is a decision layer only. Code owns the final `systemPrompt
 - No tombstones, tags, or “forgotten” markers should be introduced into model-visible context.
 - Sanitization must run in a separate transient session/context, not inside the contaminated working session.
 - The sanitizer is one-shot and non-persistent.
-- The sanitizer should emit per-item decisions, not the final cleaned branch context.
-- Code must reconstruct the cleaned context from the original atomic records plus those decisions.
+- The sanitizer should emit pure cleaned text for one message at a time, not the final cleaned branch context.
+- Code must reconstruct the cleaned context from the original structure plus those cleaned message texts.
 - If the cleanup requires a summary for navigation, keep it outside the LLM-visible continuation branch.
 
 ## Implementation sketch
-- Use session tree inspection for candidate discovery.
+- Use session tree inspection to gather the message texts that need cleaning.
 - Use `ctx.navigateTree(...)` when the user needs to choose among branches or to move to a specific point in the tree.
-- Serialize the current session branch into ordered atomic records.
-- Ask the sanitizer to classify each record, not to author the final cleaned context.
-- Rebuild the cleaned `systemPrompt`, `retainedSummary`, and `messages` in code from the original records and the sanitizer decisions.
+- Clean user and assistant message text one message at a time.
+- Leave the system prompt and retained summary untouched.
+- Rebuild the cleaned `messages` in code from the original structure and the sanitizer outputs.
 - Create a fresh continuation session/branch using Pi’s supported session-creation API (`ctx.fork(...)` or `ctx.newSession()` as appropriate for the current runtime path).
 - Seed the new branch with the reconstructed context as the only model-visible continuation state.
 - Reconstruct any extension-local state from the active branch after the branch is created.
@@ -130,7 +127,8 @@ The sanitizer output is a decision layer only. Code owns the final `systemPrompt
 You are coordinating a transient sanitizer session for a Pi `/forget` operation.
 
 Task:
-- Given the provided session-tree excerpt and fuzzy user query, determine the safest semantic redaction needed to produce a clean successor context.
+- Given one message text and the fuzzy user query, clean only the message text.
+- Leave the system prompt untouched.
 - The sanitizer session is isolated, one-shot, and non-persistent.
 - Do not modify the main session.
 - Do not write files.
@@ -138,18 +136,17 @@ Task:
 
 Input:
 - fuzzy query
-- compact session tree / branch excerpt
-- any candidate semantic groups already identified
+- role of the message (user or assistant)
+- the raw message text
 
 Output:
-- Return only machine-readable JSON matching the requested schema.
-- If there is one clear cleaned context, choose it.
-- If there are multiple plausible clean contexts, return the minimal candidate set.
-- If no safe cleanup exists, return blocked.
+- Return only the cleaned text for that single message.
+- If the entire message should be removed, return an empty string.
+- Do not wrap the answer in JSON or markdown.
 
 Constraints:
-- Prefer the smallest clean successor context that preserves useful recent work.
-- Be conservative; fail closed on ambiguity.
+- Preserve meaning unless it is stale/conflicting.
+- Be conservative; remove only the text that plausibly causes future confusion.
 - Do not include chain-of-thought or hidden reasoning.
 ```
 
@@ -158,10 +155,9 @@ Constraints:
 You are a transient sanitizer session for a Pi `/forget` workflow.
 
 Goal:
-- Inspect only the provided ordered atomic context records.
-- Label each record with a deterministic keep / remove decision.
-- Preserve the original format by construction; do not author the final system prompt or message array.
-- Prefer the smallest clean successor context that preserves useful recent work.
+- Clean only the provided raw message text.
+- Preserve the message format; do not author any structured context.
+- Prefer the smallest cleaned version that preserves useful meaning.
 
 Rules:
 - Do not modify the main session.
@@ -169,37 +165,19 @@ Rules:
 - Do not persist state.
 - Do not invent new transcript content.
 - Do not explain chain-of-thought.
-- If the cleanup is ambiguous, return candidate boundaries with brief labels.
-- If no safe cleanup exists, say so explicitly.
+- If nothing should remain, return an empty string.
+- If no safe cleanup exists, return the original text unchanged.
 
 Output format:
-- Return only machine-readable JSON.
-- Schema:
-  {
-    "status": "ok" | "ambiguous" | "blocked",
-    "decisions": [
-      {
-        "index": number,
-        "action": "keep" | "remove",
-        "reason": string
-      }
-    ],
-    "candidates": [
-      {
-        "label": string,
-        "reason": string
-      }
-    ],
-    "notes": [string]
-  }
+- Return only cleaned text.
+- Do not wrap the answer in JSON or markdown.
 ```
 
 ### Reconstruction contract
-- Code reconstructs `cleanContext.systemPrompt` from the original branch plus sanitizer decisions.
-- Code reconstructs `cleanContext.retainedSummary` from the surviving semantic summary records, or leaves it empty if nothing should survive.
-- Code reconstructs `cleanContext.messages` by filtering and optionally redacting the original ordered records.
-- Sanitizer `decisions` and `candidates` are internal resolution data and must not be injected into the new branch.
-- If `status` is `ambiguous`, the extension must not create a new branch until the user chooses a candidate.
+- Code reconstructs `cleanContext.systemPrompt` by copying it unchanged from the source context.
+- Code reconstructs `cleanContext.retainedSummary` by copying it unchanged from the source context.
+- Code reconstructs `cleanContext.messages` by keeping custom entries unchanged and replacing only user/assistant message content with the sanitizer’s cleaned text.
+- The sanitizer output is plain text only and must not be injected into the new branch as metadata.
 
 ## Failure modes
 - Query matches multiple incompatible semantic redactions: ask the user.
@@ -223,5 +201,6 @@ Output format:
 - The old branch is preserved.
 - The agent does not see tombstones or deletion notes in future context.
 - The new branch is seeded from deterministic reconstruction, not by mutating the old branch in place.
+- The sanitizer only sees one message text at a time.
 - The sanitizer never needs to emit the final `systemPrompt` / `messages` structure.
 - No direct JSONL mutation is performed.
