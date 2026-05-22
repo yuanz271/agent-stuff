@@ -1,5 +1,6 @@
 import { complete, getModel } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
 import { z } from "zod";
 
 const STATE_ENTRY_TYPE = "forget-state";
@@ -36,86 +37,59 @@ const candidateSchema = z.object({
 
 const sanitizerResultSchema = z.object({
   status: z.enum(["ok", "ambiguous", "blocked"]),
-  cleanContext: rawCleanContextSchema.nullable().optional(),
+  cleanContext: rawCleanContextSchema.nullable(),
   removed: z.array(removedItemSchema).max(50).default([]),
   candidates: z.array(candidateSchema).max(20).default([]),
   notes: z.array(z.string().max(512)).max(20).default([]),
 });
 
-const sanitizerResponseFormat = {
-  type: "json_schema",
-  json_schema: {
-    name: "forget_sanitizer_result",
-    strict: true,
-    schema: {
-      type: "object",
-      additionalProperties: false,
-      required: ["status", "cleanContext", "removed", "candidates", "notes"],
-      properties: {
-        status: { type: "string", enum: ["ok", "ambiguous", "blocked"] },
-        cleanContext: {
-          anyOf: [
-            {
-              type: "object",
-              additionalProperties: false,
-              required: ["systemPrompt", "retainedSummary", "messages"],
-              properties: {
-                systemPrompt: { type: "string", maxLength: 12_000 },
-                retainedSummary: { type: "string", maxLength: 4_000 },
-                messages: {
-                  type: "array",
-                  maxItems: 80,
-                  items: {
-                    type: "object",
-                    additionalProperties: false,
-                    required: ["role", "content", "customType"],
-                    properties: {
-                      role: { type: "string", enum: ["user", "assistant", "custom"] },
-                      content: { type: "string", maxLength: 4_000 },
-                      customType: { anyOf: [{ type: "string" }, { type: "null" }] },
-                    },
-                  },
-                },
-              },
-            },
-            { type: "null" },
-          ],
-        },
-        removed: {
-          type: "array",
-          maxItems: 50,
-          items: {
-            type: "object",
-            additionalProperties: false,
-            required: ["kind", "label", "reason"],
-            properties: {
-              kind: { type: "string", enum: ["instruction", "rule", "fact", "summary", "custom"] },
-              label: { type: "string", maxLength: 256 },
-              reason: { type: "string", maxLength: 512 },
-            },
-          },
-        },
-        candidates: {
-          type: "array",
-          maxItems: 20,
-          items: {
-            type: "object",
-            additionalProperties: false,
-            required: ["label", "reason"],
-            properties: {
-              label: { type: "string", maxLength: 256 },
-              reason: { type: "string", maxLength: 512 },
-            },
-          },
-        },
-        notes: {
-          type: "array",
-          maxItems: 20,
-          items: { type: "string", maxLength: 512 },
-        },
-      },
-    },
-  },
+const forgetSanitizerTool = {
+  name: "emit_forget_result",
+  description: "Emit the sanitized /forget result as a structured tool call",
+  parameters: Type.Object({
+    status: Type.Union([
+      Type.Literal("ok"),
+      Type.Literal("ambiguous"),
+      Type.Literal("blocked"),
+    ]),
+    cleanContext: Type.Union([
+      Type.Object({
+        systemPrompt: Type.String({ maxLength: 12_000 }),
+        retainedSummary: Type.String({ maxLength: 4_000 }),
+        messages: Type.Array(
+          Type.Object({
+            role: Type.Union([Type.Literal("user"), Type.Literal("assistant"), Type.Literal("custom")]),
+            content: Type.String({ maxLength: 4_000 }),
+            customType: Type.Union([Type.String(), Type.Null()]),
+          }, { additionalProperties: false }),
+          { maxItems: 80 },
+        ),
+      }, { additionalProperties: false }),
+      Type.Null(),
+    ]),
+    removed: Type.Array(
+      Type.Object({
+        kind: Type.Union([
+          Type.Literal("instruction"),
+          Type.Literal("rule"),
+          Type.Literal("fact"),
+          Type.Literal("summary"),
+          Type.Literal("custom"),
+        ]),
+        label: Type.String({ maxLength: 256 }),
+        reason: Type.String({ maxLength: 512 }),
+      }, { additionalProperties: false }),
+      { maxItems: 50 },
+    ),
+    candidates: Type.Array(
+      Type.Object({
+        label: Type.String({ maxLength: 256 }),
+        reason: Type.String({ maxLength: 512 }),
+      }, { additionalProperties: false }),
+      { maxItems: 20 },
+    ),
+    notes: Type.Array(Type.String({ maxLength: 512 }), { maxItems: 20 }),
+  }, { additionalProperties: false }),
 } as const;
 
 type CleanMessage = z.infer<typeof cleanMessageSchema>;
@@ -245,8 +219,8 @@ function buildSanitizerSystemPrompt(): string {
     "If the cleanup is ambiguous, return the minimal set of candidate clean contexts with brief labels.",
     "If no safe cleanup exists, say so explicitly.",
     "For status 'ok', include a complete cleanContext object.",
-    "For status 'ambiguous' or 'blocked', cleanContext may be omitted or null.",
-    "Return only machine-readable JSON matching the requested schema.",
+    "For status 'ambiguous' or 'blocked', cleanContext may be null.",
+    "You MUST call the emit_forget_result tool and return nothing else.",
   ].join("\n");
 }
 
@@ -271,7 +245,8 @@ function buildMainPrompt(query: string, excerpt: string, selectedCandidate?: str
     "If there are multiple plausible clean contexts, return the minimal candidate set.",
     "If no safe cleanup exists, return blocked.",
     "For status 'ok', include a complete cleanContext object.",
-    "For status 'ambiguous' or 'blocked', cleanContext may be omitted or null.",
+    "For status 'ambiguous' or 'blocked', cleanContext may be null.",
+    "You MUST call the emit_forget_result tool and return nothing else.",
     "Prefer the smallest clean successor context that preserves useful recent work.",
     "Be conservative; fail closed on ambiguity.",
     "Do not include chain-of-thought or hidden reasoning.",
@@ -316,9 +291,9 @@ async function repairSanitizerResult(
     {
       systemPrompt: [
         buildSanitizerSystemPrompt(),
-        "The previous response was invalid. Repair it into valid JSON matching the requested schema.",
+        "The previous response was invalid. Repair it into the required tool call arguments.",
         "Preserve the original intent as faithfully as possible.",
-        "Return only JSON and ensure required fields are present.",
+        "You MUST call the emit_forget_result tool and return nothing else.",
       ].join("\n"),
       messages: [
         {
@@ -327,18 +302,12 @@ async function repairSanitizerResult(
           timestamp: Date.now(),
         },
       ],
-      tools: [],
+      tools: [forgetSanitizerTool],
     },
-    { apiKey, response_format: sanitizerResponseFormat as any },
+    { apiKey },
   );
 
-  const text = response.content
-    .filter((part: any) => part?.type === "text")
-    .map((part: any) => String(part.text ?? ""))
-    .join("")
-    .trim();
-  if (!text) throw new Error("forget sanitizer repair returned an empty response.");
-  return parseSanitizerResult(text);
+  return parseSanitizerToolCall(response as any, selectedCandidate);
 }
 
 function parseOrThrowSanitizerResult(text: string, selectedCandidate?: string): SanitizerResult {
@@ -348,6 +317,23 @@ function parseOrThrowSanitizerResult(text: string, selectedCandidate?: string): 
     const message = error instanceof Error ? error.message : String(error);
     throw new SanitizerParseError(message, text, selectedCandidate);
   }
+}
+
+function parseSanitizerToolCall(response: { content: Array<{ type?: string; name?: string; arguments?: unknown }> }, selectedCandidate?: string): SanitizerResult {
+  const toolCall = response.content.find((part) => part.type === "toolCall" && part.name === forgetSanitizerTool.name);
+  if (!toolCall || toolCall.type !== "toolCall") {
+    throw new SanitizerParseError("sanitizer did not return the required tool call", JSON.stringify(response.content ?? []), selectedCandidate);
+  }
+
+  const args = toolCall.arguments as unknown;
+  const parsed = sanitizerResultSchema.parse(args);
+  if (parsed.status === "ok") {
+    if (!parsed.cleanContext) {
+      throw new SanitizerParseError("sanitizer returned status 'ok' without cleanContext", JSON.stringify(args), selectedCandidate);
+    }
+    parsed.cleanContext = cleanContextSchema.parse(parsed.cleanContext);
+  }
+  return parsed;
 }
 
 function formatSanitizerFailure(result: SanitizerResult): string {
@@ -417,18 +403,12 @@ async function runSanitizer(pi: ExtensionAPI, ctx: ExtensionContext, query: stri
           timestamp: Date.now(),
         },
       ],
-      tools: [],
+      tools: [forgetSanitizerTool],
     },
-    { apiKey, response_format: sanitizerResponseFormat as any },
+    { apiKey },
   );
 
-  const text = response.content
-    .filter((part: any) => part?.type === "text")
-    .map((part: any) => String(part.text ?? ""))
-    .join("")
-    .trim();
-  if (!text) throw new Error("forget sanitizer returned an empty response.");
-  return parseOrThrowSanitizerResult(text, selectedCandidate);
+  return parseSanitizerToolCall(response as any, selectedCandidate);
 }
 
 async function chooseCandidate(ctx: ExtensionContext, candidates: SanitizerResult["candidates"]): Promise<string | undefined> {
