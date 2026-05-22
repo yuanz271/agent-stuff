@@ -54,14 +54,42 @@ function collectBranchMessages(ctx: ExtensionContext): CleanMessage[] {
     if (entry?.type === "message") {
       const msg = entry.message ?? {};
       const role = msg.role;
-      if (role !== "user" && role !== "assistant" && role !== "custom") continue;
-      const content = extractText(msg.content ?? msg.body ?? "");
-      if (!content) continue;
-      messages.push({
-        role: role as CleanMessage["role"],
-        content,
-        customType: typeof msg.customType === "string" ? msg.customType : null,
-      });
+      if (role === "user" || role === "assistant") {
+        const content = extractText(msg.content ?? msg.body ?? "");
+        if (!content) continue;
+        if (typeof msg.toolName === "string" && msg.toolName.trim().length > 0) {
+          messages.push({
+            role: "custom",
+            content,
+            customType: msg.toolName,
+          });
+          continue;
+        }
+        if (typeof msg.customType === "string" && msg.customType.trim().length > 0) {
+          messages.push({
+            role: "custom",
+            content,
+            customType: msg.customType,
+          });
+          continue;
+        }
+        messages.push({
+          role,
+          content,
+          customType: null,
+        });
+        continue;
+      }
+
+      if (role === "custom") {
+        const content = extractText(msg.content ?? msg.body ?? "");
+        if (!content) continue;
+        messages.push({
+          role: "custom",
+          content,
+          customType: typeof msg.customType === "string" ? msg.customType : null,
+        });
+      }
       continue;
     }
 
