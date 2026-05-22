@@ -160,7 +160,7 @@ const SANITIZER_SYSTEM_PROMPT =
 
 function setForgetStatus(ctx: ExtensionContext, current: number, total: number): void {
   if (!ctx.hasUI) return;
-  ctx.ui.setStatus(STATUS_KEY, total > 0 ? `forget ${current}/${total}` : undefined);
+  ctx.ui.setStatus(STATUS_KEY, total > 0 ? `forgetting ${current}/${total}` : undefined);
 }
 
 async function sanitizeMessageText(
