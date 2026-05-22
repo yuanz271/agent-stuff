@@ -53,54 +53,44 @@ function collectBranchMessages(ctx: ExtensionContext): CleanMessage[] {
   for (const entry of ctx.sessionManager.getBranch()) {
     if (entry?.type === "message") {
       const msg = entry.message ?? {};
-      const role = msg.role;
-      if (role === "user" || role === "assistant") {
-        const content = extractText(msg.content ?? msg.body ?? "");
-        if (!content) continue;
-        if (typeof msg.toolName === "string" && msg.toolName.trim().length > 0) {
-          messages.push({
-            role: "custom",
-            content,
-            customType: msg.toolName,
-          });
-          continue;
-        }
-        if (typeof msg.customType === "string" && msg.customType.trim().length > 0) {
-          messages.push({
-            role: "custom",
-            content,
-            customType: msg.customType,
-          });
-          continue;
-        }
-        messages.push({
-          role,
-          content,
-          customType: null,
-        });
-        continue;
-      }
-
-      if (role === "custom") {
-        const content = extractText(msg.content ?? msg.body ?? "");
-        if (!content) continue;
-        messages.push({
-          role: "custom",
-          content,
-          customType: typeof msg.customType === "string" ? msg.customType : null,
-        });
-      }
+      if (msg.role !== "user" && msg.role !== "assistant") continue;
+      const content = extractText(msg.content ?? msg.body ?? "");
+      if (!content) continue;
+      messages.push({
+        role: msg.role as CleanMessage["role"],
+        content,
+        customType: null,
+      });
       continue;
     }
 
-    if (entry?.type === "custom") {
-      const customType = typeof entry.customType === "string" ? entry.customType : null;
-      if (customType === STATE_ENTRY_TYPE) continue;
-      const content = typeof entry.data === "string" ? entry.data : JSON.stringify(entry.data ?? {});
+    if (entry?.type === "custom_message") {
+      const content = extractText(entry.content ?? "");
+      if (!content) continue;
       messages.push({
         role: "custom",
         content,
-        customType,
+        customType: typeof entry.customType === "string" ? entry.customType : null,
+      });
+      continue;
+    }
+
+    if (entry?.type === "branch_summary") {
+      if (typeof entry.summary !== "string" || !entry.summary.trim()) continue;
+      messages.push({
+        role: "custom",
+        content: entry.summary,
+        customType: "branch_summary",
+      });
+      continue;
+    }
+
+    if (entry?.type === "compaction") {
+      if (typeof entry.summary !== "string" || !entry.summary.trim()) continue;
+      messages.push({
+        role: "custom",
+        content: entry.summary,
+        customType: "compaction",
       });
     }
   }
