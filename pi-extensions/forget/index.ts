@@ -17,6 +17,12 @@ const cleanContextSchema = z.object({
   messages: z.array(cleanMessageSchema).max(80),
 });
 
+const rawCleanContextSchema = z.object({
+  systemPrompt: z.string().max(12_000).optional(),
+  retainedSummary: z.string().max(4_000).optional(),
+  messages: z.array(cleanMessageSchema).max(80).optional(),
+}).partial();
+
 const removedItemSchema = z.object({
   kind: z.enum(["instruction", "rule", "fact", "summary", "custom"]),
   label: z.string().max(256),
@@ -30,7 +36,7 @@ const candidateSchema = z.object({
 
 const sanitizerResultSchema = z.object({
   status: z.enum(["ok", "ambiguous", "blocked"]),
-  cleanContext: cleanContextSchema.nullable().optional(),
+  cleanContext: rawCleanContextSchema.nullable().optional(),
   removed: z.array(removedItemSchema).max(50).default([]),
   candidates: z.array(candidateSchema).max(20).default([]),
   notes: z.array(z.string().max(512)).max(20).default([]),
@@ -202,8 +208,11 @@ function buildMainPrompt(query: string, excerpt: string, selectedCandidate?: str
 function parseSanitizerResult(text: string): SanitizerResult {
   const json = extractJson(text);
   const result = sanitizerResultSchema.parse(JSON.parse(json));
-  if (result.status === "ok" && !result.cleanContext) {
-    throw new Error("sanitizer returned status 'ok' without cleanContext");
+  if (result.status === "ok") {
+    if (!result.cleanContext) {
+      throw new Error("sanitizer returned status 'ok' without cleanContext");
+    }
+    result.cleanContext = cleanContextSchema.parse(result.cleanContext);
   }
   return result;
 }
