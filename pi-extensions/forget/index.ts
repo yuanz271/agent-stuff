@@ -200,6 +200,17 @@ function parseSanitizerResult(text: string): SanitizerResult {
   return sanitizerResultSchema.parse(JSON.parse(json));
 }
 
+class SanitizerParseError extends Error {
+  constructor(
+    message: string,
+    public readonly rawText: string,
+    public readonly selectedCandidate?: string,
+  ) {
+    super(message);
+    this.name = "SanitizerParseError";
+  }
+}
+
 async function repairSanitizerResult(
   ctx: ExtensionContext,
   rawText: string,
@@ -235,6 +246,15 @@ async function repairSanitizerResult(
     .trim();
   if (!text) throw new Error("forget sanitizer repair returned an empty response.");
   return parseSanitizerResult(text);
+}
+
+function parseOrThrowSanitizerResult(text: string, selectedCandidate?: string): SanitizerResult {
+  try {
+    return parseSanitizerResult(text);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new SanitizerParseError(message, text, selectedCandidate);
+  }
 }
 
 function currentStateFromBranch(ctx: ExtensionContext): ForgetStateEntry | undefined {
@@ -301,7 +321,7 @@ async function runSanitizer(pi: ExtensionAPI, ctx: ExtensionContext, query: stri
     .join("")
     .trim();
   if (!text) throw new Error("forget sanitizer returned an empty response.");
-  return parseSanitizerResult(text);
+  return parseOrThrowSanitizerResult(text, selectedCandidate);
 }
 
 async function chooseCandidate(ctx: ExtensionContext, candidates: SanitizerResult["candidates"]): Promise<string | undefined> {
@@ -401,35 +421,40 @@ export default function forgetExtension(pi: ExtensionAPI) {
         const activated = await activateCleanBranch(pi, ctx, result.cleanContext, query);
         if (!activated) return;
       } catch (error) {
-        const raw = error instanceof Error ? error.message : String(error);
-        try {
-          const repaired = await repairSanitizerResult(ctx, raw, query);
-          if (repaired.status === "ambiguous") {
-            const selection = await chooseCandidate(ctx, repaired.candidates);
-            if (!selection) {
-              ctx.ui.notify("No candidate selected.", "warning");
-              return;
+        if (error instanceof SanitizerParseError) {
+          try {
+            const repaired = await repairSanitizerResult(ctx, error.rawText, query, error.selectedCandidate);
+            if (repaired.status === "ambiguous") {
+              const selection = await chooseCandidate(ctx, repaired.candidates);
+              if (!selection) {
+                ctx.ui.notify("No candidate selected.", "warning");
+                return;
+              }
+              const rerun = await runSanitizer(pi, ctx, query, selection);
+              if (rerun.status === "ok" && rerun.cleanContext) {
+                const activated = await activateCleanBranch(pi, ctx, rerun.cleanContext, query);
+                if (!activated) return;
+                return;
+              }
             }
-            const rerun = await runSanitizer(pi, ctx, query, selection);
-            if (rerun.status === "ok" && rerun.cleanContext) {
-              const activated = await activateCleanBranch(pi, ctx, rerun.cleanContext, query);
+
+            if (repaired.status === "ok" && repaired.cleanContext) {
+              const activated = await activateCleanBranch(pi, ctx, repaired.cleanContext, query);
               if (!activated) return;
               return;
             }
-          }
-
-          if (repaired.status === "ok" && repaired.cleanContext) {
-            const activated = await activateCleanBranch(pi, ctx, repaired.cleanContext, query);
-            if (!activated) return;
+          } catch (repairError) {
+            const repairMessage = repairError instanceof Error ? repairError.message : String(repairError);
+            ctx.ui.notify(`forget failed: ${error.message}; repair also failed: ${repairMessage}`, "error");
             return;
           }
-        } catch (repairError) {
-          const repairMessage = repairError instanceof Error ? repairError.message : String(repairError);
-          ctx.ui.notify(`forget failed: ${raw}; repair also failed: ${repairMessage}`, "error");
+
+          ctx.ui.notify(`forget failed: ${error.message}`, "error");
           return;
         }
 
-        ctx.ui.notify(`forget failed: ${raw}`, "error");
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.ui.notify(`forget failed: ${message}`, "error");
       }
     },
   });
