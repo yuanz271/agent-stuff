@@ -4,6 +4,7 @@ All notable changes to agent-stuff are documented here.
 
 ## Unreleased
 
+* Added a new `/forget` extension workflow that uses a transient sanitizer session to build a clean successor branch for stale context without in-place session surgery.
 * Renamed the `lead-worker` extension vocabulary and commands to planner/builder: `/lead` → `/plan`, `/worker` → `/builder`, with planner/builder settings keys and runtime artifacts updated to match.
 * Checked upstream/main and recorded the current pins in `UPSTREAMS.md`; no code sync was applied.
 * Removed `pi-messenger` extension and `/pi-messenger-crew` skill.
