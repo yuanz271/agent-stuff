@@ -67,10 +67,10 @@ If the extension cannot identify a safe cutoff, it should fail closed and explai
 ## Expected workflow
 1. The user notices stale or conflicting instructions in the current context.
 2. The user runs `/forget <fuzzy description>`.
-3. The extension maps the fuzzy request to one or more candidate regions in the session tree.
-4. The extension offers the likely cutoff point(s).
-5. The user confirms one.
-6. The extension forks to that point.
+3. The extension maps the fuzzy request to one or more candidate semantic regions in the session tree.
+4. The extension offers the likely clean successor context(s).
+5. The user confirms one if needed.
+6. The extension forks into the cleaned branch.
 7. The new branch becomes the active continuation.
 
 ## Design constraints
@@ -88,6 +88,87 @@ If the extension cannot identify a safe cutoff, it should fail closed and explai
 - Use `ctx.fork(...)` to create the cleaned continuation branch.
 - Reconstruct any extension-local state from the active branch after the fork.
 - Treat the forked branch as the only future context source.
+
+## Prompt templates
+
+### Main orchestration prompt
+```text
+You are coordinating a transient sanitizer session for a Pi `/forget` operation.
+
+Task:
+- Given the provided session-tree excerpt and fuzzy user query, determine the safest semantic redaction needed to produce a clean successor context.
+- The sanitizer session is isolated, one-shot, and non-persistent.
+- Do not modify the main session.
+- Do not write files.
+- Do not mention or surface the existence of `/forget` to the model-visible continuation branch.
+
+Input:
+- fuzzy query
+- compact session tree / branch excerpt
+- any candidate semantic groups already identified
+
+Output:
+- Return only machine-readable JSON matching the requested schema.
+- If there is one clear cleaned context, choose it.
+- If there are multiple plausible clean contexts, return the minimal candidate set.
+- If no safe cleanup exists, return blocked.
+
+Constraints:
+- Prefer the smallest clean successor context that preserves useful recent work.
+- Be conservative; fail closed on ambiguity.
+- Do not include chain-of-thought or hidden reasoning.
+```
+
+### Sanitizer prompt
+```text
+You are a transient sanitizer session for a Pi `/forget` workflow.
+
+Goal:
+- Inspect only the provided session-tree/context excerpt.
+- Produce a cleaned context artifact that removes stale instructions, rules, facts, summaries, and related derived context.
+- Prefer the smallest clean successor context that preserves useful recent work.
+
+Rules:
+- Do not modify the main session.
+- Do not write files.
+- Do not persist state.
+- Do not mention `/forget` unless asked for output format.
+- Do not explain chain-of-thought.
+- If the cleanup is ambiguous, return the minimal set of candidate clean contexts with brief labels.
+- If no safe cleanup exists, say so explicitly.
+
+Output format:
+- Return only machine-readable JSON.
+- Schema:
+  {
+    "status": "ok" | "ambiguous" | "blocked",
+    "cleanContext": {
+      "systemPrompt": string,
+      "retainedSummary": string,
+      "messages": [
+        {
+          "role": "user" | "assistant" | "custom",
+          "content": string,
+          "customType": string | null
+        }
+      ]
+    } | null,
+    "removed": [
+      {
+        "kind": "instruction" | "rule" | "fact" | "summary" | "custom",
+        "label": string,
+        "reason": string
+      }
+    ],
+    "candidates": [
+      {
+        "label": string,
+        "reason": string
+      }
+    ],
+    "notes": [string]
+  }
+```
 
 ## Failure modes
 - Query matches multiple incompatible semantic redactions: ask the user.
