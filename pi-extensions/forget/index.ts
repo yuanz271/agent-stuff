@@ -200,6 +200,43 @@ function parseSanitizerResult(text: string): SanitizerResult {
   return sanitizerResultSchema.parse(JSON.parse(json));
 }
 
+async function repairSanitizerResult(
+  ctx: ExtensionContext,
+  rawText: string,
+  query: string,
+  selectedCandidate?: string,
+): Promise<SanitizerResult> {
+  const { model, apiKey } = await resolveSanitizerModel(ctx);
+  const response = await complete(
+    model,
+    {
+      systemPrompt: [
+        buildSanitizerSystemPrompt(),
+        "The previous response was invalid. Repair it into valid JSON matching the requested schema.",
+        "Preserve the original intent as faithfully as possible.",
+        "Return only JSON and ensure required fields are present.",
+      ].join("\n"),
+      messages: [
+        {
+          role: "user" as const,
+          content: [{ type: "text" as const, text: JSON.stringify({ query, selectedCandidate: selectedCandidate ?? null, invalidResponse: truncate(rawText, 12_000) }, null, 2) }],
+          timestamp: Date.now(),
+        },
+      ],
+      tools: [],
+    },
+    { apiKey },
+  );
+
+  const text = response.content
+    .filter((part: any) => part?.type === "text")
+    .map((part: any) => String(part.text ?? ""))
+    .join("")
+    .trim();
+  if (!text) throw new Error("forget sanitizer repair returned an empty response.");
+  return parseSanitizerResult(text);
+}
+
 function currentStateFromBranch(ctx: ExtensionContext): ForgetStateEntry | undefined {
   const branch = ctx.sessionManager.getBranch();
   for (let i = branch.length - 1; i >= 0; i--) {
@@ -364,8 +401,35 @@ export default function forgetExtension(pi: ExtensionAPI) {
         const activated = await activateCleanBranch(pi, ctx, result.cleanContext, query);
         if (!activated) return;
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        ctx.ui.notify(`forget failed: ${message}`, "error");
+        const raw = error instanceof Error ? error.message : String(error);
+        try {
+          const repaired = await repairSanitizerResult(ctx, raw, query);
+          if (repaired.status === "ambiguous") {
+            const selection = await chooseCandidate(ctx, repaired.candidates);
+            if (!selection) {
+              ctx.ui.notify("No candidate selected.", "warning");
+              return;
+            }
+            const rerun = await runSanitizer(pi, ctx, query, selection);
+            if (rerun.status === "ok" && rerun.cleanContext) {
+              const activated = await activateCleanBranch(pi, ctx, rerun.cleanContext, query);
+              if (!activated) return;
+              return;
+            }
+          }
+
+          if (repaired.status === "ok" && repaired.cleanContext) {
+            const activated = await activateCleanBranch(pi, ctx, repaired.cleanContext, query);
+            if (!activated) return;
+            return;
+          }
+        } catch (repairError) {
+          const repairMessage = repairError instanceof Error ? repairError.message : String(repairError);
+          ctx.ui.notify(`forget failed: ${raw}; repair also failed: ${repairMessage}`, "error");
+          return;
+        }
+
+        ctx.ui.notify(`forget failed: ${raw}`, "error");
       }
     },
   });
