@@ -49,6 +49,8 @@ function extractText(content: unknown): string {
 }
 
 function collectBranchMessages(ctx: ExtensionContext): CleanMessage[] {
+  // Safe sweep rule: only SessionEntry.type === "message" entries with user/assistant roles are candidates.
+  // Everything else (custom_message, branch_summary, compaction, custom state, etc.) is preserved untouched.
   const messages: CleanMessage[] = [];
   for (const entry of ctx.sessionManager.getBranch()) {
     if (entry?.type === "message") {
