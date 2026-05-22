@@ -31,13 +31,13 @@ The main agent should not be told that forgetting occurred.
 
 ## User-facing command
 ### `/forget <query>`
-A fuzzy cleanup command that removes stale semantic content from the active future branch by producing a clean successor context.
+A fuzzy cleanup command that removes stale semantic content from the active future branch by producing a clean successor context artifact.
 
 Behavior:
 1. Parse the fuzzy query.
 2. Search the current session tree and branch history for candidate stale semantic content.
 3. Launch a transient sanitizer session/context with only the minimal session-tree data needed to produce a cleaned context artifact.
-4. Ask the sanitizer to remove stale instructions, rules, facts, summaries, and related derived context.
+4. Ask the sanitizer to remove stale instructions, rules, facts, summaries, and related derived context, while preserving only the content needed for the intended future work.
 5. If the sanitizer can produce a single clean successor context, use it.
 6. If the sanitizer reports ambiguity, surface the candidates so the user can choose.
 7. Create the new branch using Pi’s session branching API.
@@ -73,6 +73,23 @@ If the extension cannot identify a safe cutoff, it should fail closed and explai
 6. The extension forks into the cleaned branch.
 7. The new branch becomes the active continuation.
 
+## Semantic scope
+The sanitizer operates over semantic atoms, not raw line edits.
+
+Eligible atoms include:
+- instructions and rules
+- preferences and behavioral constraints
+- factual claims that affect future behavior
+- compaction or branch summaries that still affect future behavior
+- custom/context entries that are model-visible
+
+Not eligible by default:
+- code artifacts, file diffs, or task outputs that are not themselves instructions
+- tool results, unless the user explicitly indicates they are part of the stale semantic content
+- unrelated recent work that should survive the continuation
+
+When in doubt, the sanitizer should preserve non-instructional task content and remove only the semantic content that plausibly causes future confusion.
+
 ## Design constraints
 - The old branch remains available for audit/history.
 - The new branch should look like an ordinary continuation.
@@ -85,9 +102,10 @@ If the extension cannot identify a safe cutoff, it should fail closed and explai
 ## Implementation sketch
 - Use session tree inspection for candidate discovery.
 - Use `ctx.navigateTree(...)` when the user needs to choose among branches or to move to a specific point in the tree.
-- Use `ctx.fork(...)` to create the cleaned continuation branch.
-- Reconstruct any extension-local state from the active branch after the fork.
-- Treat the forked branch as the only future context source.
+- Create a fresh continuation session/branch using Pi’s supported session-creation API (`ctx.fork(...)` or `ctx.newSession()` as appropriate for the current runtime path).
+- Seed the new branch with the sanitizer’s `cleanContext` artifact as the only model-visible continuation state.
+- Reconstruct any extension-local state from the active branch after the branch is created.
+- Treat the newly created branch as the only future context source.
 
 ## Prompt templates
 
@@ -170,6 +188,13 @@ Output format:
   }
 ```
 
+### Clean-context contract
+- `cleanContext.systemPrompt` is the full instruction layer for the new branch.
+- `cleanContext.retainedSummary` is a short surviving summary only for content that should remain active.
+- `cleanContext.messages` are the exact model-visible messages that should seed the new branch.
+- `removed` and `candidates` are internal resolution data and must not be injected into the new branch.
+- If `status` is `ambiguous`, the extension must not create a new branch until the user chooses a candidate.
+
 ## Failure modes
 - Query matches multiple incompatible semantic redactions: ask the user.
 - No clean successor context can be produced: do nothing.
@@ -184,6 +209,7 @@ Output format:
 - The sanitizer context leaves no persistent trace.
 - The extension behaves as if the stale context never existed in the new branch.
 - The new branch is seeded only from the cleaned context artifact.
+- The cleaned context artifact is the source of truth for what future turns inherit.
 
 ## Acceptance criteria
 - `/forget` produces a new cleaned branch, not a rewritten transcript.
