@@ -30,7 +30,7 @@ const candidateSchema = z.object({
 
 const sanitizerResultSchema = z.object({
   status: z.enum(["ok", "ambiguous", "blocked"]),
-  cleanContext: cleanContextSchema.nullable(),
+  cleanContext: cleanContextSchema.nullable().optional(),
   removed: z.array(removedItemSchema).max(50).default([]),
   candidates: z.array(candidateSchema).max(20).default([]),
   notes: z.array(z.string().max(512)).max(20).default([]),
@@ -162,6 +162,8 @@ function buildSanitizerSystemPrompt(): string {
     "Do not explain chain-of-thought.",
     "If the cleanup is ambiguous, return the minimal set of candidate clean contexts with brief labels.",
     "If no safe cleanup exists, say so explicitly.",
+    "For status 'ok', include a complete cleanContext object.",
+    "For status 'ambiguous' or 'blocked', cleanContext may be omitted or null.",
     "Return only machine-readable JSON matching the requested schema.",
   ].join("\n");
 }
@@ -186,6 +188,8 @@ function buildMainPrompt(query: string, excerpt: string, selectedCandidate?: str
     "If there is one clear cleaned context, choose it.",
     "If there are multiple plausible clean contexts, return the minimal candidate set.",
     "If no safe cleanup exists, return blocked.",
+    "For status 'ok', include a complete cleanContext object.",
+    "For status 'ambiguous' or 'blocked', cleanContext may be omitted or null.",
     "Prefer the smallest clean successor context that preserves useful recent work.",
     "Be conservative; fail closed on ambiguity.",
     "Do not include chain-of-thought or hidden reasoning.",
@@ -197,7 +201,11 @@ function buildMainPrompt(query: string, excerpt: string, selectedCandidate?: str
 
 function parseSanitizerResult(text: string): SanitizerResult {
   const json = extractJson(text);
-  return sanitizerResultSchema.parse(JSON.parse(json));
+  const result = sanitizerResultSchema.parse(JSON.parse(json));
+  if (result.status === "ok" && !result.cleanContext) {
+    throw new Error("sanitizer returned status 'ok' without cleanContext");
+  }
+  return result;
 }
 
 class SanitizerParseError extends Error {
