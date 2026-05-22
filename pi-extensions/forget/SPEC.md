@@ -6,7 +6,7 @@ The `forget` extension provides a safe way to remove stale, conflicting, or irre
 
 The core idea is not transcript surgery in the main working context. It is safe branch replacement:
 - inspect the current session tree
-- sweep all plain user and assistant messages through a transient sanitizer session one by one
+- sweep only `SessionEntry.type === "message"` entries whose message role is `user` or `assistant` through a transient sanitizer session one by one
 - keep the system prompt and agent-injected content untouched
 - deterministically reconstruct a cleaned context artifact in code
 - fork a new branch seeded from that reconstructed artifact
@@ -23,7 +23,7 @@ The main agent should not be told that forgetting occurred.
 - Stay within supported Pi session operations.
 - Keep sanitation work out of the main working session.
 - Never mutate session JSONL files directly.
-- Preserve the original context format by construction; the model must only clean plain user/assistant message text and must not author the final `systemPrompt` / `messages` object.
+- Preserve the original context format by construction; the model must only clean `SessionEntry.type === "message"` user/assistant message text and must not author the final `systemPrompt` / `messages` object.
 
 ## Non-goals
 - No in-place deletion of arbitrary session entries.
@@ -44,9 +44,9 @@ A fuzzy cleanup command that removes stale semantic content from the active futu
 
 Behavior:
 1. Parse the fuzzy query.
-2. Scan current user and assistant message text for stale semantic content.
-3. Sweep every plain user and assistant message text field in the current branch.
-4. Launch a transient sanitizer session/context with only one plain message text at a time.
+2. Scan current `SessionEntry.type === "message"` user and assistant message text for stale semantic content.
+3. Sweep every `SessionEntry.type === "message"` user/assistant message text field in the current branch.
+4. Launch a transient sanitizer session/context with only one eligible message text at a time.
 5. Ask the sanitizer to return pure cleaned text for that single message.
 6. Deterministically reconstruct the cleaned context in code by replacing or dropping each swept message based on the returned text.
 7. Leave the system prompt and agent-injected content untouched.
@@ -62,7 +62,7 @@ It may:
 - call Pi’s branching/navigation APIs
 - launch a transient sanitizer session/context
 - use a different model for the sanitizer than the main session
-- ask the sanitizer to clean individual plain user/assistant message text fields
+- ask the sanitizer to clean individual `SessionEntry.type === "message"` user/assistant message text fields
 
 It must not:
 - edit session files directly
@@ -83,20 +83,19 @@ If the extension cannot identify a safe cutoff, it should fail closed and explai
 6. The new branch becomes the active continuation.
 
 ## Semantic scope
-The sanitizer operates over one raw plain message text at a time, not over structured context records.
+The sanitizer operates over one raw eligible message text at a time, not over structured context records.
 
 Eligible text:
-- plain user message text
-- plain assistant message text
+- message text for `SessionEntry.type === "message"` entries whose role is `user` or `assistant`
 
 Not eligible by default:
 - the system prompt
 - retained summary text
-- custom/tool context entries
+- `SessionEntry.type !== "message"` entries
 - injected tool calls, skill docs, agents.md-style content, or other agent-authored metadata
-- code artifacts, file diffs, or task outputs that are not plain user/assistant message text
+- code artifacts, file diffs, or task outputs that are not eligible user/assistant message text
 
-When in doubt, preserve the message structure and let the sanitizer only rewrite the text of plain user/assistant turns.
+When in doubt, preserve the message structure and let the sanitizer only rewrite the text of eligible user/assistant turns.
 
 The sanitizer output is pure cleaned text only. Code owns the original structure and applies the cleaned text back to each message.
 
@@ -106,14 +105,14 @@ The sanitizer output is pure cleaned text only. Code owns the original structure
 - No tombstones, tags, or “forgotten” markers should be introduced into model-visible context.
 - Sanitization must run in a separate transient session/context, not inside the contaminated working session.
 - The sanitizer is one-shot and non-persistent.
-- The sanitizer should emit pure cleaned text for one plain message at a time, not the final cleaned branch context.
+- The sanitizer should emit pure cleaned text for one eligible message at a time, not the final cleaned branch context.
 - Code must reconstruct the cleaned context from the original structure plus those cleaned message texts.
 - If the cleanup requires a summary for navigation, keep it outside the LLM-visible continuation branch.
 
 ## Implementation sketch
-- Use session tree inspection to gather the plain user/assistant message texts that need cleaning.
+- Use session tree inspection to gather the eligible user/assistant message texts that need cleaning.
 - Use `ctx.navigateTree(...)` when the user needs to choose among branches or to move to a specific point in the tree.
-- Clean plain user and assistant message text one message at a time.
+- Clean eligible user and assistant message text one message at a time.
 - Leave the system prompt and retained summary untouched.
 - Rebuild the cleaned `messages` in code from the original structure and the sanitizer outputs.
 - Create a fresh continuation session/branch using Pi’s supported session-creation API (`ctx.fork(...)` or `ctx.newSession()` as appropriate for the current runtime path).
@@ -202,6 +201,6 @@ Output format:
 - The old branch is preserved.
 - The agent does not see tombstones or deletion notes in future context.
 - The new branch is seeded from deterministic reconstruction, not by mutating the old branch in place.
-- The sanitizer only sees one plain message text at a time, and a single `/forget` call sweeps the whole applicable plain message list.
+- The sanitizer only sees one eligible message text at a time, and a single `/forget` call sweeps the whole applicable eligible message list.
 - The sanitizer never needs to emit the final `systemPrompt` / `messages` structure.
 - No direct JSONL mutation is performed.
