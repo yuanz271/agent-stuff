@@ -1,6 +1,6 @@
 # Forget Extension Spec
 
-`/forget <query>` calls this extension's copied compaction implementation directly.
+`/forget <query>` runs through Pi's manual compaction UI while supplying this extension's copied compaction implementation as the compaction result.
 
 Source policy:
 - `core.ts` is copied from `earendil-works/pi/packages/coding-agent/src/core/compaction/compaction.ts`.
@@ -11,15 +11,14 @@ Source policy:
   3. imports are relinked to Pi's public package exports, with small local file-operation helpers retained because Pi does not publicly export those helper functions.
 
 Behavior:
-1. `/forget <query>` validates the query and waits for the session to be idle.
-2. The command loads the current branch using the same shape as Pi compaction; the core cut-point logic ignores a trailing `/forget` command.
-3. The command prepares cleanup from those entries using extension-local `prepareForgetting(...)`.
-4. The command runs extension-local `forget(...)` with cleanup/removal prompt text.
-5. The command appends the resulting compaction entry directly to the session manager with `fromHook: true`.
-6. The command reloads the current session file so the active agent context reflects the new compaction entry.
+1. `/forget <query>` validates the query and calls `ctx.compact(...)` with cleanup/removal instructions so Pi emits the normal manual-compaction UI.
+2. During the resulting `session_before_compact` event, the extension ignores Pi's prepared summary payload and prepares cleanup from `event.branchEntries` using extension-local `prepareForgetting(...)`.
+3. The core cut-point logic ignores a trailing `/forget` command if one is present in the branch entries.
+4. The extension runs extension-local `forget(...)` with cleanup/removal prompt text and returns it as the event's `compaction` result.
+5. Pi's built-in compaction path appends the compaction entry, refreshes active agent context, rebuilds chat, and renders the normal compaction summary UI.
 
 Important constraint:
-- `/forget` must not call `ctx.compact(...)` or Pi's compaction pipeline. `index.ts` calls extension-local `prepareForgetting(...)` and `forget(...)` from `./core.ts`.
+- `/forget` uses Pi's compaction pipeline only for orchestration/UI/persistence. The model cleanup content comes from extension-local `prepareForgetting(...)` and `forget(...)` in `./core.ts`, not Pi's built-in compaction implementation.
 
 Non-goals:
 - no custom branch-state format
