@@ -20,6 +20,14 @@ Behavior:
 Important constraint:
 - `/forget` uses Pi's compaction pipeline only for orchestration/UI/persistence. The model cleanup content comes from extension-local `prepareForgetting(...)` and `forget(...)` in `./core.ts`, not Pi's built-in compaction implementation.
 
+Design rationale:
+The current design is the tightest fit given Pi's extension constraints:
+- Extensions cannot emit internal events, define new event types, or call `appendCompaction(...)` via the public API.
+- `compaction_start` / `compaction_end` UI is driven entirely by `AgentSession._emit(...)`, inaccessible to extensions.
+- The only way to trigger Pi's compaction UI/lifecycle from an extension is `ctx.compact(...)`.
+- `/forget` calls `ctx.compact(...)` to get Pi's full compaction UI/lifecycle for free, intercepts `session_before_compact` to substitute forget-specific content, and lets Pi handle everything else: loader, context refresh, chat rebuild, summary rendering, and persistence.
+- The only extension-owned parts are the forget prompt and cutoff logic, which is exactly what should be custom.
+
 Non-goals:
 - no custom branch-state format
 - no transient sanitizer branch
