@@ -28,6 +28,12 @@ The current design is the tightest fit given Pi's extension constraints:
 - `/forget` calls `ctx.compact(...)` to get Pi's full compaction UI/lifecycle for free, intercepts `session_before_compact` to substitute forget-specific content, and lets Pi handle everything else: loader, context refresh, chat rebuild, summary rendering, and persistence.
 - The only extension-owned parts are the forget prompt and cutoff logic, which is exactly what should be custom.
 
+Cut point and context boundary:
+- `findCutPoint(...)` is bypassed in `prepareForgetting(...)`. All context from `boundaryStart` to `boundaryEnd` (everything before `/forget`) is sent to the cleanup model as `messagesToSummarize`.
+- `firstKeptEntryId` is set to a sentinel that matches no session entry, so `buildSessionContext` emits nothing from the pre-compaction kept-tail range. No recent tail is kept.
+- `keepRecentTokens` from settings is unused in the forget path since it is only consumed by `findCutPoint`.
+- Context after `/forget` is: `[forget cleanup summary]` followed by new turns only.
+
 Known limitations:
 - The compaction loader text (`Compacting context...`) is hardcoded in Pi's interactive mode and cannot be overridden from an extension. `/forget` shows the same UI label as `/compact`. This is accepted — the forget extension's value is in the content it produces, not the loader label.
 
