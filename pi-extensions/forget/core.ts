@@ -731,48 +731,29 @@ export function prepareForgetting(
 
 	const tokensBefore = estimateContextTokens(buildSessionContext(pathEntries).messages).tokens;
 
-	const cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens);
+	// For forgetting, summarize everything — no recent tail is kept.
+	// firstKeptEntryId is set to a sentinel that matches no entry, so buildSessionContext
+	// emits nothing from the kept-tail range (foundFirstKept stays false).
+	const firstKeptEntryId = "__forget_no_kept_tail__";
 
-	// Get UUID of first kept entry
-	const firstKeptEntry = pathEntries[cutPoint.firstKeptEntryIndex];
-	if (!firstKeptEntry?.id) {
-		return undefined; // Session needs migration
-	}
-	const firstKeptEntryId = firstKeptEntry.id;
-
-	const historyEnd = cutPoint.isSplitTurn ? cutPoint.turnStartIndex : cutPoint.firstKeptEntryIndex;
-
-	// Messages to summarize (will be discarded after summary)
+	// All messages from boundaryStart to boundaryEnd are summarized.
 	const messagesToSummarize: AgentMessage[] = [];
-	for (let i = boundaryStart; i < historyEnd; i++) {
+	for (let i = boundaryStart; i < boundaryEnd; i++) {
 		const msg = getMessageFromEntryForForgetting(pathEntries[i]);
 		if (msg) messagesToSummarize.push(msg);
 	}
 
-	// Messages for turn prefix summary (if splitting a turn)
+	// No split turn for forgetting — everything is summarized.
 	const turnPrefixMessages: AgentMessage[] = [];
-	if (cutPoint.isSplitTurn) {
-		for (let i = cutPoint.turnStartIndex; i < cutPoint.firstKeptEntryIndex; i++) {
-			const msg = getMessageFromEntryForForgetting(pathEntries[i]);
-			if (msg) turnPrefixMessages.push(msg);
-		}
-	}
 
 	// Extract file operations from messages and previous forgetting
 	const fileOps = extractFileOperations(messagesToSummarize, pathEntries, prevForgettingIndex);
-
-	// Also extract file ops from turn prefix if splitting
-	if (cutPoint.isSplitTurn) {
-		for (const msg of turnPrefixMessages) {
-			extractFileOpsFromMessage(msg, fileOps);
-		}
-	}
 
 	return {
 		firstKeptEntryId,
 		messagesToSummarize,
 		turnPrefixMessages,
-		isSplitTurn: cutPoint.isSplitTurn,
+		isSplitTurn: false,
 		tokensBefore,
 		previousSummary,
 		fileOps,
