@@ -7,6 +7,7 @@ This repository includes code copied/adapted from the project below.
 - **Source**: https://github.com/mitsuhiko/agent-stuff
 - **Included paths in this repo**:
   - `pi-extensions/files.ts`
+  - `pi-extensions/goal.ts`
 - **Current pin record**: see `UPSTREAMS.md`
 - **Upstream license**: Apache License 2.0
 - **Upstream copyright note**: no explicit copyright line was identified in the upstream `LICENSE`; provenance is tracked via the upstream repository URL above.

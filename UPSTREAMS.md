@@ -4,6 +4,7 @@ This file records the last checked upstream commit for each imported skill or ex
 Entries may include an upstream path hint when the upstream layout differs from the local one.
 Run `scripts/check-import-upstreams.py` to refresh it after checking upstreams.
 
+- `goal` → `https://github.com/mitsuhiko/agent-stuff` @ `ab79f98104bcd3c6a7c5491e609f6d6700a7414d` (`origin/main`) [upstream `extensions/goal.ts`]
 - `files` → `https://github.com/mitsuhiko/agent-stuff` @ `ab79f98104bcd3c6a7c5491e609f6d6700a7414d` (`origin/main`) [upstream `extensions/files.ts`]
 - `control` → `https://github.com/mitsuhiko/agent-stuff` @ `ab79f98104bcd3c6a7c5491e609f6d6700a7414d` (`origin/main`) [upstream `extensions/control.ts`]
 - `loop` → `https://github.com/mitsuhiko/agent-stuff` @ `ab79f98104bcd3c6a7c5491e609f6d6700a7414d` (`origin/main`) [upstream `extensions/loop.ts`]
