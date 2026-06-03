@@ -1,12 +1,15 @@
 /**
  * No-Sleep Extension
  *
- * Intercepts bash tool calls and blocks any that invoke `sleep`.
- * Prevents agents from using sleep to wait/poll, which blocks Pi
- * and prevents it from accepting new input.
+ * Intercepts bash tool calls and blocks any that invoke `sleep` with a delay
+ * longer than MAX_SLEEP_SECONDS (5 minutes). Short sleeps (retry backoff,
+ * debounce) are allowed. Long sleeps block the agent and prevent it from
+ * accepting new input.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+const MAX_SLEEP_SECONDS = 300; // 5 minutes
 
 /**
  * Strip string literals and comments from a shell command so we don't
@@ -16,8 +19,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
  * - single-quoted strings: 'no sleep here'
  * - double-quoted strings: "no sleep here"
  * - $'...' ANSI-C quoted strings
- * - inline # comments (only when preceded by whitespace or start of token)
- * - heredocs (<<EOF ... EOF) replaced with placeholder
+ * - heredocs (<<EOF ... EOF)
+ * - inline # comments (stripped to end of line)
  *
  * Not a full shell parser — errs on the side of false negatives (misses some
  * quoted sleeps) rather than false positives (blocking valid commands).
@@ -33,7 +36,7 @@ function stripStringsAndComments(command: string): string {
 		if (ch === "'") {
 			i++;
 			while (i < command.length && command[i] !== "'") i++;
-			i++; // skip closing quote
+			i++;
 			result += " ";
 			continue;
 		}
@@ -72,9 +75,8 @@ function stripStringsAndComments(command: string): string {
 			continue;
 		}
 
-		// Heredoc: <<[-]WORD or <<[-]'WORD' or <<[-]"WORD"
+		// Heredoc: <<[-]WORD
 		if (ch === "<" && command[i + 1] === "<") {
-			// Find end of line to get delimiter, then skip until delimiter line
 			const rest = command.slice(i);
 			const heredocMatch = rest.match(/^<<-?\s*['"]?(\w+)['"]?\n/);
 			if (heredocMatch) {
@@ -92,11 +94,7 @@ function stripStringsAndComments(command: string): string {
 			}
 		}
 
-		// Inline comment: # preceded by whitespace, shell separator, or word character
-		// In shell, `#` starts a comment whenever it appears after a token boundary
-		// (whitespace, ;, |, &, (, newline) OR after a word character (bash treats
-		// `word#comment` as word followed by comment in most contexts).
-		// We strip all # to end-of-line to avoid false negatives.
+		// Inline comment: strip # to end of line
 		if (ch === "#") {
 			while (i < command.length && command[i] !== "\n") i++;
 			result += " ";
@@ -111,24 +109,60 @@ function stripStringsAndComments(command: string): string {
 }
 
 /**
- * Check if the stripped command contains a `sleep` invocation.
+ * Find all `sleep <duration>` invocations in the stripped command.
  *
  * Matches `sleep` when preceded by start-of-string, ;, |, &, (, {, or
- * newline (with optional whitespace) — i.e. as the first token after a
- * shell separator.
+ * newline (with optional whitespace), and captures the duration argument.
  *
- * Does NOT match:
- * - `sleep` as an argument (e.g. `echo sleep 5`)
- * - variable names (e.g. $sleep, SLEEP_TIME=5)
- * - substrings (e.g. "asleep", "nosleep")
- *
- * Known limitation: `sleep` after shell keywords `do`/`then`/`else` is only
- * caught when preceded by a semicolon (e.g. `; do sleep 1`). The pattern
- * `do\nsleep` without a semicolon is missed. False negatives are preferred
- * over false positives here.
+ * Known limitation: `sleep` after `do`/`then`/`else` without a preceding
+ * semicolon is missed. False negatives are preferred over false positives.
  */
-function containsSleepCommand(stripped: string): boolean {
-	return /(?:^|[;|&({\n])\s*sleep(?=\s|$|[;|&)}\n])/.test(stripped);
+function findSleepInvocations(stripped: string): string[] {
+	const durations: string[] = [];
+	const re = /(?:^|[;|&({\n])\s*sleep\s+([^\s;|&)}\n]+)/g;
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(stripped)) !== null) {
+		durations.push(m[1]);
+	}
+	// Also match bare `sleep` with no argument
+	const bareRe = /(?:^|[;|&({\n])\s*sleep(?=\s*(?:$|[;|&)}\n]))/g;
+	while ((m = bareRe.exec(stripped)) !== null) {
+		durations.push("");
+	}
+	return durations;
+}
+
+/**
+ * Parse a sleep duration string to seconds.
+ *
+ * Supports:
+ * - plain number: "5" → 5s
+ * - suffix s: "30s" → 30s
+ * - suffix m: "5m" → 300s
+ * - suffix h: "2h" → 7200s
+ * - suffix d: "1d" → 86400s
+ * - decimal: "1.5m" → 90s
+ *
+ * Returns null if the duration is a variable or cannot be parsed.
+ */
+function parseSleepSeconds(duration: string): number | null {
+	if (!duration) return null;
+	// Variable reference — can't determine value
+	if (duration.startsWith("$")) return null;
+
+	const m = duration.match(/^(\d+(?:\.\d+)?)(s|m|h|d)?$/i);
+	if (!m) return null;
+
+	const value = parseFloat(m[1]);
+	const unit = (m[2] ?? "s").toLowerCase();
+
+	switch (unit) {
+		case "s": return value;
+		case "m": return value * 60;
+		case "h": return value * 3600;
+		case "d": return value * 86400;
+		default: return value;
+	}
 }
 
 export default function noSleepExtension(pi: ExtensionAPI) {
@@ -139,13 +173,35 @@ export default function noSleepExtension(pi: ExtensionAPI) {
 		if (typeof command !== "string") return;
 
 		const stripped = stripStringsAndComments(command);
-		if (!containsSleepCommand(stripped)) return;
+		const durations = findSleepInvocations(stripped);
+		if (durations.length === 0) return;
 
-		return {
-			block: true,
-			reason:
-				"sleep is not allowed in bash tool calls — it blocks the agent and prevents it from accepting new input. " +
-				"Use /schedule-prompt for delayed or recurring work instead.",
-		};
+		for (const duration of durations) {
+			const seconds = parseSleepSeconds(duration);
+
+			// Unparseable or variable — block conservatively
+			if (seconds === null) {
+				return {
+					block: true,
+					reason:
+						`sleep with dynamic or unparseable duration (${duration || "no argument"}) is not allowed — ` +
+						`it may block the agent indefinitely. Use /schedule-prompt for delayed work instead.`,
+				};
+			}
+
+			// Long sleep — block
+			if (seconds > MAX_SLEEP_SECONDS) {
+				const minutes = Math.round(seconds / 60);
+				return {
+					block: true,
+					reason:
+						`sleep ${duration} (${minutes} min) exceeds the ${MAX_SLEEP_SECONDS / 60}-minute limit. ` +
+						`Short sleeps (≤${MAX_SLEEP_SECONDS}s) are allowed for retry backoff or debounce. ` +
+						`For longer delays, use /schedule-prompt instead.`,
+				};
+			}
+		}
+
+		// All sleeps are within the allowed limit — allow through
 	});
 }
