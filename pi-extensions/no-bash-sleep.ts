@@ -1,5 +1,5 @@
 /**
- * No-Sleep Extension
+ * No-Bash-Sleep Extension
  *
  * Intercepts bash tool calls and blocks any that invoke `sleep` with a delay
  * longer than MAX_SLEEP_SECONDS (5 minutes). Short sleeps (retry backoff,

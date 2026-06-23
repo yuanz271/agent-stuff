@@ -4,7 +4,7 @@ All notable changes to agent-stuff are documented here.
 
 ## Unreleased
 
-* Added `no-sleep.ts` extension to intercept `sleep` in bash tool calls: short sleeps (≤5 min) are allowed for backoff/debounce; long or variable-duration sleeps are blocked with a message directing to `/schedule-prompt`.
+* Added `no-bash-sleep.ts` extension to intercept `sleep` in bash tool calls: short sleeps (≤5 min) are allowed for backoff/debounce; long or variable-duration sleeps are blocked with a message directing to `/schedule-prompt`.
 * Ported `goal.ts` extension from `mitsuhiko/agent-stuff` (`ab79f98`): session-scoped goal tracker with optional token budget, pause/resume/clear commands, and model-callable tools.
 * Added a new `/forget` extension workflow that runs a compaction-shaped cleanup pass through Pi's normal compaction UI/persistence path without direct session-file surgery.
 * Renamed the `lead-worker` extension vocabulary and commands to planner/builder: `/lead` → `/plan`, `/worker` → `/builder`, with planner/builder settings keys and runtime artifacts updated to match.
