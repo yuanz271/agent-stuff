@@ -100,6 +100,8 @@ export function createCronTool(
               description: params.description,
               model: params.model,
               notify: params.notify,
+              extensions: params.extensions,
+              skills: params.skills,
               session,
             };
 
@@ -110,7 +112,7 @@ export function createCronTool(
             details.jobName = job.name;
 
             const modelLine = job.model
-              ? `\nModel: ${job.model} (runs in subagent${job.notify ? ", notifies parent" : ""})`
+              ? `\nModel: ${job.model} (runs in subagent${job.notify ? ", notifies parent" : ""}${job.extensions ? ", extensions" : ""}${job.skills ? ", skills" : ""})`
               : "";
             return {
               content: [
@@ -247,6 +249,8 @@ export function createCronTool(
             if (params.description !== undefined) updates.description = params.description;
             if (params.model !== undefined) updates.model = params.model;
             if (params.notify !== undefined) updates.notify = params.notify;
+            if (params.extensions !== undefined) updates.extensions = params.extensions;
+            if (params.skills !== undefined) updates.skills = params.skills;
 
             if (params.schedule) {
               // Same resolution rules as `add`: relative time (`+5m`) → ISO,
@@ -300,7 +304,7 @@ export function createCronTool(
               lines.push(`${status} ${job.name} (${job.id})`);
               lines.push(`  Type: ${job.type} | Schedule: ${job.schedule}`);
               if (job.model) {
-                lines.push(`  Model: ${job.model} (runs in subagent${job.notify ? ", notifies parent" : ""})`);
+                lines.push(`  Model: ${job.model} (runs in subagent${job.notify ? ", notifies parent" : ""}${job.extensions ? ", extensions" : ""}${job.skills ? ", skills" : ""})`);
               }
               lines.push(`  Prompt: ${job.prompt}`);
               lines.push(`  ${lastStr} ${nextStr ? `| ${nextStr}` : ""}`);
@@ -394,7 +398,11 @@ export function createCronTool(
           );
           if (job.model) {
             const subagentTag = job.notify ? "(subagent, notifies parent)" : "(subagent)";
-            lines.push(`  ${theme.fg("dim", "Model:")} ${job.model} ${theme.fg("dim", subagentTag)}`);
+            const tags = [];
+            if (job.extensions) tags.push("extensions");
+            if (job.skills) tags.push("skills");
+            const tagStr = tags.length ? ", " + tags.join(" + ") : "";
+            lines.push(`  ${theme.fg("dim", "Model:")} ${job.model} ${theme.fg("dim", subagentTag)}${tagStr}`);
           }
           lines.push(`  ${theme.fg("dim", "Prompt:")} ${job.prompt}`);
           if (job.lastRun) {

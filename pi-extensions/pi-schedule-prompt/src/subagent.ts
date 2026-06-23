@@ -24,6 +24,13 @@ export type SubagentResult =
   | { ok: true; text: string }
   | { ok: false; error: string };
 
+export interface RunSubagentOptions {
+  /** If true, load all extensions. If an array, only those named. Default undefined (none). */
+  extensions?: boolean | string[];
+  /** If true, load all skills. If an array, only those named. Default undefined (none). */
+  skills?: boolean | string[];
+}
+
 export function resolveModel(
   registry: ExtensionContext["modelRegistry"],
   modelStr: string,
@@ -85,6 +92,7 @@ export async function runSubagentOnce(
   prompt: string,
   modelStr: string,
   signal?: AbortSignal,
+  options: RunSubagentOptions = {},
 ): Promise<SubagentResult> {
   try {
     const model = resolveModel(ctx.modelRegistry, modelStr);
@@ -96,17 +104,42 @@ export async function runSubagentOnce(
     }
 
     const agentDir = getAgentDir();
+
+    // Helper: convert extensions/skills option to boolean and optionally filter.
+    // An empty array means "none" — same as unset.
+    const isEnabled = (v: boolean | string[] | undefined): boolean =>
+      v === true || (Array.isArray(v) && v.length > 0);
+    const getNameList = (v: boolean | string[] | undefined): string[] | undefined =>
+      Array.isArray(v) && v.length > 0 ? v : undefined;
+
+    const extList = getNameList(options.extensions);
+    const skillList = getNameList(options.skills);
+
     const loader = new DefaultResourceLoader({
       cwd: ctx.cwd,
       agentDir,
-      // Critical: prevent this very extension (and any other) from re-loading
-      // recursively into the subagent and starting another scheduler.
-      // Context files (AGENTS.md / CLAUDE.md) are loaded by the loader's defaults
-      // so the subagent picks up project conventions.
-      noExtensions: true,
-      noSkills: true,
+      // Prevent recursive loading of this extension into the subagent.
+      // Context files (AGENTS.md / CLAUDE.md) are loaded by defaults.
+      noExtensions: !isEnabled(options.extensions),
+      noSkills: !isEnabled(options.skills),
       noPromptTemplates: true,
       noThemes: true,
+      ...(extList && {
+        extensionsOverride: (base) => ({
+          ...base,
+          extensions: base.extensions.filter((ext) =>
+            extList.some((name) => ext.path.toLowerCase().includes(name.toLowerCase())),
+          ),
+        }),
+      }),
+      ...(skillList && {
+        skillsOverride: (base) => ({
+          ...base,
+          skills: base.skills.filter((skill) =>
+            skillList.includes(skill.name || ""),
+          ),
+        }),
+      }),
     });
     await loader.reload();
 
@@ -117,10 +150,13 @@ export async function runSubagentOnce(
       settingsManager: SettingsManager.create(ctx.cwd, agentDir),
       modelRegistry: ctx.modelRegistry,
       model,
-      tools: DEFAULT_TOOL_NAMES,
+      tools: isEnabled(options.extensions) ? undefined : DEFAULT_TOOL_NAMES,
       resourceLoader: loader,
     });
 
+    if (isEnabled(options.extensions)) {
+      await session.bindExtensions({});
+    }
     let onAbort: (() => void) | undefined;
     if (signal) {
       if (signal.aborted) {
