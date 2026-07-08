@@ -20,7 +20,7 @@ If no argument is provided, ask the user which version or type to use.
 Inspect the repository and environment to detect the best way to read and bump the version. Check in order:
 
 1. **`bump-my-version`** — if `[tool.bumpversion]` or `.bumpversion.toml` exists, use `bump-my-version bump $RELEASE_TYPE` or `bump-my-version bump --new-version $NEW_VERSION`.
-2. **`poetry`** — if `pyproject.toml` with `[tool.poetry]` exists and `poetry` is available, use `poetry version $NEW_VERSION`.
+2. **`uv`** — if `pyproject.toml` exists and `uv` is available, use `uv version $NEW_VERSION`.
 3. **`npm`** — if `package.json` exists and `npm` is available, use `npm version $NEW_VERSION --no-git-tag-version`.
 4. **`cargo`** — if `Cargo.toml` exists and `cargo` is available, use `cargo set-version $NEW_VERSION`.
 5. **Manual edit** — if no versioning tool is detected, locate the version string in `pyproject.toml`, `package.json`, `Cargo.toml`, a `VERSION` file, or a `__version__` variable, and edit it in place.
