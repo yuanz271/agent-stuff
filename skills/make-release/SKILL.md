@@ -15,16 +15,17 @@ Release this repository. Version or release type: "$ARGUMENTS"
 
 If no argument is provided, ask the user which version or type to use.
 
-### 2. Find the current version
+### 2. Find the versioning tool and current version
 
-Inspect the repository to locate where the version is stored. Common locations:
-- `package.json` → `"version"` field
-- `pyproject.toml` → `[project] version` or `[tool.poetry] version`
-- `Cargo.toml` → `[package] version`
-- A `__version__` variable in a source file
-- A dedicated `VERSION` file
+Inspect the repository and environment to detect the best way to read and bump the version. Check in order:
 
-Read the current version from whichever location applies. If multiple locations exist, update all of them.
+1. **`bump-my-version`** — if `[tool.bumpversion]` or `.bumpversion.toml` exists, use `bump-my-version bump $RELEASE_TYPE` or `bump-my-version bump --new-version $NEW_VERSION`.
+2. **`poetry`** — if `pyproject.toml` with `[tool.poetry]` exists and `poetry` is available, use `poetry version $NEW_VERSION`.
+3. **`npm`** — if `package.json` exists and `npm` is available, use `npm version $NEW_VERSION --no-git-tag-version`.
+4. **`cargo`** — if `Cargo.toml` exists and `cargo` is available, use `cargo set-version $NEW_VERSION`.
+5. **Manual edit** — if no versioning tool is detected, locate the version string in `pyproject.toml`, `package.json`, `Cargo.toml`, a `VERSION` file, or a `__version__` variable, and edit it in place.
+
+Always verify the version file reflects `$NEW_VERSION` after bumping.
 
 ### 3. Update the changelog
 
@@ -32,13 +33,13 @@ Read the `/update-changelog` skill and follow it to ensure `CHANGELOG.md` has an
 
 ### 4. Confirm the version
 
-Show the user the current version and the proposed `$NEW_VERSION`. Wait for confirmation before proceeding.
+Show the user the detected versioning tool, the current version, and the proposed `$NEW_VERSION`. Wait for confirmation before proceeding.
 
 ### 5. Bump the version
 
-Edit the version file(s) in place to replace the current version with `$NEW_VERSION`. Do not use toolchain-specific version commands — edit the file directly so the process works regardless of language or toolchain.
+Run the versioning tool or apply the manual edit determined in step 2.
 
-Verify the version file now shows `$NEW_VERSION`.
+If the version appears in multiple files, update all of them.
 
 ### 6. Finalize the changelog
 
@@ -64,7 +65,7 @@ git push origin main && git push origin $NEW_VERSION
 
 ## Notes
 
-- Always confirm the explicit version number with the user before making any changes.
+- Always confirm the detected tool and version with the user before making any changes.
 - The working tree should be clean before starting. If it is not, warn the user.
 - If `CHANGELOG.md` has no `## Unreleased` section, run `/update-changelog` first.
-- If the version appears in multiple files, update all of them in the same commit.
+- Prefer the automatic tool over manual edits — it handles multi-file version sync and formatting correctly.
