@@ -4,3 +4,4 @@ skills/pdf-extract/package-lock.json
 package-lock.json
 .pi/todos
 *.profraw
+.pi-subagents/
