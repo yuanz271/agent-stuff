@@ -112,20 +112,23 @@ function stripStringsAndComments(command: string): string {
  * Find all `sleep <duration>` invocations in the stripped command.
  *
  * Matches `sleep` when preceded by start-of-string, ;, |, &, (, {, or
- * newline (with optional whitespace), and captures the duration argument.
+ * newline (with optional whitespace); by the shell keywords `do`, `then`,
+ * `else`, or `elif`; or by a case-pattern `)`, and captures the duration
+ * argument.
  *
- * Known limitation: `sleep` after `do`/`then`/`else` without a preceding
- * semicolon is missed. False negatives are preferred over false positives.
+ * False negatives are preferred over false positives, so this is not a
+ * full shell parser and can still miss unusual constructs.
  */
 function findSleepInvocations(stripped: string): string[] {
 	const durations: string[] = [];
-	const re = /(?:^|[;|&({\n])\s*sleep\s+([^\s;|&)}\n]+)/g;
+	const boundary = String.raw`(?:^|[;|&(){\n]|\b(?:do|then|else|elif)\b|\))`;
+	const re = new RegExp(`${boundary}\\s*sleep\\s+([^\\s;|&)}\\n]+)`, "g");
 	let m: RegExpExecArray | null;
 	while ((m = re.exec(stripped)) !== null) {
 		durations.push(m[1]);
 	}
 	// Also match bare `sleep` with no argument
-	const bareRe = /(?:^|[;|&({\n])\s*sleep(?=\s*(?:$|[;|&)}\n]))/g;
+	const bareRe = new RegExp(`${boundary}\\s*sleep(?=\\s*(?:$|[;|&)}\\n]))`, "g");
 	while ((m = bareRe.exec(stripped)) !== null) {
 		durations.push("");
 	}
