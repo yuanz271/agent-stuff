@@ -2,6 +2,7 @@
 
 This file records the last checked upstream commit for each imported skill or extension.
 Entries may include an upstream path hint when the upstream layout differs from the local one.
+A pin is current when it is not behind the configured upstream branch head; local source customizations and intentionally omitted non-source files do not make an import stale.
 Run `scripts/check-import-upstreams.py` to refresh it after checking upstreams.
 
 - `goal` → `https://github.com/mitsuhiko/agent-stuff` @ `d265b8ef32f896d3ef3bc6a45bd7b8e0d02150e0` (`origin/main`) [upstream `extensions/goal.ts`]
@@ -17,7 +18,7 @@ Run `scripts/check-import-upstreams.py` to refresh it after checking upstreams.
 
 ## Import Policy
 
-Upstream extensions and skills absent from this repository are intentionally excluded unless explicitly listed for review. Do not infer that an absent item is a missed import; compare upstream history only to identify genuinely new or changed candidates. `extensions/subagent.ts` is intentionally excluded because `npm:pi-subagents` already provides the needed delegation and orchestration features.
+Upstream extensions and skills absent from this repository are intentionally excluded unless explicitly listed for review. Do not infer that an absent item is a missed import; compare upstream history only to identify genuinely new or changed candidates. Non-source upstream files may be omitted, and imported source may use the `@earendil-works/*` packages required by Pi. `extensions/subagent.ts` is intentionally excluded because `npm:pi-subagents` already provides the needed delegation and orchestration features.
 
 ## Latest Review
 
