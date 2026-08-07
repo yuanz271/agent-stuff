@@ -6,6 +6,7 @@ This repository includes code copied/adapted from the project below.
 
 - **Source**: https://github.com/mitsuhiko/agent-stuff
 - **Included paths in this repo**:
+  - `commands/discuss.md`
   - `pi-extensions/files.ts`
   - `pi-extensions/goal.ts`
   - `pi-extensions/control.ts`

@@ -5,6 +5,7 @@ Entries may include an upstream path hint when the upstream layout differs from 
 A pin is current when it is not behind the configured upstream branch head; local source customizations and intentionally omitted non-source files do not make an import stale.
 Run `scripts/check-import-upstreams.py` to refresh it after checking upstreams.
 
+- `discuss` → `https://github.com/mitsuhiko/agent-stuff` @ `d265b8ef32f896d3ef3bc6a45bd7b8e0d02150e0` (`origin/main`) [upstream `commands/discuss.md`]
 - `goal` → `https://github.com/mitsuhiko/agent-stuff` @ `d265b8ef32f896d3ef3bc6a45bd7b8e0d02150e0` (`origin/main`) [upstream `extensions/goal.ts`]
 - `files` → `https://github.com/mitsuhiko/agent-stuff` @ `d265b8ef32f896d3ef3bc6a45bd7b8e0d02150e0` (`origin/main`) [upstream `extensions/files.ts`]
 - `control` → `https://github.com/mitsuhiko/agent-stuff` @ `d265b8ef32f896d3ef3bc6a45bd7b8e0d02150e0` (`origin/main`) [upstream `extensions/control.ts`]
@@ -22,6 +23,6 @@ Upstream extensions and skills absent from this repository are intentionally exc
 
 ## Latest Review
 
-- `mitsuhiko/agent-stuff` @ `d265b8e`: synced the current `goal.ts`, `control.ts`, `prompt-editor.ts`, and `session-breakdown.ts`; all other absent upstream extensions and skills, including `extensions/subagent.ts`, remain intentionally excluded.
+- `mitsuhiko/agent-stuff` @ `d265b8e`: imported the standalone `commands/discuss.md`; synced the current `goal.ts`, `control.ts`, `prompt-editor.ts`, and `session-breakdown.ts`; all other absent upstream extensions and skills, including `extensions/subagent.ts`, remain intentionally excluded.
 - `earendil-works/pi-review` @ `f1de050`: synced the clean-code review guidelines into `pi-extensions/pi-review/review.ts`.
 - `run-llama/llamaparse-agent-skills` @ `2dcef7c`: reviewed; LiteParse's name/version-only update was intentionally skipped to retain the local `effective-liteparse` name.

@@ -4,6 +4,7 @@ All notable changes to agent-stuff are documented here.
 
 ## Unreleased
 
+* Added the `/discuss` planning-interviewer prompt command.
 * Synced `goal.ts`, `control.ts`, and `prompt-editor.ts` with Mitsuhiko’s current upstream versions, replacing local variants.
 * Updated `pi-review` with upstream clean-code and fail-fast review guidelines.
 * Updated `session-breakdown.ts` from `mitsuhiko/agent-stuff` to add provider-grouped model analysis, cost-per-session metrics, and adaptive model/CWD table sizing.
