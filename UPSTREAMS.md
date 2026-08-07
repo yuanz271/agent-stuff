@@ -15,8 +15,12 @@ Run `scripts/check-import-upstreams.py` to refresh it after checking upstreams.
 - `pi-schedule-prompt` → `https://github.com/tintinweb/pi-schedule-prompt` @ `5556775276202c26654ff9323541fe6983f6ee38` (`origin/master`)
 - `liteparse` → `https://github.com/run-llama/llamaparse-agent-skills` @ `2dcef7c62417bd2ec4671fce4621bb1e8cce48d0` (`origin/main`)
 
+## Import Policy
+
+Upstream extensions and skills absent from this repository are intentionally excluded unless explicitly listed for review. Do not infer that an absent item is a missed import; compare upstream history only to identify genuinely new or changed candidates. Current exception: `extensions/subagent.ts` is intentionally pending review.
+
 ## Latest Review
 
-- `mitsuhiko/agent-stuff` @ `d265b8e`: synced the current `goal.ts`, `control.ts`, `prompt-editor.ts`, and `session-breakdown.ts`; intentionally excluded other upstream extensions and skills.
+- `mitsuhiko/agent-stuff` @ `d265b8e`: synced the current `goal.ts`, `control.ts`, `prompt-editor.ts`, and `session-breakdown.ts`; all other absent upstream extensions and skills remain intentionally excluded except `extensions/subagent.ts`, which is pending review.
 - `earendil-works/pi-review` @ `f1de050`: synced the clean-code review guidelines into `pi-extensions/pi-review/review.ts`.
 - `run-llama/llamaparse-agent-skills` @ `2dcef7c`: reviewed; LiteParse's name/version-only update was intentionally skipped to retain the local `effective-liteparse` name.
