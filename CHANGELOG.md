@@ -4,6 +4,7 @@ All notable changes to agent-stuff are documented here.
 
 ## Unreleased
 
+* Synced `goal.ts`, `control.ts`, and `prompt-editor.ts` with Mitsuhiko’s current upstream versions, replacing local variants.
 * Updated `pi-review` with upstream clean-code and fail-fast review guidelines.
 * Updated `session-breakdown.ts` from `mitsuhiko/agent-stuff` to add provider-grouped model analysis, cost-per-session metrics, and adaptive model/CWD table sizing.
 * Added `no-bash-sleep.ts` extension to intercept `sleep` in bash tool calls: short sleeps (≤5 min) are allowed for backoff/debounce; long or variable-duration sleeps are blocked with a message directing to `/schedule-prompt`.

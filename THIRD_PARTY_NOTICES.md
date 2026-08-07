@@ -8,6 +8,9 @@ This repository includes code copied/adapted from the project below.
 - **Included paths in this repo**:
   - `pi-extensions/files.ts`
   - `pi-extensions/goal.ts`
+  - `pi-extensions/control.ts`
+  - `pi-extensions/loop.ts`
+  - `pi-extensions/prompt-editor.ts`
   - `pi-extensions/session-breakdown.ts`
 - **Current pin record**: see `UPSTREAMS.md`
 - **Upstream license**: Apache License 2.0
@@ -26,18 +29,6 @@ Apache License 2.0 — same terms as stated in upstream `LICENSE`.
 - **Upstream copyright**: Copyright (c) 2026 Earendil Inc.
 
 MIT License — same terms as stated in upstream `LICENSE`.
-
-## agent-stuff selective auth migration sync
-
-- **Source**: https://github.com/mitsuhiko/agent-stuff
-- **Included paths in this repo**:
-  - `pi-extensions/control.ts`
-  - `pi-extensions/loop.ts`
-- **Current pin record**: see `UPSTREAMS.md`
-- **Upstream license**: Apache License 2.0
-- **Upstream copyright note**: no explicit copyright line was identified in the upstream `LICENSE`; provenance is tracked via the upstream repository URL above.
-
-Apache License 2.0 — same terms as stated in upstream `LICENSE`.
 
 ## pi-side-chat
 
