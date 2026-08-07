@@ -373,22 +373,6 @@ function modelKeyFromParts(provider?: unknown, model?: unknown): ModelKey | null
 	return `${p}/${m}`;
 }
 
-function normalizedLowerString(value: unknown): string {
-	return typeof value === "string" ? value.trim().toLowerCase() : "";
-}
-
-function isFauxModelReference(parts: { api?: unknown; provider?: unknown; model?: unknown; modelId?: unknown }): boolean {
-	// pi-ai's test/mock provider is registered as api "faux:<random>" with provider "faux"
-	// and default model ids like "faux-1".  It can emit token estimates, but those are
-	// synthetic and should not affect real session usage breakdowns.
-	const api = normalizedLowerString(parts.api);
-	if (api === "faux" || api.startsWith("faux:")) return true;
-	if (normalizedLowerString(parts.provider) === "faux") return true;
-
-	const model = normalizedLowerString(parts.model ?? parts.modelId);
-	return model === "faux" || model.startsWith("faux-");
-}
-
 function parseSessionStartFromFilename(name: string): Date | null {
 	// Example: 2026-02-02T21-52-28-774Z_<uuid>.jsonl
 	const m = name.match(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z_/);
@@ -398,13 +382,12 @@ function parseSessionStartFromFilename(name: string): Date | null {
 	return Number.isFinite(d.getTime()) ? d : null;
 }
 
-function extractProviderModelAndUsage(obj: any): { api?: any; provider?: any; model?: any; modelId?: any; usage?: any } {
+function extractProviderModelAndUsage(obj: any): { provider?: any; model?: any; modelId?: any; usage?: any } {
 	// Session format varies across versions.
 	// - Newer: { provider, model, usage } on the message wrapper
 	// - Older: { message: { provider, model, usage } }
 	const msg = obj?.message;
 	return {
-		api: obj?.api ?? msg?.api,
 		provider: obj?.provider ?? msg?.provider,
 		model: obj?.model ?? msg?.model,
 		modelId: obj?.modelId ?? msg?.modelId,
@@ -536,7 +519,6 @@ async function parseSessionFile(filePath: string, signal?: AbortSignal): Promise
 	const fileName = path.basename(filePath);
 	let startedAt = parseSessionStartFromFilename(fileName);
 	let currentModel: ModelKey | null = null;
-	let currentModelIsFaux = false;
 	let cwd: CwdKey | null = null;
 
 	const modelsUsed = new Set<ModelKey>();
@@ -577,16 +559,9 @@ async function parseSessionFile(filePath: string, signal?: AbortSignal): Promise
 			}
 
 			if (obj?.type === "model_change") {
-				if (isFauxModelReference({ api: obj.api, provider: obj.provider, modelId: obj.modelId })) {
-					currentModel = null;
-					currentModelIsFaux = true;
-					continue;
-				}
-
 				const mk = modelKeyFromParts(obj.provider, obj.modelId);
-				currentModel = mk;
-				currentModelIsFaux = false;
 				if (mk) {
+					currentModel = mk;
 					modelsUsed.add(mk);
 				}
 				continue;
@@ -594,20 +569,12 @@ async function parseSessionFile(filePath: string, signal?: AbortSignal): Promise
 
 			if (obj?.type !== "message") continue;
 
-			const { api, provider, model, modelId, usage } = extractProviderModelAndUsage(obj);
-			const explicitMk = modelKeyFromParts(provider, model) ?? modelKeyFromParts(provider, modelId);
-			if (isFauxModelReference({ api, provider, model, modelId })) {
-				currentModel = null;
-				currentModelIsFaux = true;
-				continue;
-			}
-			if (!explicitMk && currentModelIsFaux) continue;
-
-			const mk = explicitMk ?? currentModel ?? "unknown";
-			if (explicitMk) {
-				currentModel = explicitMk;
-				currentModelIsFaux = false;
-			}
+			const { provider, model, modelId, usage } = extractProviderModelAndUsage(obj);
+			const mk =
+				modelKeyFromParts(provider, model) ??
+				modelKeyFromParts(provider, modelId) ??
+				currentModel ??
+				"unknown";
 			modelsUsed.add(mk);
 
 			messages += 1;
@@ -630,7 +597,7 @@ async function parseSessionFile(filePath: string, signal?: AbortSignal): Promise
 		stream.destroy();
 	}
 
-	if (!startedAt || (messages === 0 && modelsUsed.size === 0 && tokens === 0 && totalCost === 0)) return null;
+	if (!startedAt) return null;
 	const dayKeyLocal = toLocalDayKey(startedAt);
 	const dow = DOW_NAMES[mondayIndex(startedAt)];
 	const tod = todBucketForHour(startedAt.getHours());

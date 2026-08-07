@@ -4,6 +4,7 @@ All notable changes to agent-stuff are documented here.
 
 ## Unreleased
 
+* Updated `session-breakdown.ts` from `mitsuhiko/agent-stuff` to add provider-grouped model analysis, cost-per-session metrics, and adaptive model/CWD table sizing.
 * Added `no-bash-sleep.ts` extension to intercept `sleep` in bash tool calls: short sleeps (≤5 min) are allowed for backoff/debounce; long or variable-duration sleeps are blocked with a message directing to `/schedule-prompt`.
 * Ported `goal.ts` extension from `mitsuhiko/agent-stuff` (`ab79f98`): session-scoped goal tracker with optional token budget, pause/resume/clear commands, and model-callable tools.
 * Added a new `/forget` extension workflow that runs a compaction-shaped cleanup pass through Pi's normal compaction UI/persistence path without direct session-file surgery.

@@ -8,7 +8,7 @@ Run `scripts/check-import-upstreams.py` to refresh it after checking upstreams.
 - `files` → `https://github.com/mitsuhiko/agent-stuff` @ `4bce45560fa55ace2f5dc8634a63a2af464ddc8b` (`origin/main`) [upstream `extensions/files.ts`]
 - `control` → `https://github.com/mitsuhiko/agent-stuff` @ `4bce45560fa55ace2f5dc8634a63a2af464ddc8b` (`origin/main`) [upstream `extensions/control.ts`]
 - `loop` → `https://github.com/mitsuhiko/agent-stuff` @ `4bce45560fa55ace2f5dc8634a63a2af464ddc8b` (`origin/main`) [upstream `extensions/loop.ts`]
-- `session-breakdown` → `https://github.com/mitsuhiko/agent-stuff` @ `4bce45560fa55ace2f5dc8634a63a2af464ddc8b` (`origin/main`) [upstream `extensions/session-breakdown.ts`]
+- `session-breakdown` → `https://github.com/mitsuhiko/agent-stuff` @ `d265b8ef32f896d3ef3bc6a45bd7b8e0d02150e0` (`origin/main`) [upstream `extensions/session-breakdown.ts`]
 - `prompt-editor` → `https://github.com/mitsuhiko/agent-stuff` @ `4bce45560fa55ace2f5dc8634a63a2af464ddc8b` (`origin/main`) [upstream `extensions/prompt-editor.ts`]
 - `pi-review` → `https://github.com/earendil-works/pi-review` @ `6557ef2` (`origin/main`)
 - `side-chat` → `https://github.com/nicobailon/pi-side-chat` @ `58f833f1b3ae05ae91257ed0f4117e1ee41d25cb` (`origin/main`)
