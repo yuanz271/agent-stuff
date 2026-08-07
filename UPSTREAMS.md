@@ -17,10 +17,10 @@ Run `scripts/check-import-upstreams.py` to refresh it after checking upstreams.
 
 ## Import Policy
 
-Upstream extensions and skills absent from this repository are intentionally excluded unless explicitly listed for review. Do not infer that an absent item is a missed import; compare upstream history only to identify genuinely new or changed candidates. Current exception: `extensions/subagent.ts` is intentionally pending review.
+Upstream extensions and skills absent from this repository are intentionally excluded unless explicitly listed for review. Do not infer that an absent item is a missed import; compare upstream history only to identify genuinely new or changed candidates. `extensions/subagent.ts` is intentionally excluded because `npm:pi-subagents` already provides the needed delegation and orchestration features.
 
 ## Latest Review
 
-- `mitsuhiko/agent-stuff` @ `d265b8e`: synced the current `goal.ts`, `control.ts`, `prompt-editor.ts`, and `session-breakdown.ts`; all other absent upstream extensions and skills remain intentionally excluded except `extensions/subagent.ts`, which is pending review.
+- `mitsuhiko/agent-stuff` @ `d265b8e`: synced the current `goal.ts`, `control.ts`, `prompt-editor.ts`, and `session-breakdown.ts`; all other absent upstream extensions and skills, including `extensions/subagent.ts`, remain intentionally excluded.
 - `earendil-works/pi-review` @ `f1de050`: synced the clean-code review guidelines into `pi-extensions/pi-review/review.ts`.
 - `run-llama/llamaparse-agent-skills` @ `2dcef7c`: reviewed; LiteParse's name/version-only update was intentionally skipped to retain the local `effective-liteparse` name.
