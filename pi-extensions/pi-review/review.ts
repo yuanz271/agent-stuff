@@ -180,6 +180,15 @@ Flag issues that:
 8. Are clearly not intentional changes by the author.
 9. Be particularly careful with untrusted user input and follow the specific guidelines to review.
 10. Treat silent local error recovery (especially parsing/IO/network fallbacks) as high-signal review candidates unless there is explicit boundary-level justification.
+11. Violate the clean-code guidelines below.
+12. Introduce error handling that conflicts with the fail-fast guidelines below.
+
+## Clean-code guidelines
+
+1. Check whether each newly added function duplicates existing functionality elsewhere in the codebase. Flag actual duplication and identify the existing implementation.
+2. Flag one-off helper functions that add indirection without improving clarity or reuse (for example, \`isRecord\` or \`asString\`).
+3. Flag abstractions introduced without a concrete need in the reviewed change, including wrappers created only for hypothetical future use.
+4. Flag defensive checks or fallback behavior that mask programming errors, especially when callers already guarantee the relevant invariants.
 
 ## Untrusted User Input
 
