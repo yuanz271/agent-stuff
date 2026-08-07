@@ -144,12 +144,13 @@ def print_result(result: CheckResult) -> None:
     print()
 
 
-def render_upstreams(entries: list[SourceEntry], results: list[CheckResult]) -> str:
+def render_upstreams(entries: list[SourceEntry], results: list[CheckResult], suffix: str = "") -> str:
     lines = [
         "# Upstream Pins",
         "",
         "This file records the last checked upstream commit for each imported skill or extension.",
         "Entries may include an upstream path hint when the upstream layout differs from the local one.",
+        "A pin is current when it is not behind the configured upstream branch head; local source customizations and intentionally omitted non-source files do not make an import stale.",
         "Run `scripts/check-import-upstreams.py` to refresh it after checking upstreams.",
         "",
     ]
@@ -162,6 +163,9 @@ def render_upstreams(entries: list[SourceEntry], results: list[CheckResult]) -> 
         lines.append(line)
 
     lines.append("")
+    if suffix:
+        lines.append(suffix.rstrip("\n"))
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -186,7 +190,13 @@ def main() -> int:
     for result in results:
         print_result(result)
 
-    upstreams_path.write_text(render_upstreams(entries, results), encoding="utf-8")
+    existing_text = upstreams_path.read_text(encoding="utf-8")
+    suffix = ""
+    marker = "## Excluded Upstream Items\n"
+    marker_index = existing_text.find(f"\n{marker}")
+    if marker_index >= 0:
+        suffix = existing_text[marker_index + 1 :]
+    upstreams_path.write_text(render_upstreams(entries, results, suffix), encoding="utf-8")
 
     bad = [r for r in results if r.status != "up_to_date"]
     print(f"Summary: {len(results) - len(bad)} up_to_date, {len(bad)} non_green")

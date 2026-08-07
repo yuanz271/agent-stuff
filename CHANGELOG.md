@@ -4,10 +4,10 @@ All notable changes to agent-stuff are documented here.
 
 ## Unreleased
 
+* Recorded explicit exclusions for every currently absent Mitsuhiko extension and skill, and preserved the exclusion ledger when refreshing upstream pins.
+* Re-imported `goal.ts` and `prompt-editor.ts` from Mitsuhiko’s latest `origin/main`, and removed the obsolete local `loop.ts` and `session-breakdown.ts` extensions.
 * Added the `/discuss` planning-interviewer prompt command.
-* Synced `goal.ts`, `control.ts`, and `prompt-editor.ts` with Mitsuhiko’s current upstream versions, replacing local variants.
 * Updated `pi-review` with upstream clean-code and fail-fast review guidelines.
-* Updated `session-breakdown.ts` from `mitsuhiko/agent-stuff` to add provider-grouped model analysis, cost-per-session metrics, and adaptive model/CWD table sizing.
 * Added `no-bash-sleep.ts` extension to intercept `sleep` in bash tool calls: short sleeps (≤5 min) are allowed for backoff/debounce; long or variable-duration sleeps are blocked with a message directing to `/schedule-prompt`.
 * Ported `goal.ts` extension from `mitsuhiko/agent-stuff` (`ab79f98`): session-scoped goal tracker with optional token budget, pause/resume/clear commands, and model-callable tools.
 * Added a new `/forget` extension workflow that runs a compaction-shaped cleanup pass through Pi's normal compaction UI/persistence path without direct session-file surgery.
@@ -50,9 +50,6 @@ All notable changes to agent-stuff are documented here.
 
 ## 1.3.0
 
-* Added `/session-breakdown` command with interactive TUI showing sessions, messages, tokens, and cost over the last 7/30/90 days with a GitHub-style contribution calendar.
-* Added messages/tokens tracking and large-count abbreviations to `/session-breakdown`.
-* Added progress reporting while analyzing sessions in `/session-breakdown`.
 * Added `/context` command for viewing context overview.
 * Added folder snapshot review mode to `/review`.
 * Improved review rubric with lessons from codex.

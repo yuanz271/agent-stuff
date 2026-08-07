@@ -10,9 +10,14 @@ This repository includes code copied/adapted from the project below.
   - `pi-extensions/files.ts`
   - `pi-extensions/goal.ts`
   - `pi-extensions/control.ts`
-  - `pi-extensions/loop.ts`
   - `pi-extensions/prompt-editor.ts`
-  - `pi-extensions/session-breakdown.ts`
+  - `skills/commit/*`
+  - `skills/github/*`
+  - `skills/librarian/*`
+  - `skills/summarize/*`
+  - `skills/tmux/*`
+  - `skills/update-changelog/*`
+  - `skills/uv/*`
 - **Current pin record**: see `UPSTREAMS.md`
 - **Upstream license**: Apache License 2.0
 - **Upstream copyright note**: no explicit copyright line was identified in the upstream `LICENSE`; provenance is tracked via the upstream repository URL above.
