@@ -4,6 +4,7 @@ All notable changes to agent-stuff are documented here.
 
 ## Unreleased
 
+* Removed the unused `files.ts` extension.
 * Recorded explicit exclusions for every currently absent Mitsuhiko extension and skill, and preserved the exclusion ledger when refreshing upstream pins.
 * Re-imported `goal.ts` and `prompt-editor.ts` from Mitsuhiko’s latest `origin/main`, and removed the obsolete local `loop.ts` and `session-breakdown.ts` extensions.
 * Added the `/discuss` planning-interviewer prompt command.

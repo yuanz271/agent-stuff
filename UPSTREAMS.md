@@ -7,7 +7,6 @@ Run `scripts/check-import-upstreams.py` to refresh it after checking upstreams.
 
 - `discuss` → `https://github.com/mitsuhiko/agent-stuff` @ `d265b8ef32f896d3ef3bc6a45bd7b8e0d02150e0` (`origin/main`) [upstream `commands/discuss.md`]
 - `goal` → `https://github.com/mitsuhiko/agent-stuff` @ `d265b8ef32f896d3ef3bc6a45bd7b8e0d02150e0` (`origin/main`) [upstream `extensions/goal.ts`]
-- `files` → `https://github.com/mitsuhiko/agent-stuff` @ `d265b8ef32f896d3ef3bc6a45bd7b8e0d02150e0` (`origin/main`) [upstream `extensions/files.ts`]
 - `control` → `https://github.com/mitsuhiko/agent-stuff` @ `d265b8ef32f896d3ef3bc6a45bd7b8e0d02150e0` (`origin/main`) [upstream `extensions/control.ts`]
 - `prompt-editor` → `https://github.com/mitsuhiko/agent-stuff` @ `d265b8ef32f896d3ef3bc6a45bd7b8e0d02150e0` (`origin/main`) [upstream `extensions/prompt-editor.ts`]
 - `pi-review` → `https://github.com/earendil-works/pi-review` @ `f1de050504936046c0f85b21fec0e0a93ef394eb` (`origin/main`)
@@ -36,6 +35,7 @@ These are explicit exclusions, not missing imports. Each item is pinned to the u
 - `extensions/no-sleep.ts` — excluded; local `no-bash-sleep.ts` enforces the relevant sleep policy with different behavior.
 - `extensions/notify.ts` — excluded; not used locally.
 - `extensions/review.ts` — excluded; local `pi-extensions/pi-review` is imported from `earendil-works/pi-review`.
+- `extensions/files.ts` — excluded; removed because it is not used locally.
 - `extensions/session-breakdown.ts` — excluded; removed because it is not used locally.
 - `extensions/split-fork.ts` — excluded; not used locally.
 - `extensions/subagent.ts` — excluded; `npm:pi-subagents` provides the needed delegation and orchestration features.
