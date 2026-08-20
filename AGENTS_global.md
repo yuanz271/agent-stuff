@@ -1,1 +1,1 @@
-../dotfiles/agent-stuff/AGENTS_global.md
+../../../../../../dotfiles/agent-stuff/AGENTS_global.md
