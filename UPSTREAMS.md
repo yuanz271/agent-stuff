@@ -23,7 +23,7 @@ Run `scripts/check-import-upstreams.py` to refresh it after checking upstreams.
 
 These are explicit exclusions, not missing imports. Each item is pinned to the upstream head last reviewed. Any upstream extension or skill not listed here or in the imported pins is an unreviewed candidate and must be reported.
 
-### `mitsuhiko/agent-stuff` @ `d265b8e`
+### `mitsuhiko/agent-stuff` @ `122e299`
 
 #### Extensions
 
@@ -42,6 +42,7 @@ These are explicit exclusions, not missing imports. Each item is pinned to the u
 - `extensions/trust-github-repos.ts` — excluded; not used locally.
 - `extensions/unified-edit.ts` — excluded; not used locally.
 - `extensions/uv.ts` — excluded; not used locally.
+- `extensions/view-image.ts` — excluded; not used locally.
 - `extensions/whimsical.ts` — excluded; not used locally.
 
 #### Skills
@@ -49,7 +50,6 @@ These are explicit exclusions, not missing imports. Each item is pinned to the u
 - `skills/anachb` — excluded; not used locally.
 - `skills/apple-mail` — excluded; not used locally.
 - `skills/audio-transcription` — excluded; not used locally.
-- `skills/frontend-design` — excluded; not used locally.
 - `skills/ghidra` — excluded; not used locally.
 - `skills/google-workspace` — excluded; not used locally.
 - `skills/native-web-search` — excluded; not used locally.
@@ -59,13 +59,17 @@ These are explicit exclusions, not missing imports. Each item is pinned to the u
 - `skills/sentry` — excluded; not used locally.
 - `skills/web-browser` — excluded; not used locally.
 
+## Removed Upstream Items
+
+- `mitsuhiko/agent-stuff` `skills/frontend-design` — removed upstream before `122e299`; it was not imported locally.
+
 ## Import Policy
 
 Every upstream extension and skill must be listed either in the imported pins above or in **Excluded Upstream Items**. A new upstream item without either entry is an unreviewed candidate; do not silently treat it as excluded. Non-source upstream files may be omitted, and imported source may use the `@earendil-works/*` packages required by Pi.
 
 ## Latest Review
 
-- `mitsuhiko/agent-stuff` @ `122e299`: synced `prompt-editor.ts` from `origin/main`; excluded-path changes remain unreviewed.
+- `mitsuhiko/agent-stuff` @ `122e299`: synced `prompt-editor.ts` and reviewed the upstream extension/skill inventory; `extensions/view-image.ts` is explicitly excluded.
 - `nicobailon/pi-side-chat` @ `1db20db`: synced the source files, including fullscreen side-chat and fork-surgery support.
 - `earendil-works/pi-review` @ `f1de050`: synced the clean-code review guidelines into `pi-extensions/pi-review/review.ts`.
 - `run-llama/llamaparse-agent-skills` @ `2dcef7c`: reviewed; LiteParse's name/version-only update was intentionally skipped to retain the local `effective-liteparse` name.
