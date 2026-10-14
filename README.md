@@ -37,7 +37,8 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 * [`init.ts`](pi-extensions/init.ts) - Pi-specific `/init` bootstrap command that embeds its contributor-guide prompt and asks pi to generate the current repo's `AGENTS.md`.
 * [`pi-review`](pi-extensions/pi-review) - Standalone code review workflow inspired by Codex. Supports reviewing uncommitted changes, base-branch diffs, specific commits, GitHub PRs via `gh`, and folder snapshots, with shared `REVIEW_GUIDELINES.md` instructions plus `/end-review` return/summarize/fix flow.
 * [`websearch`](pi-extensions/websearch) - Vertex AI Gemini grounded web search tool (`websearch`) that returns a concise summary and source URLs from grounding metadata. Defaults to `gemini-2.5-flash`; `gemini-3-flash-preview` is a currently validated experimental override on the global endpoint.
-* [`side-chat`](pi-extensions/side-chat) - Fork the current conversation into a non-capturing overlay side chat (`Alt+/`, `/side`) while the main agent keeps working.
+
+Side chat is installed separately with `pi install npm:pi-side-chat`.
 
 ## Optional Extensions
 

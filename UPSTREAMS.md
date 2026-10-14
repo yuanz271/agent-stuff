@@ -5,30 +5,29 @@ Entries may include an upstream path hint when the upstream layout differs from 
 A pin is current when it is not behind the configured upstream branch head; local source customizations and intentionally omitted non-source files do not make an import stale.
 Run `scripts/check-import-upstreams.py` to refresh it after checking upstreams.
 
-- `discuss` → `https://github.com/mitsuhiko/agent-stuff` @ `122e2994adddb113c04764c5697217dae120fcc6` (`origin/main`) [upstream `commands/discuss.md`]
-- `control` → `https://github.com/mitsuhiko/agent-stuff` @ `122e2994adddb113c04764c5697217dae120fcc6` (`origin/main`) [upstream `extensions/control.ts`]
-- `prompt-editor` → `https://github.com/mitsuhiko/agent-stuff` @ `122e2994adddb113c04764c5697217dae120fcc6` (`origin/main`) [upstream `extensions/prompt-editor.ts`]
+- `discuss` → `https://github.com/mitsuhiko/agent-stuff` @ `0865c849befd2021490679f96a8dee58c84ac857` (`origin/main`) [upstream `commands/discuss.md`]
+- `control` → `https://github.com/mitsuhiko/agent-stuff` @ `0865c849befd2021490679f96a8dee58c84ac857` (`origin/main`) [upstream `extensions/control.ts`]
+- `prompt-editor` → `https://github.com/mitsuhiko/agent-stuff` @ `0865c849befd2021490679f96a8dee58c84ac857` (`origin/main`) [upstream `extensions/prompt-editor.ts`]
 - `pi-review` → `https://github.com/earendil-works/pi-review` @ `f1de050504936046c0f85b21fec0e0a93ef394eb` (`origin/main`)
-- `side-chat` → `https://github.com/nicobailon/pi-side-chat` @ `1db20dbc6e369b099233e90ad8da917219f59791` (`origin/main`)
 - `liteparse` → `https://github.com/run-llama/llamaparse-agent-skills` @ `2dcef7c62417bd2ec4671fce4621bb1e8cce48d0` (`origin/main`)
-- `commit` → `https://github.com/mitsuhiko/agent-stuff` @ `122e2994adddb113c04764c5697217dae120fcc6` (`origin/main`) [upstream `skills/commit`]
-- `github` → `https://github.com/mitsuhiko/agent-stuff` @ `122e2994adddb113c04764c5697217dae120fcc6` (`origin/main`) [upstream `skills/github`]
-- `librarian` → `https://github.com/mitsuhiko/agent-stuff` @ `122e2994adddb113c04764c5697217dae120fcc6` (`origin/main`) [upstream `skills/librarian`]
-- `summarize` → `https://github.com/mitsuhiko/agent-stuff` @ `122e2994adddb113c04764c5697217dae120fcc6` (`origin/main`) [upstream `skills/summarize`]
-- `tmux` → `https://github.com/mitsuhiko/agent-stuff` @ `122e2994adddb113c04764c5697217dae120fcc6` (`origin/main`) [upstream `skills/tmux`]
-- `update-changelog` → `https://github.com/mitsuhiko/agent-stuff` @ `122e2994adddb113c04764c5697217dae120fcc6` (`origin/main`) [upstream `skills/update-changelog`]
-- `uv` → `https://github.com/mitsuhiko/agent-stuff` @ `122e2994adddb113c04764c5697217dae120fcc6` (`origin/main`) [upstream `skills/uv`]
+- `commit` → `https://github.com/mitsuhiko/agent-stuff` @ `0865c849befd2021490679f96a8dee58c84ac857` (`origin/main`) [upstream `skills/commit`]
+- `github` → `https://github.com/mitsuhiko/agent-stuff` @ `0865c849befd2021490679f96a8dee58c84ac857` (`origin/main`) [upstream `skills/github`]
+- `librarian` → `https://github.com/mitsuhiko/agent-stuff` @ `0865c849befd2021490679f96a8dee58c84ac857` (`origin/main`) [upstream `skills/librarian`]
+- `summarize` → `https://github.com/mitsuhiko/agent-stuff` @ `0865c849befd2021490679f96a8dee58c84ac857` (`origin/main`) [upstream `skills/summarize`]
+- `tmux` → `https://github.com/mitsuhiko/agent-stuff` @ `0865c849befd2021490679f96a8dee58c84ac857` (`origin/main`) [upstream `skills/tmux`]
+- `update-changelog` → `https://github.com/mitsuhiko/agent-stuff` @ `0865c849befd2021490679f96a8dee58c84ac857` (`origin/main`) [upstream `skills/update-changelog`]
+- `uv` → `https://github.com/mitsuhiko/agent-stuff` @ `0865c849befd2021490679f96a8dee58c84ac857` (`origin/main`) [upstream `skills/uv`]
 
 ## Excluded Upstream Items
 
 These are explicit exclusions, not missing imports. Each item is pinned to the upstream head last reviewed. Any upstream extension or skill not listed here or in the imported pins is an unreviewed candidate and must be reported.
 
-### `mitsuhiko/agent-stuff` @ `122e299`
+### `mitsuhiko/agent-stuff` @ `0865c84`
 
 #### Extensions
 
 - `extensions/answer.ts` — excluded; not used locally.
-- `extensions/btw.ts` — excluded; local `side-chat` provides the needed side-chat workflow.
+- `extensions/btw.ts` — excluded; side chat is provided by the separately installed `npm:pi-side-chat` package.
 - `extensions/continue.ts` — excluded; the idle-only manual continuation shortcut is not useful locally.
 - `extensions/no-sleep.ts` — excluded; local `no-bash-sleep.ts` enforces the relevant sleep policy with different behavior.
 - `extensions/notify.ts` — excluded; not used locally.
@@ -69,7 +68,6 @@ Every upstream extension and skill must be listed either in the imported pins ab
 
 ## Latest Review
 
-- `mitsuhiko/agent-stuff` @ `122e299`: synced `prompt-editor.ts` and reviewed the upstream extension/skill inventory; `extensions/view-image.ts` is explicitly excluded.
-- `nicobailon/pi-side-chat` @ `1db20db`: synced the source files, including fullscreen side-chat and fork-surgery support.
+- `mitsuhiko/agent-stuff` @ `0865c84`: checked imported paths and exclusions; the only post-`122e299` source change is to excluded `extensions/session-breakdown.ts`.
 - `earendil-works/pi-review` @ `f1de050`: synced the clean-code review guidelines into `pi-extensions/pi-review/review.ts`.
 - `run-llama/llamaparse-agent-skills` @ `2dcef7c`: reviewed; LiteParse's name/version-only update was intentionally skipped to retain the local `effective-liteparse` name.

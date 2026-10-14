@@ -34,16 +34,6 @@ Apache License 2.0 — same terms as stated in upstream `LICENSE`.
 
 MIT License — same terms as stated in upstream `LICENSE`.
 
-## pi-side-chat
-
-- **Source**: https://github.com/nicobailon/pi-side-chat
-- **Included paths in this repo**:
-  - `pi-extensions/side-chat/*`
-- **Upstream license**: MIT License
-- **Upstream copyright**: Copyright (c) 2026 Nico Bailon
-
-MIT License — same terms as stated in upstream `package.json` (`"license": "MIT"`).
-
 ## liteparse skill
 
 - **Source**: https://github.com/run-llama/llamaparse-agent-skills

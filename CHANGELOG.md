@@ -5,7 +5,7 @@ All notable changes to agent-stuff are documented here.
 ## Unreleased
 
 * Removed the unused `goal.ts` extension.
-* Synced `prompt-editor.ts` and `side-chat` source from their latest upstream versions.
+* Removed the bundled `side-chat` extension; install `npm:pi-side-chat` separately to use it.
 * Retired `forget` to `optional-extensions/`; it is no longer loaded by the package.
 * Removed the unused `pi-schedule-prompt` extension.
 * Removed the unused `files.ts` extension.
